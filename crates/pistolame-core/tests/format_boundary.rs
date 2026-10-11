@@ -1,5 +1,6 @@
 //! Plan B10.3 #6: two blocks with different formats pushed into a ring by hand. The feeder must
 //! return `FormatBoundaryReached` and never pack the second block in the first block's format.
+//! Also (T9): an empty ring with the end-of-queue flag set is `EndOfStream`, counted once.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -182,4 +183,52 @@ fn feeder_stops_at_a_format_boundary_and_resumes_after_reopen() {
         tap_reader.pop_device_bytes(&mut [0u8; 1]).is_err(),
         "boundary silence is never tapped"
     );
+}
+
+/// T9: an empty ring with the end-of-queue flag set is the end of the stream, counted once per
+/// end, not once per buffer, so the engine's poll sees exactly one track end.
+#[test]
+fn an_empty_finished_queue_is_the_end_of_the_stream_counted_once() {
+    let format = source_format(44_100);
+    let (mut ring_writer, ring_reader) = create_playback_ring(&format, Duration::from_secs(1));
+    let (tap_writer, _tap_reader) = create_verification_tap(
+        44_100,
+        4 * usize::from(CHANNEL_COUNT),
+        Duration::from_secs(1),
+    );
+    let counters = Arc::new(PlaybackCounters::new());
+    let is_playback_queue_finished = Arc::new(AtomicBool::new(false));
+    let mut feeder = DeviceFeeder::new(
+        ring_reader,
+        tap_writer,
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&is_playback_queue_finished),
+        Arc::clone(&counters),
+    );
+    let samples = [1, -1, 2, -2];
+    ring_writer
+        .try_push_block(header(TRACK, format, 2), &samples)
+        .expect("room");
+    is_playback_queue_finished.store(true, std::sync::atomic::Ordering::Release);
+    let render_format = render_format(44_100);
+    feeder.begin_stream(RenderStreamDescription {
+        render_format,
+        access_mode: DeviceAccessMode::Exclusive,
+    });
+    let mut destination = vec![0xAA; 4 * render_format.bytes_per_frame()];
+    assert_eq!(feeder.render(&mut destination), RenderOutcome::EndOfStream);
+    let mut expected = packed(&samples, &render_format);
+    expected.resize(destination.len(), 0);
+    assert_eq!(destination, expected, "the last block plays before the end");
+    for _ in 0..10 {
+        destination.fill(0xAA);
+        assert_eq!(feeder.render(&mut destination), RenderOutcome::EndOfStream);
+        assert!(destination.iter().all(|byte| *byte == 0));
+    }
+    let snapshot = counters.snapshot();
+    assert_eq!(
+        snapshot.stream_ends_reached, 1,
+        "once per end, not per buffer"
+    );
+    assert_eq!(snapshot.underrun_events, 0, "the end is no underrun");
 }

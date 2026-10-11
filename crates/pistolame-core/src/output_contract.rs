@@ -176,6 +176,13 @@ pub trait RenderSource: Send + 'static {
     /// Fills the whole `destination` (silence where no data is available). `destination`
     /// holds a whole number of frames; its length may differ between calls (shared mode).
     fn render(&mut self, destination: &mut [u8]) -> RenderOutcome;
+    /// Called by the engine, off the real-time thread, while this render source is in no
+    /// stream (after `close`, after a flush generation change while paused). Pushes side
+    /// information still waiting and drops data made stale by a flush. `true` when nothing is
+    /// left waiting. Backends never call it.
+    fn service_while_closed(&mut self) -> bool {
+        true
+    }
 }
 
 /// What a `render` call produced.

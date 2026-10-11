@@ -4,8 +4,8 @@
 //! A counting `#[global_allocator]` wraps the system allocator. It counts only calls made on
 //! the thread that armed it, so other test-harness threads cannot make the result flaky. The
 //! test then drives the feeder through every path while armed: normal, ring wrap-around,
-//! variable buffer lengths, underrun, stale-generation discard, end of stream, format
-//! boundary, tap full (bytes and events), shared mode, reopen with another container, a
+//! variable buffer lengths, underrun, stale-generation discard, end of stream (with its
+//! `stream_ends_reached` count), format boundary, tap full (bytes and events), shared mode, reopen with another container, a
 //! partial trailing frame, and `render` before `begin_stream`. Setup (ring pushes, tap drains)
 //! runs unarmed.
 
@@ -367,6 +367,10 @@ fn begin_stream_and_render_never_allocate_on_any_path() {
     let snapshot = scenario.counters.snapshot();
     assert!(snapshot.underrun_events > 0);
     assert!(snapshot.stale_frames_discarded > 0);
+    assert!(
+        snapshot.stream_ends_reached > 0,
+        "the stream-end count ran armed"
+    );
     assert!(snapshot.verification_tap_overflow_events > 0);
     assert!(snapshot.render_contract_violations >= 2);
 

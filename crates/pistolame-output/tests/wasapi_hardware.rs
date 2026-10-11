@@ -5,10 +5,14 @@
 //! `cargo test -p pistolame-output --test wasapi_hardware -- --ignored --test-threads=1`
 //!
 //! `PISTOLAME_TEST_DEVICE` selects the device by a part of its name (for example `K11`); without
-//! it the system default device is used. Until the decoder, feeder and verifier exist (T5, T6,
-//! T7, T9), the source is a generated test tone and the checks are on the output contract:
-//! status, play-out on pause, render source handed back, frame continuity. Level-1 and level-2
-//! verification are added to these tests when those tasks land.
+//! it the system default device is used. The tone tests check the output contract: status,
+//! play-out on pause, render source handed back, frame continuity.
+//!
+//! The engine tests play a real FLAC file through `EngineHandle` (decoder, feeder, verifier) and
+//! assert both verification levels: level 1 `Verified` over the whole track in exclusive mode
+//! (`NotApplicableInSharedMode` in shared mode), level 2 `Verified` (or `NoEmbeddedSignature`
+//! for a file without MD5). `PISTOLAME_TEST_FLAC` names the file; they are skipped without it.
+//! Choose a quiet file: it plays at its own level.
 
 #![cfg(windows)]
 #![allow(
@@ -319,4 +323,141 @@ fn wasapi_exclusive_close_without_play_discards_and_returns_the_source() {
         .unwrap_or_else(|failure| panic!("exclusive open failed: {}", failure.error));
     let closed = stream.close(QueuedAudioOnClose::Discard);
     assert!(!closed.was_queued_audio_fully_played);
+}
+
+/// Longest wait for any engine event in the engine tests (the track itself must be shorter).
+const ENGINE_EVENT_WAIT: Duration = Duration::from_secs(600);
+/// Playing time before the pause in the exclusive engine test.
+const ENGINE_PLAY_BEFORE_PAUSE: Duration = Duration::from_secs(2);
+
+/// The engine on WASAPI, with the test device selected, waiting for events.
+struct HardwareEngine {
+    handle: pistolame_core::EngineHandle,
+    latest_status: Option<pistolame_core::VerificationStatus>,
+    track_id: Option<pistolame_core::TrackId>,
+}
+
+impl HardwareEngine {
+    fn start(preference: pistolame_output::OutputModePreference) -> Self {
+        let device_id = selected_device(&mut WasapiOutput::new()).id;
+        let handle = pistolame_core::EngineHandle::start(
+            Box::new(WasapiOutput::new()),
+            pistolame_core::DecoderRegistry::with_default_providers(),
+            pistolame_core::EngineStartOptions {
+                output_mode_preference: preference,
+                preferred_device_id: Some(device_id),
+            },
+        )
+        .expect("the engine starts");
+        Self {
+            handle,
+            latest_status: None,
+            track_id: None,
+        }
+    }
+
+    /// Waits for `state`, recording the track and its latest verification status.
+    fn wait_for_state(&mut self, expected: pistolame_core::PlaybackState) {
+        use pistolame_core::EngineEvent;
+        loop {
+            let event = self
+                .handle
+                .receive_event_timeout(ENGINE_EVENT_WAIT)
+                .unwrap_or_else(|| panic!("no {expected:?} state"));
+            match event {
+                EngineEvent::TrackLoaded { track_id, .. } => self.track_id = Some(track_id),
+                EngineEvent::VerificationChanged { track_id, status }
+                    if Some(track_id) == self.track_id =>
+                {
+                    self.latest_status = Some(status);
+                }
+                EngineEvent::PlaybackFailed { kind, detail } => {
+                    panic!("playback failed: {kind:?} ({detail})")
+                }
+                EngineEvent::PlaybackStateChanged { state } if state == expected => return,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The file named by `PISTOLAME_TEST_FLAC`, its frame count and its embedded MD5.
+fn test_flac() -> Option<(std::path::PathBuf, u64, Option<[u8; 16]>)> {
+    let Some(path) = std::env::var_os("PISTOLAME_TEST_FLAC") else {
+        println!("skipped: set PISTOLAME_TEST_FLAC to a FLAC file");
+        return None;
+    };
+    let path = std::path::PathBuf::from(path);
+    let decoder = pistolame_core::DecoderRegistry::with_default_providers()
+        .open(&path)
+        .expect("PISTOLAME_TEST_FLAC decodes");
+    let info = decoder.stream_info();
+    let total_frames = info.total_frames.expect("the file states its length");
+    Some((path, total_frames, info.embedded_md5))
+}
+
+fn assert_level_two(status: &pistolame_core::VerificationStatus, embedded_md5: Option<[u8; 16]>) {
+    use pistolame_core::FileIntegrityStatus;
+    match embedded_md5 {
+        Some(md5) => assert_eq!(status.file_integrity, FileIntegrityStatus::Verified { md5 }),
+        None => assert!(matches!(
+            status.file_integrity,
+            FileIntegrityStatus::NoEmbeddedSignature {
+                computed_md5: Some(_)
+            }
+        )),
+    }
+}
+
+#[test]
+#[ignore = "needs an audio device; see the module documentation"]
+fn engine_exclusive_file_is_verified_on_both_levels_across_a_pause() {
+    use pistolame_core::{EngineCommand, PlaybackState, TransmissionStatus};
+    let Some((path, total_frames, embedded_md5)) = test_flac() else {
+        return;
+    };
+    let mut engine = HardwareEngine::start(pistolame_output::OutputModePreference::Exclusive);
+    engine.handle.send(EngineCommand::OpenFileAndPlay { path });
+    engine.wait_for_state(PlaybackState::Playing);
+    std::thread::sleep(ENGINE_PLAY_BEFORE_PAUSE);
+    engine.handle.send(EngineCommand::Pause);
+    engine.wait_for_state(PlaybackState::Paused);
+    std::thread::sleep(PAUSE_DURATION);
+    engine.handle.send(EngineCommand::Play);
+    engine.wait_for_state(PlaybackState::Playing);
+    println!(
+        "resume delay: {} ms",
+        engine.handle.counters().last_resume_delay_milliseconds
+    );
+    engine.wait_for_state(PlaybackState::Stopped);
+    let status = engine.latest_status.clone().expect("a final status");
+    println!("final status: {status:?}");
+    assert!(matches!(
+        status.transmission,
+        TransmissionStatus::Verified { first_frame_index: 0, frame_count, .. }
+            if frame_count == total_frames
+    ));
+    assert_level_two(&status, embedded_md5);
+    assert_eq!(engine.handle.counters().underrun_events, 0);
+    engine.handle.shutdown();
+}
+
+#[test]
+#[ignore = "needs an audio device; see the module documentation"]
+fn engine_shared_file_is_not_applicable_on_level_one_and_verified_on_level_two() {
+    use pistolame_core::{EngineCommand, PlaybackState, TransmissionStatus};
+    let Some((path, _, embedded_md5)) = test_flac() else {
+        return;
+    };
+    let mut engine = HardwareEngine::start(pistolame_output::OutputModePreference::Shared);
+    engine.handle.send(EngineCommand::OpenFileAndPlay { path });
+    engine.wait_for_state(PlaybackState::Stopped);
+    let status = engine.latest_status.clone().expect("a final status");
+    println!("final status: {status:?}");
+    assert_eq!(
+        status.transmission,
+        TransmissionStatus::NotApplicableInSharedMode
+    );
+    assert_level_two(&status, embedded_md5);
+    engine.handle.shutdown();
 }

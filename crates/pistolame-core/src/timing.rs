@@ -25,3 +25,11 @@ pub const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(33);
 /// The verifier's longest wait for a command before draining the tap again: 200 times shorter
 /// than the tap (`VERIFICATION_TAP_DURATION`), so polling never causes an overflow.
 pub const VERIFIER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// The engine's longest wait between two `status()` and counter polls: a failure or a track end
+/// is acted on within one UI frame, while the device still plays its queued audio (B13.3:
+/// polling, no wake-up channel).
+pub const ENGINE_POLL_INTERVAL: Duration = Duration::from_millis(33);
+/// Longest time the engine retries `RenderSource::service_while_closed` (1 ms apart) while the
+/// verifier drains the tap. Past it the stranded events are given up; the verifier then
+/// concludes the open segment as stopped (B7.2), never as a false match.
+pub const TEARDOWN_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);

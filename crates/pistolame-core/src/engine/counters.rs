@@ -22,6 +22,7 @@ pub struct PlaybackCounters {
     last_resume_delay_milliseconds: AtomicU64,
     render_contract_violations: AtomicU64,
     format_boundaries_reached: AtomicU64,
+    stream_ends_reached: AtomicU64,
 }
 
 impl PlaybackCounters {
@@ -47,6 +48,7 @@ impl PlaybackCounters {
                 .load(Ordering::Relaxed),
             render_contract_violations: self.render_contract_violations.load(Ordering::Relaxed),
             format_boundaries_reached: self.format_boundaries_reached.load(Ordering::Relaxed),
+            stream_ends_reached: self.stream_ends_reached.load(Ordering::Relaxed),
         }
     }
 
@@ -92,6 +94,12 @@ impl PlaybackCounters {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Render side: the feeder entered `RenderOutcome::EndOfStream` (counted once per end, not
+    /// per buffer). The engine reads it on its poll to learn that the track ended (B5.7).
+    pub(crate) fn record_stream_end_reached(&self) {
+        self.stream_ends_reached.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Render side: a backend broke the `RenderSource` contract (`render` before
     /// `begin_stream`, an unusable render format, a destination that is not whole frames) or
     /// the playback ring was found inconsistent. Never expected; counted so it is not silent.
@@ -117,6 +125,7 @@ mod tests {
         counters.record_resume_delay(Duration::from_millis(85));
         counters.record_render_contract_violation();
         counters.record_format_boundary_reached();
+        counters.record_stream_end_reached();
         assert_eq!(
             counters.snapshot(),
             PlaybackCountersSnapshot {
@@ -129,6 +138,7 @@ mod tests {
                 last_resume_delay_milliseconds: 85,
                 render_contract_violations: 1,
                 format_boundaries_reached: 1,
+                stream_ends_reached: 1,
             }
         );
     }

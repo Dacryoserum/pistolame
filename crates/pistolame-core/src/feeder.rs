@@ -38,8 +38,9 @@ pub struct DeviceFeeder {
     ring_reader: PlaybackRingReader,
     tap_writer: VerificationTapWriter,
     flush_generation: Arc<AtomicU64>,
-    /// Set by the engine once the decode thread has pushed the last block of the last queued
-    /// track; cleared when it queues more. Only then is an empty ring the end of the stream.
+    /// Set by the decode thread once it has pushed the last block of the last queued track (the
+    /// end marker); cleared when a seek makes it queue more. Only then is an empty ring the end
+    /// of the stream.
     is_playback_queue_finished: Arc<AtomicBool>,
     counters: Arc<PlaybackCounters>,
     /// Set by `begin_stream`; `None` before it or when the render format is unusable.
@@ -50,6 +51,8 @@ pub struct DeviceFeeder {
     announced_segment: Option<SegmentIdentity>,
     /// The feeder is stopped at a format boundary (counted once per boundary).
     is_at_format_boundary: bool,
+    /// The feeder is at the end of the stream (counted once per end, B5.7).
+    is_at_end_of_stream: bool,
     /// Test hook run once right after the end-of-queue flag is read in `render`, to inject the
     /// decoder/engine race between that read and the ring check.
     #[cfg(test)]
@@ -110,9 +113,10 @@ fn fill_with_silence(bytes: Option<&mut [u8]>) {
 impl DeviceFeeder {
     /// The render format is not known yet: the backend negotiates it and calls
     /// `begin_stream`, once per opened stream. The same feeder survives pause and reopen.
-    /// `is_playback_queue_finished` is owned by the engine: it sets it once the last block of
-    /// the last queued track is in the ring, so a late decoder between two gapless tracks shows
-    /// as a counted underrun, never as `EndOfStream`.
+    /// `is_playback_queue_finished` is owned by the decode thread: it sets it once the last
+    /// block of the last queued track (the end marker) is in the ring, and clears it on a seek,
+    /// so a late decoder shows as a counted underrun, never as `EndOfStream`. Owning it in that
+    /// single thread means an old generation can never set it after a seek.
     pub fn new(
         ring_reader: PlaybackRingReader,
         tap_writer: VerificationTapWriter,
@@ -130,6 +134,7 @@ impl DeviceFeeder {
             block_in_progress: None,
             announced_segment: None,
             is_at_format_boundary: false,
+            is_at_end_of_stream: false,
             #[cfg(test)]
             after_queue_state_read: None,
         }
@@ -142,6 +147,34 @@ impl DeviceFeeder {
     /// until it returns `true`, letting the verifier drain the tap in between. Never blocks.
     pub fn flush_verification_events(&mut self) -> bool {
         self.tap_writer.flush_pending_events()
+    }
+
+    /// Drops the block in progress and every queued block whose generation is older than the
+    /// current flush generation (counted in `stale_frames_discarded`). Off the real-time
+    /// thread only, while the feeder is in no stream: lets the decode thread refill a ring
+    /// that a seek made stale without opening a stream first. Stops at the first current block,
+    /// since generations only grow along the ring.
+    pub fn discard_stale_blocks(&mut self) {
+        let current_generation = self.flush_generation.load(Ordering::Acquire);
+        if let Some(block) = self.block_in_progress {
+            if block.header.flush_generation >= current_generation {
+                return;
+            }
+            self.discard_block_in_progress(block);
+        }
+        while let Some(header) = self.ring_reader.peek_header().copied() {
+            if header.flush_generation >= current_generation {
+                return;
+            }
+            if self.ring_reader.pop_header().is_none() {
+                return;
+            }
+            self.discard_block_in_progress(BlockInProgress {
+                header,
+                next_frame_index: header.first_frame_index,
+                remaining_frame_count: header.frame_count,
+            });
+        }
     }
 
     /// Fills `destination` (whole frames of `stream`) from the ring. Returns how many frames
@@ -200,6 +233,10 @@ impl DeviceFeeder {
         silent_frame_count: usize,
     ) -> RenderOutcome {
         if is_queue_finished {
+            if !self.is_at_end_of_stream {
+                self.is_at_end_of_stream = true;
+                self.counters.record_stream_end_reached();
+            }
             return RenderOutcome::EndOfStream;
         }
         self.counters
@@ -336,6 +373,7 @@ impl DeviceFeeder {
             return false;
         }
         self.is_at_format_boundary = false;
+        self.is_at_end_of_stream = false;
         if stream.is_device_bytes_tap_enabled {
             self.tap_device_bytes(&block, frame_count_u32, chunk_destination);
         }
@@ -457,6 +495,9 @@ impl RenderSource for DeviceFeeder {
             None
         };
         self.is_at_format_boundary = false;
+        // A new stream reports its own end, so the engine sees a track end reached again after a
+        // pause at the very end (it compares with the count taken when it opened the stream).
+        self.is_at_end_of_stream = false;
         self.push_tap_event(TapEvent::StreamBegan {
             render_format,
             access_mode: description.access_mode,
@@ -491,6 +532,12 @@ impl RenderSource for DeviceFeeder {
             return RenderOutcome::FilledWithUnderrun;
         }
         outcome
+    }
+
+    /// `discard_stale_blocks`, then `flush_verification_events`.
+    fn service_while_closed(&mut self) -> bool {
+        self.discard_stale_blocks();
+        self.flush_verification_events()
     }
 }
 
@@ -1122,6 +1169,85 @@ mod tests {
         assert_eq!(counters.snapshot().underrun_events, 1);
         let events: Vec<TapEvent> = std::iter::from_fn(|| tap_reader.pop_event()).collect();
         assert_eq!(events.last(), Some(&track_ended(TRACK)));
+    }
+
+    #[test]
+    fn stream_ends_are_counted_once_per_end_and_again_after_a_reopen() {
+        let mut harness = harness();
+        let format = packed_3_bytes();
+        harness.push(block_header(TRACK, 0, 0, 2, true));
+        harness
+            .is_playback_queue_finished
+            .store(true, Ordering::Release);
+        harness.begin(format, EXCLUSIVE);
+        for _ in 0..5 {
+            harness.render(4, &format);
+        }
+        assert_eq!(harness.counters.snapshot().stream_ends_reached, 1);
+        // Pause at the very end and resume: the new stream reports the end again.
+        harness.begin(format, EXCLUSIVE);
+        assert_eq!(harness.render(4, &format).1, RenderOutcome::EndOfStream);
+        assert_eq!(harness.render(4, &format).1, RenderOutcome::EndOfStream);
+        assert_eq!(harness.counters.snapshot().stream_ends_reached, 2);
+        // Audio rendered again (after a seek) re-arms the count.
+        harness.flush_generation.store(1, Ordering::Release);
+        harness
+            .is_playback_queue_finished
+            .store(false, Ordering::Release);
+        harness.push(block_header(TRACK, 1, 0, 2, true));
+        assert_eq!(harness.render(2, &format).1, RenderOutcome::Filled);
+        harness
+            .is_playback_queue_finished
+            .store(true, Ordering::Release);
+        assert_eq!(harness.render(2, &format).1, RenderOutcome::EndOfStream);
+        assert_eq!(harness.counters.snapshot().stream_ends_reached, 3);
+        assert_eq!(harness.counters.snapshot().underrun_events, 0);
+    }
+
+    #[test]
+    fn discard_stale_blocks_drops_only_older_generations_while_closed() {
+        let mut harness = harness();
+        let format = packed_3_bytes();
+        harness.push(block_header(TRACK, 0, 0, 4, false));
+        harness.push(block_header(TRACK, 0, 4, 3, false));
+        harness.begin(format, EXCLUSIVE);
+        harness.render(1, &format);
+        // Closed and paused: a seek bumps the generation and the decoder refills.
+        harness.flush_generation.store(1, Ordering::Release);
+        harness.feeder.discard_stale_blocks();
+        assert_eq!(harness.counters.snapshot().stale_frames_discarded, 3 + 3);
+        let sought_samples = harness.push(block_header(TRACK, 1, 50, 2, true));
+        harness.feeder.discard_stale_blocks();
+        assert_eq!(
+            harness.counters.snapshot().stale_frames_discarded,
+            6,
+            "a current block is kept"
+        );
+        assert!(harness.feeder.service_while_closed());
+        harness.begin(format, EXCLUSIVE);
+        let (bytes, outcome) = harness.render(2, &format);
+        assert_eq!(outcome, RenderOutcome::Filled);
+        assert_eq!(bytes, packed(&sought_samples, &format));
+        let events = harness.tap_events();
+        assert_eq!(events.last(), Some(&track_ended(TRACK)));
+        assert!(events.contains(&segment_started(1, 50)));
+    }
+
+    #[test]
+    fn discard_stale_blocks_keeps_a_current_block_in_progress() {
+        let mut harness = harness();
+        let format = packed_3_bytes();
+        let track_samples = harness.push(block_header(TRACK, 0, 0, 4, true));
+        harness.begin(format, EXCLUSIVE);
+        let (first_bytes, _) = harness.render(1, &format);
+        harness.feeder.discard_stale_blocks();
+        let (rest_bytes, outcome) = harness.render(3, &format);
+        assert_eq!(outcome, RenderOutcome::Filled);
+        assert_eq!(
+            [first_bytes, rest_bytes].concat(),
+            packed(&track_samples, &format)
+        );
+        assert_eq!(harness.counters.snapshot().stale_frames_discarded, 0);
     }
 
     #[test]

@@ -171,4 +171,8 @@ pub struct PlaybackCountersSnapshot {
     /// Times the feeder stopped at a block whose format the open stream cannot carry
     /// (`RenderOutcome::FormatBoundaryReached`); counted once per boundary, not per buffer.
     pub format_boundaries_reached: u64,
+    /// Times the feeder entered `RenderOutcome::EndOfStream`; counted once per end, not per
+    /// buffer (re-armed when audio renders again or a stream begins). The engine reads it to
+    /// learn that a track ended (B5.7).
+    pub stream_ends_reached: u64,
 }
