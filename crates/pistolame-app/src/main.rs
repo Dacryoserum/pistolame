@@ -15,6 +15,10 @@ mod generated_ui {
     slint::include_modules!();
 }
 
+// Not wired yet: the UI (task T11) loads and saves the settings. Remove this allow then.
+#[allow(dead_code)]
+mod settings;
+
 use generated_ui::MainWindow;
 
 fn main() -> anyhow::Result<()> {
