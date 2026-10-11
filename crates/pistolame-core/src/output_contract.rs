@@ -81,6 +81,13 @@ pub enum SharedModeCause {
     ExclusiveFormatRefused,
     /// Exclusive mode was requested and is disabled for this device in the Windows settings.
     ExclusiveModeDisabledBySystem,
+    /// Exclusive mode was requested while other applications play through the device in shared
+    /// mode, and Windows does not let exclusive mode take it from them ("Give exclusive mode
+    /// applications priority" is off). WASAPI `IAudioClient::Initialize` documents
+    /// AUDCLNT_E_DEVICE_IN_USE as "The endpoint device is already in use. Either the device is
+    /// being used in exclusive mode, or the device is being used in shared mode and the caller
+    /// asked to use the device in exclusive mode." Shared mode then still works.
+    DeviceBusyInSharedMode,
 }
 
 /// The system mixer's own format (WASAPI `GetMixFormat`), for display only. It may be float,

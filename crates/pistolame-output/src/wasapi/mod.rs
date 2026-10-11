@@ -1,4 +1,5 @@
-//! WASAPI backend (Windows): exclusive mode now, shared mode in task T12 (plan B5).
+//! WASAPI backend (Windows): shared mode, the default, and exclusive mode with its automatic
+//! fallback to shared mode (plan B5).
 //!
 //! The `windows` crate is used directly so that every candidate format, every call on the
 //! real-time path and every byte written to the device buffer is under our control (B5.1).
@@ -14,6 +15,7 @@ mod mmcss;
 mod negotiation;
 mod output_stream;
 mod render_thread;
+mod shared_mode;
 mod stream_control;
 mod stream_initialization;
 mod wave_format;
@@ -22,7 +24,6 @@ mod win32_event;
 use std::sync::Arc;
 
 use windows::Win32::Media::Audio::{AUDCLNT_SHAREMODE_EXCLUSIVE, IAudioClient};
-use windows::Win32::System::Com::CoTaskMemFree;
 
 use self::com_apartment::ComApartment;
 use self::devices::{DeviceEnumerator, activate_audio_client};
@@ -30,9 +31,9 @@ use self::hresult_mapping::NameWasapiCall;
 pub use self::negotiation::ExclusiveCandidateProbe;
 use self::negotiation::probe_exclusive_candidate;
 use self::output_stream::open_wasapi_stream;
+use self::shared_mode::read_system_mix_format;
 use self::stream_control::WasapiDiagnosticCounters;
 pub use self::stream_control::WasapiDiagnostics;
-use self::wave_format::system_mix_format_from_pointer;
 use crate::{
     AudioOutput, DeviceAccessMode, DeviceSampleFormat, FormatProbeResult, OpenStreamError,
     OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError, OutputStream, RenderSource,
@@ -118,22 +119,14 @@ impl WasapiOutput {
         })
     }
 
-    /// The shared-mode mix format (`GetMixFormat`), for display. "The caller is responsible for
-    /// freeing the structure by calling CoTaskMemFree" (GetMixFormat docs):
-    /// <https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getmixformat>
+    /// The shared-mode mix format (`GetMixFormat`), the format the Windows audio engine converts
+    /// shared-mode streams to, for display. Opens no stream.
     pub fn system_mix_format(
         &mut self,
         device_id: &OutputDeviceId,
     ) -> Result<SystemMixFormat, OutputError> {
         with_audio_client(device_id, |audio_client| {
-            // SAFETY: valid client.
-            let mix_format = unsafe { audio_client.GetMixFormat() }
-                .for_operation("IAudioClient::GetMixFormat")?;
-            // SAFETY: GetMixFormat returned a valid, complete structure.
-            let system_mix_format = unsafe { system_mix_format_from_pointer(mix_format) };
-            // SAFETY: frees the structure allocated by GetMixFormat, exactly once.
-            unsafe { CoTaskMemFree(Some(mix_format as *const _)) };
-            Ok(system_mix_format)
+            Ok(read_system_mix_format(audio_client)?)
         })
     }
 }

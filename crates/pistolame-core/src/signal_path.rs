@@ -438,6 +438,7 @@ mod tests {
             SharedModeCause::UserPreference,
             SharedModeCause::ExclusiveFormatRefused,
             SharedModeCause::ExclusiveModeDisabledBySystem,
+            SharedModeCause::DeviceBusyInSharedMode,
         ] {
             // The render format differs from the source in rate and depth on purpose.
             let result = assess(

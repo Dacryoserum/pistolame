@@ -1,5 +1,7 @@
 //! Opening a stream on the render thread: policy handling, exclusive negotiation,
 //! `Initialize` with the alignment retry, event handle and render client (plan B5.4, B5.5).
+//! Shared mode, chosen by the policy or reached through the B5.4 fallback, is opened by
+//! `shared_mode` (B5.10).
 //!
 //! `IAudioClient::Initialize`, including the exclusive event-driven rules and the
 //! AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED procedure quoted below:
@@ -18,13 +20,15 @@ use super::devices::{DeviceEnumerator, activate_audio_client};
 use super::hresult_mapping::{NameWasapiCall, WasapiCallError};
 use super::negotiation::{
     ExclusiveAttemptFailure, ExclusiveFailureResolution, FirstOpenStep, first_open_step,
-    negotiate_and_initialize_exclusive, resolve_exclusive_failure, shared_mode_not_implemented_yet,
+    negotiate_and_initialize_exclusive, resolve_exclusive_failure,
 };
+use super::shared_mode::initialize_shared_stream;
 use super::wave_format::{WaveFormatRepresentation, device_sample_format_from_representation};
 use super::win32_event::AutoResetEvent;
 use crate::{
-    DeviceAccessMode, NegotiatedOutput, OpenStreamRequest, OutputDeviceInfo, OutputError,
-    ValidBitsAlignment, lossless_device_format_candidates,
+    DeviceAccessMode, FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamRequest,
+    OutputDeviceInfo, OutputError, SharedModeCause, ValidBitsAlignment,
+    lossless_device_format_candidates,
 };
 
 /// WASAPI's time unit: one REFERENCE_TIME tick is 100 ns.
@@ -85,17 +89,42 @@ pub(crate) fn initialize_stream(
 ) -> Result<InitializedStream, OutputError> {
     let enumerator = DeviceEnumerator::new()?;
     let (device, device_info) = enumerator.find_active_render_device(&request.device_id)?;
-    if let FirstOpenStep::OpenShared(cause) = first_open_step(request.policy) {
-        return Err(shared_mode_not_implemented_yet(cause, Vec::new()));
-    }
-    match initialize_exclusive_stream(&device, device_info, request) {
-        Ok(stream) => Ok(stream),
-        Err(failure) => match resolve_exclusive_failure(request.policy, failure) {
-            ExclusiveFailureResolution::OpenShared {
-                cause,
-                negotiation_log,
-            } => Err(shared_mode_not_implemented_yet(cause, negotiation_log)),
-            ExclusiveFailureResolution::Fail(error) => Err(error),
+    open_according_to_policy(
+        request.policy,
+        || initialize_exclusive_stream(&device, device_info.clone(), request),
+        |shared_mode_cause, exclusive_attempts| {
+            initialize_shared_stream(
+                &device,
+                device_info.clone(),
+                &request.source_format,
+                shared_mode_cause,
+                exclusive_attempts,
+            )
+        },
+    )
+}
+
+/// The policy wiring (B5.4, B5.10): `SharedOnly` opens shared mode at once; the exclusive
+/// policies open exclusive mode first, and on failure the fallback table decides between
+/// shared mode (with its cause and the exclusive attempts kept for its log) and an error.
+///
+/// The two opens are injected so the wiring is tested without hardware.
+fn open_according_to_policy<Stream>(
+    policy: OpenPolicy,
+    open_exclusive: impl FnOnce() -> Result<Stream, ExclusiveAttemptFailure>,
+    open_shared: impl FnOnce(SharedModeCause, Vec<FormatProbeResult>) -> Result<Stream, OutputError>,
+) -> Result<Stream, OutputError> {
+    match first_open_step(policy) {
+        FirstOpenStep::OpenShared(cause) => open_shared(cause, Vec::new()),
+        FirstOpenStep::NegotiateExclusive => match open_exclusive() {
+            Ok(stream) => Ok(stream),
+            Err(failure) => match resolve_exclusive_failure(policy, failure) {
+                ExclusiveFailureResolution::OpenShared {
+                    cause,
+                    negotiation_log,
+                } => open_shared(cause, negotiation_log),
+                ExclusiveFailureResolution::Fail(error) => Err(error),
+            },
         },
     }
 }
@@ -221,14 +250,20 @@ fn call_initialize_exclusive(
     .for_operation("IAudioClient::Initialize")
 }
 
-struct StreamingObjects {
-    render_client: IAudioRenderClient,
-    buffer_event: AutoResetEvent,
-    buffer_frame_count: u32,
+/// The objects every initialized stream needs, whatever its mode.
+pub(crate) struct StreamingObjects {
+    /// The render service.
+    pub(crate) render_client: IAudioRenderClient,
+    /// The event registered with `SetEventHandle`.
+    pub(crate) buffer_event: AutoResetEvent,
+    /// `GetBufferSize`, in frames.
+    pub(crate) buffer_frame_count: u32,
 }
 
-/// Event handle, buffer size and render service of an initialized client.
-fn prepare_streaming(audio_client: &IAudioClient) -> Result<StreamingObjects, WasapiCallError> {
+/// Event handle, buffer size and render service of an initialized client, in either mode.
+pub(crate) fn prepare_streaming(
+    audio_client: &IAudioClient,
+) -> Result<StreamingObjects, WasapiCallError> {
     let buffer_event = AutoResetEvent::new()?;
     // SAFETY: valid initialized client and live event. On success the event moves into
     // `InitializedStream`, whose field order drops the client before the event. If a call
@@ -253,6 +288,165 @@ fn prepare_streaming(audio_client: &IAudioClient) -> Result<StreamingObjects, Wa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ChannelMask, FormatProbeOutcome, StreamFormat};
+
+    fn exclusive_refusals() -> Vec<FormatProbeResult> {
+        let source = StreamFormat {
+            sample_rate_hz: 22_050,
+            bits_per_sample: 16,
+            channel_count: 2,
+            channel_mask: ChannelMask(0x3),
+        };
+        lossless_device_format_candidates(&source, ValidBitsAlignment::MostSignificant)
+            .into_iter()
+            .map(|candidate| FormatProbeResult {
+                candidate,
+                access_mode: DeviceAccessMode::Exclusive,
+                outcome: FormatProbeOutcome::Refused,
+            })
+            .collect()
+    }
+
+    /// Which open ran, with what the shared open received.
+    #[derive(Debug, PartialEq, Eq)]
+    enum OpenedStream {
+        Exclusive,
+        Shared {
+            cause: SharedModeCause,
+            earlier_attempts: Vec<FormatProbeResult>,
+        },
+    }
+
+    /// Runs the wiring with fake opens. Returns the result and whether exclusive was tried.
+    fn open_with(
+        policy: OpenPolicy,
+        exclusive_result: Result<(), ExclusiveAttemptFailure>,
+        shared_error: Option<OutputError>,
+    ) -> (Result<OpenedStream, OutputError>, bool) {
+        let mut was_exclusive_tried = false;
+        let result = open_according_to_policy(
+            policy,
+            || {
+                was_exclusive_tried = true;
+                exclusive_result.map(|()| OpenedStream::Exclusive)
+            },
+            |cause, earlier_attempts| match shared_error {
+                Some(error) => Err(error),
+                None => Ok(OpenedStream::Shared {
+                    cause,
+                    earlier_attempts,
+                }),
+            },
+        );
+        (result, was_exclusive_tried)
+    }
+
+    #[test]
+    fn shared_only_never_tries_exclusive_mode() {
+        let (result, was_exclusive_tried) = open_with(OpenPolicy::SharedOnly, Ok(()), None);
+        assert!(!was_exclusive_tried);
+        assert_eq!(
+            result.ok(),
+            Some(OpenedStream::Shared {
+                cause: SharedModeCause::UserPreference,
+                earlier_attempts: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_accepted_exclusive_stream_is_used_as_is() {
+        for policy in [OpenPolicy::ExclusiveThenShared, OpenPolicy::ExclusiveOnly] {
+            let (result, was_exclusive_tried) = open_with(policy, Ok(()), None);
+            assert!(was_exclusive_tried);
+            assert_eq!(result.ok(), Some(OpenedStream::Exclusive));
+        }
+    }
+
+    #[test]
+    fn exclusive_refusal_opens_shared_mode_with_the_exclusive_log_kept() {
+        let (result, _) = open_with(
+            OpenPolicy::ExclusiveThenShared,
+            Err(ExclusiveAttemptFailure::EveryCandidateRefused {
+                negotiation_log: exclusive_refusals(),
+            }),
+            None,
+        );
+        assert_eq!(
+            result.ok(),
+            Some(OpenedStream::Shared {
+                cause: SharedModeCause::ExclusiveFormatRefused,
+                earlier_attempts: exclusive_refusals(),
+            })
+        );
+    }
+
+    #[test]
+    fn exclusive_disabled_or_busy_opens_shared_mode_with_its_cause() {
+        let (disabled, _) = open_with(
+            OpenPolicy::ExclusiveThenShared,
+            Err(ExclusiveAttemptFailure::ExclusiveModeNotAllowed {
+                negotiation_log: exclusive_refusals(),
+            }),
+            None,
+        );
+        assert_eq!(
+            disabled.ok(),
+            Some(OpenedStream::Shared {
+                cause: SharedModeCause::ExclusiveModeDisabledBySystem,
+                earlier_attempts: exclusive_refusals(),
+            })
+        );
+        let (busy, _) = open_with(
+            OpenPolicy::ExclusiveThenShared,
+            Err(ExclusiveAttemptFailure::DeviceInUse {
+                negotiation_log: exclusive_refusals(),
+            }),
+            None,
+        );
+        assert_eq!(
+            busy.ok(),
+            Some(OpenedStream::Shared {
+                cause: SharedModeCause::DeviceBusyInSharedMode,
+                earlier_attempts: exclusive_refusals(),
+            })
+        );
+    }
+
+    #[test]
+    fn device_in_use_in_both_modes_reports_device_in_use() {
+        let (result, _) = open_with(
+            OpenPolicy::ExclusiveThenShared,
+            Err(ExclusiveAttemptFailure::DeviceInUse {
+                negotiation_log: Vec::new(),
+            }),
+            Some(OutputError::DeviceInUse),
+        );
+        assert!(matches!(result, Err(OutputError::DeviceInUse)));
+    }
+
+    #[test]
+    fn exclusive_only_never_opens_shared_mode() {
+        let (refused, _) = open_with(
+            OpenPolicy::ExclusiveOnly,
+            Err(ExclusiveAttemptFailure::EveryCandidateRefused {
+                negotiation_log: exclusive_refusals(),
+            }),
+            None,
+        );
+        assert!(matches!(
+            refused,
+            Err(OutputError::FormatNotSupported { tried }) if tried == exclusive_refusals()
+        ));
+        let (busy, _) = open_with(
+            OpenPolicy::ExclusiveOnly,
+            Err(ExclusiveAttemptFailure::DeviceInUse {
+                negotiation_log: Vec::new(),
+            }),
+            None,
+        );
+        assert!(matches!(busy, Err(OutputError::DeviceInUse)));
+    }
 
     #[test]
     fn preferred_period_is_twenty_milliseconds_in_hundred_nanoseconds() {

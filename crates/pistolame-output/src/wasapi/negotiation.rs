@@ -157,7 +157,14 @@ pub(crate) enum ExclusiveAttemptFailure {
         /// Every attempt up to that answer.
         negotiation_log: Vec<FormatProbeResult>,
     },
-    /// A device-level error (in use, invalidated, service down) or any other failure.
+    /// AUDCLNT_E_DEVICE_IN_USE: "Either the device is being used in exclusive mode, or the
+    /// device is being used in shared mode and the caller asked to use the device in exclusive
+    /// mode" (`Initialize` docs). Only a shared-mode attempt can tell the two apart.
+    DeviceInUse {
+        /// Every attempt up to that answer.
+        negotiation_log: Vec<FormatProbeResult>,
+    },
+    /// A device-level error (invalidated, service down) or any other failure.
     Failed(OutputError),
 }
 
@@ -187,8 +194,12 @@ pub(crate) fn negotiate_exclusive_format(
                         ExclusiveAttemptFailure::ExclusiveModeNotAllowed { negotiation_log },
                     );
                 }
+                OutputError::DeviceInUse => {
+                    return ExclusiveNegotiation::NotOpened(ExclusiveAttemptFailure::DeviceInUse {
+                        negotiation_log,
+                    });
+                }
                 device_error @ (OutputError::DeviceInvalidated
-                | OutputError::DeviceInUse
                 | OutputError::DeviceNotFound
                 | OutputError::AudioServiceNotRunning) => {
                     return ExclusiveNegotiation::NotOpened(ExclusiveAttemptFailure::Failed(
@@ -218,6 +229,12 @@ impl ExclusiveAttemptFailure {
             ExclusiveAttemptFailure::ExclusiveModeNotAllowed { negotiation_log } => {
                 earlier_attempts.extend(negotiation_log);
                 ExclusiveAttemptFailure::ExclusiveModeNotAllowed {
+                    negotiation_log: earlier_attempts,
+                }
+            }
+            ExclusiveAttemptFailure::DeviceInUse { negotiation_log } => {
+                earlier_attempts.extend(negotiation_log);
+                ExclusiveAttemptFailure::DeviceInUse {
                     negotiation_log: earlier_attempts,
                 }
             }
@@ -283,19 +300,24 @@ pub(crate) fn negotiate_and_initialize_exclusive<Client, Initialized>(
             }
             Err(error) => error,
         };
+        let late_failure = FormatProbeResult {
+            candidate: remaining_candidates[accepted_candidate_index],
+            access_mode: DeviceAccessMode::Exclusive,
+            outcome: FormatProbeOutcome::Error {
+                platform_code: error.hresult.0,
+            },
+        };
         match error.to_output_error() {
             OutputError::FormatNotSupported { .. } => {
-                negotiation_log.push(FormatProbeResult {
-                    candidate: remaining_candidates[accepted_candidate_index],
-                    access_mode: DeviceAccessMode::Exclusive,
-                    outcome: FormatProbeOutcome::Error {
-                        platform_code: error.hresult.0,
-                    },
-                });
+                negotiation_log.push(late_failure);
                 first_remaining_candidate += accepted_candidate_index + 1;
             }
             OutputError::ExclusiveModeNotAllowed => {
                 return Err(ExclusiveAttemptFailure::ExclusiveModeNotAllowed { negotiation_log });
+            }
+            OutputError::DeviceInUse => {
+                negotiation_log.push(late_failure);
+                return Err(ExclusiveAttemptFailure::DeviceInUse { negotiation_log });
             }
             other => return Err(ExclusiveAttemptFailure::Failed(other)),
         }
@@ -335,9 +357,15 @@ pub(crate) enum ExclusiveFailureResolution {
     Fail(OutputError),
 }
 
-/// The B5.4 fallback table. Only `ExclusiveThenShared` falls back, and never for
-/// `DeviceInUse`: "An attempt to create a shared-mode stream fails if the device is already
-/// operating in exclusive mode" (`Initialize` remarks).
+/// The B5.4 fallback table. Only `ExclusiveThenShared` falls back.
+///
+/// AUDCLNT_E_DEVICE_IN_USE also falls back, because it has two meanings: another application
+/// holds the device in exclusive mode, or "the device is being used in shared mode and the
+/// caller asked to use the device in exclusive mode" (`Initialize` docs). In the first case
+/// the shared attempt fails with the same code ("An attempt to create a shared-mode stream
+/// fails if the device is already operating in exclusive mode", `Initialize` remarks), so the
+/// open still ends with `DeviceInUse`; in the second it plays through the system mixer with
+/// `DeviceBusyInSharedMode`.
 pub(crate) fn resolve_exclusive_failure(
     policy: OpenPolicy,
     failure: ExclusiveAttemptFailure,
@@ -364,33 +392,16 @@ pub(crate) fn resolve_exclusive_failure(
         ExclusiveAttemptFailure::ExclusiveModeNotAllowed { .. } => {
             ExclusiveFailureResolution::Fail(OutputError::ExclusiveModeNotAllowed)
         }
+        ExclusiveAttemptFailure::DeviceInUse { negotiation_log } if may_fall_back => {
+            ExclusiveFailureResolution::OpenShared {
+                cause: SharedModeCause::DeviceBusyInSharedMode,
+                negotiation_log,
+            }
+        }
+        ExclusiveAttemptFailure::DeviceInUse { .. } => {
+            ExclusiveFailureResolution::Fail(OutputError::DeviceInUse)
+        }
         ExclusiveAttemptFailure::Failed(error) => ExclusiveFailureResolution::Fail(error),
-    }
-}
-
-/// `E_NOTIMPL`, the standard COM "not implemented" HRESULT.
-const E_NOTIMPL: HRESULT = HRESULT(0x8000_4001_u32 as i32);
-
-/// Placeholder for the shared-mode branch until task T12 lands (B5.10). Returns the closest
-/// existing error for each reason shared mode was wanted:
-/// - the user's preference (`SharedOnly`): `Platform` with `E_NOTIMPL`, so an empty
-///   `FormatNotSupported` never suggests the device refused something;
-/// - every exclusive candidate refused: `FormatNotSupported` with those attempts, which is
-///   what `ExclusiveOnly` reports for the same situation;
-/// - exclusive mode disabled in Windows: `ExclusiveModeNotAllowed`.
-pub(crate) fn shared_mode_not_implemented_yet(
-    cause: SharedModeCause,
-    negotiation_log: Vec<FormatProbeResult>,
-) -> OutputError {
-    match cause {
-        SharedModeCause::UserPreference => OutputError::Platform {
-            operation: "WASAPI shared mode (not implemented until T12)",
-            platform_code: E_NOTIMPL.0,
-        },
-        SharedModeCause::ExclusiveFormatRefused => OutputError::FormatNotSupported {
-            tried: negotiation_log,
-        },
-        SharedModeCause::ExclusiveModeDisabledBySystem => OutputError::ExclusiveModeNotAllowed,
     }
 }
 
@@ -400,7 +411,8 @@ mod tests {
     use crate::{ChannelMask, StreamFormat, ValidBitsAlignment, lossless_device_format_candidates};
     use windows::Win32::Foundation::E_INVALIDARG;
     use windows::Win32::Media::Audio::{
-        AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED,
+        AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_DEVICE_INVALIDATED,
+        AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED, AUDCLNT_E_SERVICE_NOT_RUNNING,
     };
 
     fn candidates(bits_per_sample: u8, channel_count: u8) -> Vec<DeviceSampleFormat> {
@@ -529,8 +541,8 @@ mod tests {
                 (|error: &OutputError| matches!(error, OutputError::DeviceInvalidated))
                     as fn(&OutputError) -> bool,
             ),
-            (AUDCLNT_E_DEVICE_IN_USE, |error| {
-                matches!(error, OutputError::DeviceInUse)
+            (AUDCLNT_E_SERVICE_NOT_RUNNING, |error| {
+                matches!(error, OutputError::AudioServiceNotRunning)
             }),
         ] {
             let negotiation = negotiate_exclusive_format(&candidates(24, 2), |_| hresult);
@@ -541,6 +553,28 @@ mod tests {
             };
             assert!(is_expected(&error), "{hresult:?} gave {error:?}");
         }
+    }
+
+    #[test]
+    fn device_in_use_stops_the_loop_and_keeps_the_log() {
+        let mut call_count = 0;
+        let negotiation = negotiate_exclusive_format(&candidates(24, 2), |_| {
+            call_count += 1;
+            AUDCLNT_E_DEVICE_IN_USE
+        });
+        assert_eq!(call_count, 1);
+        let ExclusiveNegotiation::NotOpened(ExclusiveAttemptFailure::DeviceInUse {
+            negotiation_log,
+        }) = negotiation
+        else {
+            panic!("device in use stops the loop");
+        };
+        assert_eq!(
+            outcomes(&negotiation_log),
+            vec![FormatProbeOutcome::Error {
+                platform_code: AUDCLNT_E_DEVICE_IN_USE.0
+            }]
+        );
     }
 
     #[test]
@@ -689,15 +723,35 @@ mod tests {
     }
 
     #[test]
-    fn device_in_use_and_other_errors_never_fall_back() {
+    fn device_in_use_falls_back_only_under_exclusive_then_shared() {
+        let resolution = resolve_exclusive_failure(
+            OpenPolicy::ExclusiveThenShared,
+            ExclusiveAttemptFailure::DeviceInUse {
+                negotiation_log: sample_log(),
+            },
+        );
+        assert!(matches!(
+            resolution,
+            ExclusiveFailureResolution::OpenShared {
+                cause: SharedModeCause::DeviceBusyInSharedMode,
+                negotiation_log
+            } if negotiation_log == sample_log()
+        ));
+        let resolution = resolve_exclusive_failure(
+            OpenPolicy::ExclusiveOnly,
+            ExclusiveAttemptFailure::DeviceInUse {
+                negotiation_log: sample_log(),
+            },
+        );
+        assert!(matches!(
+            resolution,
+            ExclusiveFailureResolution::Fail(OutputError::DeviceInUse)
+        ));
+    }
+
+    #[test]
+    fn other_device_errors_never_fall_back() {
         for policy in [OpenPolicy::ExclusiveThenShared, OpenPolicy::ExclusiveOnly] {
-            assert!(matches!(
-                resolve_exclusive_failure(
-                    policy,
-                    ExclusiveAttemptFailure::Failed(OutputError::DeviceInUse)
-                ),
-                ExclusiveFailureResolution::Fail(OutputError::DeviceInUse)
-            ));
             assert!(matches!(
                 resolve_exclusive_failure(
                     policy,
@@ -713,26 +767,6 @@ mod tests {
                 ExclusiveFailureResolution::Fail(OutputError::AudioServiceNotRunning)
             ));
         }
-    }
-
-    #[test]
-    fn shared_mode_placeholder_never_reports_an_empty_format_refusal() {
-        assert!(matches!(
-            shared_mode_not_implemented_yet(SharedModeCause::UserPreference, Vec::new()),
-            OutputError::Platform { platform_code, .. } if platform_code == E_NOTIMPL.0
-        ));
-        assert_eq!(E_NOTIMPL.0 as u32, 0x8000_4001);
-        assert!(matches!(
-            shared_mode_not_implemented_yet(SharedModeCause::ExclusiveFormatRefused, sample_log()),
-            OutputError::FormatNotSupported { tried } if tried == sample_log()
-        ));
-        assert!(matches!(
-            shared_mode_not_implemented_yet(
-                SharedModeCause::ExclusiveModeDisabledBySystem,
-                sample_log()
-            ),
-            OutputError::ExclusiveModeNotAllowed
-        ));
     }
 
     /// A fake client: its number tells which activation produced it.
@@ -840,7 +874,11 @@ mod tests {
         );
         assert!(matches!(
             in_use,
-            Err(ExclusiveAttemptFailure::Failed(OutputError::DeviceInUse))
+            Err(ExclusiveAttemptFailure::DeviceInUse { negotiation_log })
+                if outcomes(&negotiation_log) == vec![
+                    FormatProbeOutcome::Accepted,
+                    FormatProbeOutcome::Error { platform_code: AUDCLNT_E_DEVICE_IN_USE.0 },
+                ]
         ));
         let not_allowed = negotiate_and_initialize_exclusive(
             &candidates(24, 2),

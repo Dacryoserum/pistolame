@@ -1,5 +1,7 @@
 //! Lists the output devices and asks each one which lossless candidate formats it accepts in
 //! WASAPI exclusive mode, at the common sample rates, without playing anything (plan B10.5).
+//! It also shows the device periods and the shared-mode mix format (`GetMixFormat`), the format
+//! the Windows audio engine converts shared-mode streams to (plan B5.10).
 //!
 //! Usage: `cargo run -p pistolame-output --example probe_formats [-- --device "K11"]`
 //! `--device` keeps only devices whose name contains the text (case-insensitive).

@@ -1,13 +1,18 @@
 //! Headless playback through the WASAPI backend (plan B10.5).
 //!
 //! Until the decoder (T5) and the engine (T9) exist, this plays a generated 1 kHz test tone
-//! instead of a file, and only in exclusive mode (shared mode is task T12):
+//! instead of a file:
 //!
-//! `cargo run -p pistolame-output --example play_file -- --tone --exclusive-only
+//! `cargo run -p pistolame-output --example play_file -- --tone [--exclusive | --exclusive-only]
 //!  [--device "K11"] [--rate 96000] [--bits 24] [--seconds 10] [--pause-every 3]`
 //!
-//! It prints the negotiated format, each pause (with whether the queued audio was fully played
-//! out) and each resume delay (reopen, renegotiate, prefill).
+//! Without a flag the stream opens in shared mode, the app's default. `--exclusive` asks for
+//! exclusive mode and falls back to shared mode when the device refuses the format or exclusive
+//! mode is disabled in Windows (plan B5.4); `--exclusive-only` never falls back.
+//!
+//! It prints the negotiated format (the mix format and the cause in shared mode), each pause
+//! (with whether the queued audio was fully played out) and each resume delay (reopen,
+//! renegotiate, prefill).
 
 #![allow(clippy::print_stdout, reason = "command-line diagnostic tool")]
 
@@ -112,10 +117,6 @@ mod windows_play {
         if !options.is_tone_requested {
             println!("Nothing to play: pass --tone (file playback arrives with tasks T5 and T9).");
             return ExitCode::FAILURE;
-        }
-        if options.policy != OpenPolicy::ExclusiveOnly {
-            println!("Note: shared mode is task T12; without --exclusive-only the open will fail");
-            println!("with \"format not supported\" listing only the exclusive attempts.");
         }
         if !matches!(options.bits_per_sample, 16 | 24) {
             println!("--bits must be 16 or 24");
@@ -232,6 +233,25 @@ mod windows_play {
 
     fn print_negotiated(negotiated: &NegotiatedOutput) {
         println!("access mode: {:?}", negotiated.access_mode);
+        if let Some(cause) = negotiated.shared_mode_cause {
+            println!("shared mode cause: {cause:?}");
+        }
+        if let Some(mix) = negotiated.system_mix_format {
+            println!(
+                "system mix format: {} Hz, {}-bit {}, {} channels",
+                mix.sample_rate_hz,
+                mix.bits_per_sample,
+                if mix.is_float { "float" } else { "integer" },
+                mix.channel_count
+            );
+        }
+        let render_format = negotiated.render_format;
+        println!(
+            "render format: {} Hz, {}-byte container, {} valid bits",
+            render_format.sample_rate_hz,
+            render_format.container_bytes,
+            render_format.valid_bits_per_sample
+        );
         if let Some(format) = negotiated.device_format {
             println!(
                 "device format: {} Hz, {}-byte container, {} valid bits, {} channels, mask {:#x}",
@@ -248,7 +268,8 @@ mod windows_play {
         );
         for attempt in &negotiated.negotiation_log {
             println!(
-                "  tried {}B v{}: {:?}",
+                "  tried {:?} {}B v{}: {:?}",
+                attempt.access_mode,
                 attempt.candidate.container_bytes,
                 attempt.candidate.valid_bits_per_sample,
                 attempt.outcome
