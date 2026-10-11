@@ -489,6 +489,22 @@ export component Lcd inherits Rectangle {
         color: Tokens.text-secondary;
     }
 
+    // Declared before the extras so the scrubber thumb is drawn on top of the rail.
+    Rectangle {
+        x: 48px;
+        y: 39px;
+        width: root.column-width;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Tokens.rail;
+        Rectangle {
+            x: 0px;
+            width: parent.width * AppState.progress;
+            border-radius: 1.5px;
+            background: Tokens.rail-fill;
+        }
+    }
+
     Rectangle {
         opacity: root.are-extras-visible ? 1 : 0;
         animate opacity { duration: 120ms; easing: ease-out-quint; }
@@ -518,21 +534,6 @@ export component Lcd inherits Rectangle {
             height: 9px;
             border-radius: 4.5px;
             background: Tokens.scrubber-thumb;
-        }
-    }
-
-    Rectangle {
-        x: 48px;
-        y: 39px;
-        width: root.column-width;
-        height: 3px;
-        border-radius: 1.5px;
-        background: Tokens.rail;
-        Rectangle {
-            x: 0px;
-            width: parent.width * AppState.progress;
-            border-radius: 1.5px;
-            background: Tokens.rail-fill;
         }
     }
 
