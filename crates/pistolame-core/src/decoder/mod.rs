@@ -3,6 +3,13 @@
 
 use crate::format::StreamFormat;
 
+mod flac;
+mod registry;
+mod trailing_tags;
+
+pub use flac::{FlacDecoder, FlacDecoderProvider};
+pub use registry::DecoderRegistry;
+
 /// Facts about the source the rest of the pipeline relies on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceStreamInfo {
@@ -29,7 +36,9 @@ pub trait AudioDecoder: Send {
     /// Facts about the opened source.
     fn stream_info(&self) -> &SourceStreamInfo;
     /// Next block, or `Ok(None)` at end of stream. The format of every block equals
-    /// `stream_info().format`; a mid-stream change is reported as `DecodeError::FormatChangedMidStream`.
+    /// `stream_info().format`; a mid-stream change is reported as `DecodeError::FormatChangedMidStream`
+    /// where the codec can detect it. For FLAC it cannot: the parser rejects frame headers that
+    /// disagree with STREAMINFO, so the change surfaces as `DecodeError::CorruptData`.
     fn next_block(&mut self) -> Result<Option<DecodedBlock<'_>>, DecodeError>;
     /// Repositions so the next block starts at or before `frame_index`; returns the actual
     /// first frame index of the next block (callers drop the extra frames).
