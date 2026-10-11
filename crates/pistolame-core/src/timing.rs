@@ -22,3 +22,6 @@ pub const DEVICE_EVENT_TIMEOUT: Duration = Duration::from_millis(2000);
 pub const DECODE_RETRY_SLEEP: Duration = Duration::from_millis(5);
 /// UI refresh period, about 30 Hz, as in ADR 0001.
 pub const UI_REFRESH_INTERVAL: Duration = Duration::from_millis(33);
+/// The verifier's longest wait for a command before draining the tap again: 200 times shorter
+/// than the tap (`VERIFICATION_TAP_DURATION`), so polling never causes an overflow.
+pub const VERIFIER_POLL_INTERVAL: Duration = Duration::from_millis(10);

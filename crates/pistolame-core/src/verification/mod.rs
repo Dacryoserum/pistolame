@@ -1,10 +1,14 @@
-//! Types of the two-level bit-perfect verification (B7.2), and the verification tap that carries
-//! device bytes from the render thread to the verifier. The hasher and the verifier thread
-//! belong to later tasks.
+//! Types of the two-level bit-perfect verification (B7.2): the verification tap that carries
+//! device bytes from the render thread to the verifier, the decoder-side hasher, and the
+//! verifier thread that compares both sides.
 
+pub mod decoder_side;
 pub mod tap;
+pub mod verifier;
 
+pub use decoder_side::*;
 pub use tap::*;
+pub use verifier::*;
 
 use crate::format::DeviceSampleFormat;
 use crate::output_contract::DeviceAccessMode;
@@ -89,6 +93,9 @@ pub enum TransmissionNotVerifiableReason {
     /// Device-side frames had a gap or an overlap, or the two sides describe different
     /// segments. Never expected; a safety net so no gap can produce a false match.
     SegmentsNotAligned,
+    /// The segment holds no frame (a seek to the very end, or an empty file): there is nothing
+    /// to compare, and "Verified over 0 frames" would read as a proof.
+    EmptySegment,
 }
 
 /// Level 2: does the decoded PCM hash to the file's STREAMINFO MD5? Runs in both modes.
@@ -179,33 +186,32 @@ pub struct DecodedSegmentReport {
     pub ended_by: DecodedSegmentEnd,
 }
 
-/// Messages to the verifier thread, from the engine and the decode thread.
+/// Messages to the verifier thread. Decode thread: the two `DecodedSegment*` variants.
+/// Engine: the others. The track facts are given at spawn (`VerifiedTrack`).
 #[derive(Debug)]
 pub enum VerifierCommand {
-    /// A track starts; carries the facts level 2 compares against.
-    BeginTrack {
-        /// Track that starts.
+    /// At most every `VERIFICATION_PROGRESS_INTERVAL`: frames hashed so far in the segment.
+    DecodedSegmentProgress {
+        /// Track of the segment.
         track_id: TrackId,
-        /// Embedded MD5, if the file has one.
-        expected_md5: Option<[u8; 16]>,
-        /// Frame count declared by the file, if any.
-        expected_total_frames: Option<u64>,
-        /// Source bits per sample, for the canonical layout.
-        source_bits: u8,
+        /// Flush generation of the segment.
+        flush_generation: u64,
+        /// Frames the decoder-side hasher has committed so far in the segment.
+        frames_hashed: u64,
     },
     /// The decode thread finished a segment.
     DecodedSegmentFinished(DecodedSegmentReport),
-    /// From the engine, when `ClosedStream::was_queued_audio_fully_played` is false.
+    /// `ClosedStream::was_queued_audio_fully_played` was false after a `PlayOut` close.
     QueuedAudioLost {
         /// Track that lost audio.
         track_id: TrackId,
     },
-    /// From the engine, when the track stops before its end (stop, device failure).
+    /// The track stops before its end (stop, device failure, another file opened).
     TrackStopped {
         /// Track that stopped.
         track_id: TrackId,
     },
-    /// Ends the verifier thread.
+    /// Drain the tap, publish the final status, exit.
     Shutdown,
 }
 

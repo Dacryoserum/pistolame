@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use pistolame_core::testing::{
     ALL_FIXTURES, CD_STEREO, CORRUPT, GeneratedFixture, MONO_16, NO_MD5, generate_fixture,
 };
-use pistolame_core::{AudioDecoder, DecodeError, DecodedBlock, DecoderRegistry, SourceStreamInfo};
+use pistolame_core::{
+    AudioDecoder, DecodeError, DecodedBlock, DecodedPcmHasher, DecodedSegmentEnd, DecoderRegistry,
+    SourceStreamInfo, TrackId,
+};
 
 /// Block size of the generated fixtures, in frames.
 const FIXTURE_BLOCK_SIZE_FRAMES: u64 = 4096;
@@ -312,4 +315,82 @@ fn file_that_is_not_flac_is_unsupported() {
     let result = DecoderRegistry::with_default_providers().open(&path);
     std::fs::remove_file(&path).expect("cleanup");
     assert!(matches!(result, Err(DecodeError::UnsupportedFileType)));
+}
+
+/// RFC 9639 section 8.2 layout, written independently of `pcm.rs`: interleaved samples, each a
+/// little-endian signed integer over `ceil(bits / 8)` bytes.
+fn canonical_md5_of(interleaved_pcm: &[i32], bits_per_sample: u8) -> [u8; 16] {
+    use md5::{Digest, Md5};
+    let bytes_per_sample = usize::from(bits_per_sample).div_ceil(8);
+    let mut hasher = Md5::new();
+    for sample in interleaved_pcm {
+        hasher.update(&sample.to_le_bytes()[..bytes_per_sample]);
+    }
+    hasher.finalize().into()
+}
+
+/// Decodes `fixture` through the decoder-side hasher (every block staged, then committed), as
+/// the decode thread does; returns the report and the samples hashed.
+fn hash_fixture(fixture: &GeneratedFixture) -> (pistolame_core::DecodedSegmentReport, Vec<i32>) {
+    let mut decoder = open(fixture);
+    let mut hasher = DecodedPcmHasher::new(TrackId(1), fixture.format);
+    let mut hashed_samples = Vec::new();
+    hasher.begin_segment(1, 0);
+    let ended_by = loop {
+        match decoder.next_block() {
+            Ok(Some(block)) => {
+                hasher
+                    .stage_block(block.first_frame_index, block.interleaved_samples)
+                    .expect("decoded blocks are contiguous whole frames in range");
+                hasher.commit_staged_block();
+                hashed_samples.extend_from_slice(block.interleaved_samples);
+            }
+            Ok(None) => break DecodedSegmentEnd::EndOfStream,
+            Err(_) => break DecodedSegmentEnd::DecodeError,
+        }
+    };
+    (hasher.finish_segment(ended_by), hashed_samples)
+}
+
+#[test]
+fn decoder_side_hasher_matches_the_streaminfo_md5_of_every_fixture() {
+    for spec in ALL_FIXTURES.iter().filter(|spec| spec.name != CORRUPT.name) {
+        let fixture = generate_fixture(spec);
+        let (report, _) = hash_fixture(&fixture);
+        let original_frame_count =
+            fixture.original_interleaved_pcm.len() as u64 / u64::from(fixture.format.channel_count);
+        assert_eq!(
+            report.ended_by,
+            DecodedSegmentEnd::EndOfStream,
+            "{}",
+            spec.name
+        );
+        assert_eq!(report.frame_count, original_frame_count, "{}", spec.name);
+        if spec.name == NO_MD5.name {
+            assert!(is_zero(&fixture.streaminfo_md5));
+            assert_eq!(
+                report.md5,
+                canonical_md5_of(
+                    &fixture.original_interleaved_pcm,
+                    fixture.format.bits_per_sample
+                ),
+                "{}",
+                spec.name
+            );
+        } else {
+            assert_eq!(report.md5, fixture.streaminfo_md5, "{}", spec.name);
+        }
+    }
+}
+
+#[test]
+fn decoder_side_hasher_on_the_corrupt_fixture_hashes_only_the_good_part() {
+    let fixture = generate_fixture(&CORRUPT);
+    let (report, hashed_samples) = hash_fixture(&fixture);
+    assert_eq!(report.ended_by, DecodedSegmentEnd::DecodeError);
+    assert_ne!(report.md5, fixture.streaminfo_md5);
+    assert_eq!(
+        report.md5,
+        canonical_md5_of(&hashed_samples, fixture.format.bits_per_sample)
+    );
 }
