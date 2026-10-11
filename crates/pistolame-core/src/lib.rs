@@ -2,3 +2,20 @@
 //! Contains no UI and no platform output code.
 
 #![forbid(unsafe_code)]
+
+pub mod decoder;
+pub mod engine;
+pub mod format;
+pub mod output_contract;
+pub mod playback_ring;
+pub mod signal_path;
+pub mod timing;
+pub mod verification;
+
+pub use decoder::*;
+pub use engine::*;
+pub use format::*;
+pub use output_contract::*;
+pub use playback_ring::*;
+pub use signal_path::*;
+pub use verification::*;
