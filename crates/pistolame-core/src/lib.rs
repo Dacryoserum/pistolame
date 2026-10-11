@@ -5,6 +5,7 @@
 
 pub mod decoder;
 pub mod engine;
+pub mod feeder;
 pub mod format;
 pub mod output_contract;
 pub mod pcm;
@@ -17,6 +18,7 @@ pub mod verification;
 
 pub use decoder::*;
 pub use engine::*;
+pub use feeder::*;
 pub use format::*;
 pub use output_contract::*;
 pub use pcm::*;

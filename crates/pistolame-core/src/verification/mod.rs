@@ -1,5 +1,10 @@
-//! Types of the two-level bit-perfect verification (B7.2). The hasher and the verifier thread
+//! Types of the two-level bit-perfect verification (B7.2), and the verification tap that carries
+//! device bytes from the render thread to the verifier. The hasher and the verifier thread
 //! belong to later tasks.
+
+pub mod tap;
+
+pub use tap::*;
 
 use crate::format::DeviceSampleFormat;
 use crate::output_contract::DeviceAccessMode;
@@ -206,6 +211,33 @@ pub enum VerifierCommand {
 
 /// Events the feeder pushes into the verification tap, next to the copied bytes
 /// (`pistolame-core/src/verification/tap.rs`). Small `Copy` values; pushing never blocks.
+///
+/// Rules the verifier (T7) relies on, in both access modes:
+/// - Every segment is announced by `SegmentStarted` (with its real first frame) and closed by
+///   `TrackEnded` when its track ends; only `DeviceBytes` are limited to exclusive mode.
+/// - A segment was played (partly) through the system mixer if the latest `StreamBegan` before
+///   its `SegmentStarted` is in shared mode, or if a shared-mode `StreamBegan` falls between its
+///   `SegmentStarted` and its `TrackEnded`. If every frame of it played in shared mode it has no
+///   `DeviceBytes` at all. Frames played in shared mode leave a gap in the `DeviceBytes` frame
+///   indices; that gap is explained by the shared `StreamBegan`, not a misalignment.
+/// - `TapOverflowed` means something was lost at that point (bytes or events). It taints every
+///   segment open at that point, whatever its `track_id`. A `DeviceBytes` or `TrackEnded` for a
+///   segment whose `SegmentStarted` was never received only follows a `TapOverflowed`.
+/// - The latest `StreamBegan` is never lost: when the verifier lags, an older unsent one can only
+///   be replaced by a newer one, and a `TapOverflowed` then follows it. If the replaced one was
+///   a shared-mode start, the segment's level 1 reads `VerificationTapOverflowed` rather than
+///   `PartlyPlayedThroughSystemMixer`: still `NotVerifiable`, only the stated reason differs,
+///   which is acceptable for a case that needs the verifier to lag behind several reopens.
+/// - `DeviceBytes` and `TrackEnded` belong to the segment of the latest `SegmentStarted`. One
+///   that names another track never opens an implicit segment: the open segment becomes
+///   `NotVerifiable { VerificationTapOverflowed }` (only an overflow can cause it).
+/// - A new `SegmentStarted` for the same track (new flush generation) ends the previous
+///   segment without a `TrackEnded`: that segment was abandoned by a seek.
+/// - Tap events and `VerifierCommand`s travel on separate, mutually unordered channels. Before
+///   acting on a `TrackStopped` or `QueuedAudioLost` for a track, the verifier drains the tap,
+///   so device-side events emitted before the command are not judged after it.
+/// - After the stream closes, the engine calls `DeviceFeeder::flush_verification_events` until
+///   it returns `true`, so a final `TrackEnded` that was waiting for room is not stranded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TapEvent {
     /// Emitted from `begin_stream`: a stream (re)opened. The `DeviceBytes` that follow use this
@@ -216,7 +248,7 @@ pub enum TapEvent {
         /// Access mode of the new stream.
         access_mode: DeviceAccessMode,
     },
-    /// First frame rendered from a block of a new (track, flush generation) pair.
+    /// A block of a new (track, flush generation) pair is about to be rendered.
     SegmentStarted {
         /// Track of the segment.
         track_id: TrackId,
@@ -226,7 +258,8 @@ pub enum TapEvent {
         first_frame_index: u64,
     },
     /// `frame_count` frames of the current segment, starting at `first_frame_index`, were
-    /// copied into the bytes ring. Silence the feeder inserts is never described here.
+    /// copied into the bytes ring as `byte_count` bytes, pushed before this event. Silence the
+    /// feeder inserts is never described here.
     DeviceBytes {
         /// Track of the frames.
         track_id: TrackId,
@@ -234,16 +267,20 @@ pub enum TapEvent {
         first_frame_index: u64,
         /// Number of copied frames.
         frame_count: u32,
+        /// Number of bytes to read from the bytes ring for these frames. Lets the verifier
+        /// consume exactly the right bytes even if it misread the layout.
+        byte_count: usize,
     },
     /// After the last frame of a block with `is_track_end`.
     TrackEnded {
         /// Track that ended.
         track_id: TrackId,
     },
-    /// Bytes for these frames could not be copied (tap full). Emitted as soon as the event
-    /// ring has room; sticky until then.
+    /// Bytes or events were dropped (tap full). Emitted as soon as the event ring has room;
+    /// sticky until then. Taints every segment open at this point (see the rules above).
     TapOverflowed {
-        /// Track whose bytes were dropped.
-        track_id: TrackId,
+        /// Track of the first dropped item, for diagnostics; `None` if no track had been
+        /// rendered yet. Not used to decide which segments are tainted.
+        track_id: Option<TrackId>,
     },
 }

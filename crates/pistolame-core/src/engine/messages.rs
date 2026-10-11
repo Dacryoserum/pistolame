@@ -1,6 +1,5 @@
 //! Messages exchanged between the UI and the engine. Nothing here is Slint-specific, so the
-//! engine does not change if the UI toolkit does. `EngineHandle` and `PlaybackCounters`
-//! belong to a later task.
+//! engine does not change if the UI toolkit does. `EngineHandle` belongs to a later task.
 
 use crate::decoder::SourceStreamInfo;
 use crate::output_contract::{OutputDeviceId, OutputDeviceInfo, OutputModePreference};
@@ -165,4 +164,11 @@ pub struct PlaybackCountersSnapshot {
     /// Time from `Play` after a pause to the first rendered buffer (reopen, renegotiate,
     /// prefill); 0 before the first resume. Measured for T14 (B13.1 Q6).
     pub last_resume_delay_milliseconds: u64,
+    /// Times a backend broke the `RenderSource` contract (for example `render` before
+    /// `begin_stream`) or the playback ring was inconsistent. Always 0 unless there is a bug;
+    /// counted so the error is never silent (AGENTS.md).
+    pub render_contract_violations: u64,
+    /// Times the feeder stopped at a block whose format the open stream cannot carry
+    /// (`RenderOutcome::FormatBoundaryReached`); counted once per boundary, not per buffer.
+    pub format_boundaries_reached: u64,
 }
