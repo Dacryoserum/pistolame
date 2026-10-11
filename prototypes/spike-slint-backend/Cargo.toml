@@ -1,0 +1,15 @@
+[package]
+name = "spike-slint-backend"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# `unstable-winit-030`: `WinitWindowAccessor::on_winit_window_event` (OS file drop).
+# `raw-window-handle-06`: `slint::Window::window_handle()` (HWND for souvlaki).
+slint = { version = "=1.18.1", features = ["unstable-winit-030", "raw-window-handle-06"] }
+raw-window-handle = "0.6"
+souvlaki = "0.8.3"
+
+[build-dependencies]
+slint-build = "=1.18.1"

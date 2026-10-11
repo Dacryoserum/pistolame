@@ -1,0 +1,223 @@
+// Validation spike UI: five Slint checks on one screen (see ADR 0001 section 7).
+import { Button, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+
+// Dark tokens loosely taken from DESIGN.md; fidelity is not the point of the spike.
+global Palette {
+    out property <color> background: #121214;
+    out property <color> surface: #1c1c20;
+    out property <color> text: #f2f2f4;
+    out property <color> text-muted: #9a9aa3;
+    out property <color> accent: #fa586a;
+}
+
+export struct TrackRow {
+    title: string,
+    artist: string,
+    album: string,
+    duration: string,
+}
+
+component Cell inherits Text {
+    color: Palette.text;
+    font-size: 12px;
+    overflow: elide;
+    vertical-alignment: center;
+}
+
+// Transport shared by both windows: the Rust controller pushes the same values to each.
+component TransportBar inherits HorizontalLayout {
+    in property <bool> is-playing;
+    in property <string> now-playing;
+    callback toggle-play();
+    callback next();
+    spacing: 8px;
+    Button {
+        text: root.is-playing ? "Pause" : "Play";
+        clicked => { root.toggle-play(); }
+    }
+    Button {
+        text: "Next";
+        clicked => { root.next(); }
+    }
+    Text {
+        text: root.now-playing;
+        color: Palette.text;
+        vertical-alignment: center;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Pistolame - Slint backend spike";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    background: Palette.background;
+
+    // 1. Track list
+    in property <[TrackRow]> rows;
+    in property <string> row-count-text;
+    in property <string> list-timing-text: "sort/filter: not measured yet";
+    // 2. Spectrogram
+    in property <image> spectrogram;
+    in property <string> spectrogram-text;
+    // Rendered frames per second, counted by the rendering notifier.
+    in property <string> render-fps-text;
+    // 3. File drop
+    in property <[string]> dropped-paths;
+    in property <bool> is-drag-hovering;
+    // 4/5. Transport
+    in property <bool> is-playing;
+    in property <string> now-playing;
+    in property <string> media-key-text: "no media key received yet";
+    in property <string> tray-text;
+    // Two-way bound to the ListView so Rust can drive an automatic scroll.
+    in-out property <length> list-viewport-y;
+
+    callback filter-changed(string);
+    callback sort-by(int);
+    callback toggle-play();
+    callback next();
+    callback open-mini-player();
+    callback run-scroll-benchmark();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        // Transport + media keys + tray
+        HorizontalLayout {
+            spacing: 12px;
+            TransportBar {
+                is-playing: root.is-playing;
+                now-playing: root.now-playing;
+                toggle-play => { root.toggle-play(); }
+                next => { root.next(); }
+            }
+            Button {
+                text: "Mini player";
+                clicked => { root.open-mini-player(); }
+            }
+        }
+        Text {
+            text: "Media keys (SMTC): " + root.media-key-text;
+            color: Palette.text-muted;
+        }
+        Text {
+            text: root.tray-text;
+            color: Palette.text-muted;
+        }
+
+        // 1. List
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                placeholder-text: "Filter (title, artist, album)";
+                edited(text) => { root.filter-changed(text); }
+            }
+            Button { text: "Title"; clicked => { root.sort-by(0); } }
+            Button { text: "Artist"; clicked => { root.sort-by(1); } }
+            Button { text: "Album"; clicked => { root.sort-by(2); } }
+            Button { text: "Duration"; clicked => { root.sort-by(3); } }
+            Button { text: "Scroll benchmark"; clicked => { root.run-scroll-benchmark(); } }
+        }
+        Text {
+            text: root.row-count-text + "  |  " + root.list-timing-text + "  |  " + root.render-fps-text;
+            color: Palette.accent;
+        }
+        Rectangle {
+            background: Palette.surface;
+            ListView {
+                content-y <=> root.list-viewport-y;
+                for row in root.rows: Rectangle {
+                    height: 24px;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        spacing: 8px;
+                        Cell { text: row.title; horizontal-stretch: 3; }
+                        Cell { text: row.artist; horizontal-stretch: 2; }
+                        Cell { text: row.album; horizontal-stretch: 2; }
+                        Cell { text: row.duration; horizontal-stretch: 0; min-width: 60px; }
+                    }
+                }
+            }
+        }
+
+        // 2. Spectrogram (1024x256 pushed from a worker thread)
+        Text {
+            text: root.spectrogram-text;
+            color: Palette.accent;
+        }
+        Image {
+            source: root.spectrogram;
+            height: 128px;
+            image-fit: fill;
+        }
+
+        // 3. File drop
+        Rectangle {
+            height: 90px;
+            background: root.is-drag-hovering ? #2a2a33 : Palette.surface;
+            border-width: 1px;
+            border-color: root.is-drag-hovering ? Palette.accent : Palette.text-muted;
+            ScrollView {
+                VerticalLayout {
+                    padding: 6px;
+                    Text {
+                        text: root.dropped-paths.length == 0
+                            ? "Drop files or folders here (winit DroppedFile)"
+                            : "Dropped (" + root.dropped-paths.length + "):";
+                        color: Palette.text-muted;
+                    }
+                    for path in root.dropped-paths: Text {
+                        text: path;
+                        color: Palette.text;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component MiniPlayerWindow inherits Window {
+    title: "Mini player";
+    preferred-width: 360px;
+    preferred-height: 90px;
+    always-on-top: true;
+    background: Palette.background;
+
+    in property <bool> is-playing;
+    in property <string> now-playing;
+    callback toggle-play();
+    callback next();
+
+    TransportBar {
+        padding: 12px;
+        is-playing: root.is-playing;
+        now-playing: root.now-playing;
+        toggle-play => { root.toggle-play(); }
+        next => { root.next(); }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    in property <image> tray-image;
+    icon: root.tray-image;
+    tooltip: "Pistolame spike";
+    callback toggle-play();
+    callback next();
+    callback show-main();
+    callback show-mini();
+    callback quit();
+
+    Menu {
+        MenuItem { title: "Play / Pause"; activated => { root.toggle-play(); } }
+        MenuItem { title: "Next"; activated => { root.next(); } }
+        MenuSeparator {}
+        MenuItem { title: "Show main window"; activated => { root.show-main(); } }
+        MenuItem { title: "Show mini player"; activated => { root.show-mini(); } }
+        MenuSeparator {}
+        MenuItem { title: "Quit"; activated => { root.quit(); } }
+    }
+
+    clicked => { root.show-main(); }
+}

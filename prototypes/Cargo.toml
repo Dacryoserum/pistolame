@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["common", "proto-slint", "proto-iced", "proto-gpui", "proto-slint-am", "proto-iced-am"]
+members = ["common", "proto-slint", "proto-iced", "proto-gpui", "proto-slint-am", "proto-iced-am", "spike-slint-backend"]
 
 [profile.release]
 opt-level = 3
