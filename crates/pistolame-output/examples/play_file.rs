@@ -2,7 +2,7 @@
 //!
 //! Play a FLAC file:
 //!
-//! `cargo run -p pistolame-output --example play_file -- [--exclusive] [--device "K11"]
+//! `cargo run -p pistolame-output --example play_file -- [--quiet] [--exclusive] [--device "K11"]
 //!  [--pause-every 3] [--seek-to 30] path/to/file.flac`
 //!
 //! Without `--exclusive` the stream opens in shared mode, the app's default; with it the engine
@@ -14,6 +14,7 @@
 //! the end of the track (`NotApplicableInSharedMode` is accepted only without `--exclusive`),
 //! level 2 `Verified` or `NoEmbeddedSignature` (or "repositioned" after `--seek-to`), and no
 //! playback failure. Anything else, including a failed resume, exits with 1.
+//! `--quiet` keeps only opening information, failures and the final verdict for file playback.
 //!
 //! The output-path check with a generated 1 kHz tone at -20 dBFS is kept (WASAPI only):
 //!
@@ -38,6 +39,7 @@ struct PlaybackOptions {
     is_exclusive_requested: bool,
     is_exclusive_only_requested: bool,
     is_tone_requested: bool,
+    is_quiet: bool,
     file_path: Option<String>,
     sample_rate_hz: u32,
     bits_per_sample: u8,
@@ -47,11 +49,16 @@ struct PlaybackOptions {
 }
 
 fn parse_options() -> Result<PlaybackOptions, String> {
+    parse_arguments(std::env::args().skip(1))
+}
+
+fn parse_arguments(arguments: impl IntoIterator<Item = String>) -> Result<PlaybackOptions, String> {
     let mut options = PlaybackOptions {
         device_name_filter: None,
         is_exclusive_requested: false,
         is_exclusive_only_requested: false,
         is_tone_requested: false,
+        is_quiet: false,
         file_path: None,
         sample_rate_hz: 44_100,
         bits_per_sample: 16,
@@ -59,7 +66,7 @@ fn parse_options() -> Result<PlaybackOptions, String> {
         pause_interval: None,
         seek_position: None,
     };
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
         let mut value = || arguments.next().ok_or(format!("{argument} needs a value"));
         match argument.as_str() {
@@ -67,6 +74,7 @@ fn parse_options() -> Result<PlaybackOptions, String> {
             "--exclusive" => options.is_exclusive_requested = true,
             "--exclusive-only" => options.is_exclusive_only_requested = true,
             "--tone" => options.is_tone_requested = true,
+            "--quiet" => options.is_quiet = true,
             "--rate" => options.sample_rate_hz = parse_number(&value()?)?,
             "--bits" => options.bits_per_sample = parse_number(&value()?)?,
             "--seconds" => options.total_duration = Duration::from_secs(parse_number(&value()?)?),
@@ -75,6 +83,9 @@ fn parse_options() -> Result<PlaybackOptions, String> {
             path if !path.starts_with("--") => options.file_path = Some(path.to_owned()),
             unknown => return Err(format!("unknown option {unknown}")),
         }
+    }
+    if options.is_quiet && options.is_tone_requested {
+        return Err("--quiet is available for file playback only".to_owned());
     }
     Ok(options)
 }
@@ -195,7 +206,7 @@ mod file_play {
             path: PathBuf::from(path),
         });
         play_until_stopped(&handle, options, &mut log);
-        wait_for_final_status(&handle, &mut log);
+        wait_for_final_status(&handle, &mut log, options.is_quiet);
         handle.shutdown();
         report_and_judge(&log, options)
     }
@@ -212,12 +223,12 @@ mod file_play {
             let event = handle
                 .receive_event_timeout(remaining)
                 .ok_or("the engine sent no device list")?;
-            print_event(&event, log);
+            print_event(&event, log, options.is_quiet);
             if let EngineEvent::DeviceListChanged { devices, selected } = event {
                 break (devices, selected);
             }
         };
-        for device in &devices {
+        for device in devices.iter().filter(|_| !options.is_quiet) {
             println!(
                 "device: {}{}",
                 device.display_name,
@@ -262,16 +273,18 @@ mod file_play {
         loop {
             std::thread::sleep(EVENT_POLL_INTERVAL);
             for event in handle.try_receive_events() {
-                print_event(&event, log);
+                print_event(&event, log, options.is_quiet);
                 if let EngineEvent::PlaybackStateChanged { state } = event {
                     playing_since = (state == PlaybackState::Playing).then(Instant::now);
                     paused_since = (state == PlaybackState::Paused).then(Instant::now);
                     if state == PlaybackState::Playing && log.resume_pending {
                         log.resume_pending = false;
-                        println!(
-                            "resume delay (reopen, renegotiate, prefill): {} ms",
-                            handle.counters().last_resume_delay_milliseconds
-                        );
+                        if !options.is_quiet {
+                            println!(
+                                "resume delay (reopen, renegotiate, prefill): {} ms",
+                                handle.counters().last_resume_delay_milliseconds
+                            );
+                        }
                     }
                 }
             }
@@ -283,7 +296,7 @@ mod file_play {
                 println!("playback failed while paused: giving up");
                 return;
             }
-            if last_counter_print.elapsed() >= COUNTER_PRINT_INTERVAL {
+            if !options.is_quiet && last_counter_print.elapsed() >= COUNTER_PRINT_INTERVAL {
                 last_counter_print = Instant::now();
                 print_counters(&handle.counters());
             }
@@ -292,7 +305,9 @@ mod file_play {
                 && let Some(position) = options.seek_position
             {
                 is_seek_pending = false;
-                println!("seek to {position:?}");
+                if !options.is_quiet {
+                    println!("seek to {position:?}");
+                }
                 handle.send(EngineCommand::SeekTo {
                     position_in_track: position,
                 });
@@ -301,13 +316,17 @@ mod file_play {
                 && since.elapsed() >= interval
             {
                 playing_since = None;
-                println!("pause");
+                if !options.is_quiet {
+                    println!("pause");
+                }
                 handle.send(EngineCommand::Pause);
             }
             if paused_since.is_some_and(|since| since.elapsed() >= PAUSE_DURATION) {
                 paused_since = None;
                 log.resume_pending = true;
-                println!("resume");
+                if !options.is_quiet {
+                    println!("resume");
+                }
                 handle.send(EngineCommand::Play);
             }
         }
@@ -315,22 +334,26 @@ mod file_play {
 
     /// The engine forwards the final status before `Stopped`; events that are still on their
     /// way are read for a short while.
-    fn wait_for_final_status(handle: &EngineHandle, log: &mut PlaybackLog) {
+    fn wait_for_final_status(handle: &EngineHandle, log: &mut PlaybackLog, is_quiet: bool) {
         let deadline = Instant::now() + EVENT_POLL_INTERVAL * 2;
         while let Some(event) =
             handle.receive_event_timeout(deadline.saturating_duration_since(Instant::now()))
         {
-            print_event(&event, log);
+            print_event(&event, log, is_quiet);
         }
         if log.latest_status.is_none()
             && log.has_played
             && let Some(event) = handle.receive_event_timeout(ENGINE_REPLY_TIMEOUT)
         {
-            print_event(&event, log);
+            print_event(&event, log, is_quiet);
         }
     }
 
-    fn print_event(event: &EngineEvent, log: &mut PlaybackLog) {
+    fn print_event(event: &EngineEvent, log: &mut PlaybackLog, is_quiet: bool) {
+        record_event(event, log);
+        if is_quiet && !should_print_quiet_event(event) {
+            return;
+        }
         match event {
             EngineEvent::DeviceListChanged { selected, .. } => {
                 println!(
@@ -344,9 +367,6 @@ mod file_play {
             EngineEvent::TrackLoaded {
                 track_id, source, ..
             } => {
-                log.track_id = Some(*track_id);
-                log.sample_rate_hz = source.format.sample_rate_hz;
-                log.total_frames = source.total_frames;
                 println!(
                     "event: track {} loaded: {} Hz, {} bits, {} channels, {} frames, MD5 {}",
                     track_id.0,
@@ -362,33 +382,120 @@ mod file_play {
                 );
             }
             EngineEvent::PlaybackStateChanged { state } => {
-                log.state = Some(*state);
-                log.has_played |= *state == PlaybackState::Playing;
                 println!("event: state {state:?}");
             }
             EngineEvent::SignalPathChanged { assessment } => match assessment {
                 Some(assessment) => {
-                    match assessment.negotiated.access_mode {
-                        DeviceAccessMode::Exclusive => log.has_played_exclusive = true,
-                        DeviceAccessMode::SharedThroughSystemMixer => log.has_played_shared = true,
-                    }
                     print_assessment(assessment);
                 }
                 None => println!("event: stream closed"),
             },
             EngineEvent::VerificationChanged { track_id, status } => {
-                if log.track_id == Some(*track_id) {
-                    log.latest_status = Some(status.clone());
-                }
                 println!(
                     "event: verification of track {}: level 1 {:?}, level 2 {:?}",
                     track_id.0, status.transmission, status.file_integrity
                 );
             }
             EngineEvent::PlaybackFailed { kind, detail } => {
-                log.has_failed = true;
                 println!("event: playback failed: {kind:?} ({detail})");
             }
+        }
+    }
+
+    // Quiet output must never change the state used to judge verification or exit status.
+    fn record_event(event: &EngineEvent, log: &mut PlaybackLog) {
+        match event {
+            EngineEvent::TrackLoaded {
+                track_id, source, ..
+            } => {
+                log.track_id = Some(*track_id);
+                log.sample_rate_hz = source.format.sample_rate_hz;
+                log.total_frames = source.total_frames;
+            }
+            EngineEvent::PlaybackStateChanged { state } => {
+                log.state = Some(*state);
+                log.has_played |= *state == PlaybackState::Playing;
+            }
+            EngineEvent::SignalPathChanged {
+                assessment: Some(assessment),
+            } => match assessment.negotiated.access_mode {
+                DeviceAccessMode::Exclusive => log.has_played_exclusive = true,
+                DeviceAccessMode::SharedThroughSystemMixer => log.has_played_shared = true,
+            },
+            EngineEvent::VerificationChanged { track_id, status }
+                if log.track_id == Some(*track_id) =>
+            {
+                log.latest_status = Some(status.clone());
+            }
+            EngineEvent::PlaybackFailed { .. } => log.has_failed = true,
+            _ => {}
+        }
+    }
+
+    fn should_print_quiet_event(event: &EngineEvent) -> bool {
+        matches!(
+            event,
+            EngineEvent::TrackLoaded { .. }
+                | EngineEvent::SignalPathChanged {
+                    assessment: Some(_)
+                }
+                | EngineEvent::PreferredDeviceUnavailable { .. }
+                | EngineEvent::PlaybackFailed { .. }
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pistolame_core::PlaybackFailureKind;
+
+        #[test]
+        fn quiet_still_records_hidden_states_and_verification() {
+            let track_id = TrackId(7);
+            let mut log = PlaybackLog {
+                track_id: Some(track_id),
+                ..PlaybackLog::default()
+            };
+            let playing = EngineEvent::PlaybackStateChanged {
+                state: PlaybackState::Playing,
+            };
+            assert!(!should_print_quiet_event(&playing));
+            print_event(&playing, &mut log, true);
+            assert!(log.has_played);
+            let status = VerificationStatus {
+                transmission: TransmissionStatus::Verified {
+                    first_frame_index: 0,
+                    frame_count: 100,
+                    md5: [1; 16],
+                },
+                file_integrity: FileIntegrityStatus::Verified { md5: [1; 16] },
+            };
+            let verified = EngineEvent::VerificationChanged {
+                track_id,
+                status: status.clone(),
+            };
+            assert!(!should_print_quiet_event(&verified));
+            print_event(&verified, &mut log, true);
+            assert_eq!(log.latest_status, Some(status));
+            print_event(
+                &EngineEvent::PlaybackStateChanged {
+                    state: PlaybackState::Stopped,
+                },
+                &mut log,
+                true,
+            );
+            assert_eq!(log.state, Some(PlaybackState::Stopped));
+            let options =
+                crate::parse_arguments(["--quiet", "song.flac"].map(str::to_owned)).unwrap();
+            assert_eq!(report_and_judge(&log, &options), ExitCode::SUCCESS);
+            let failure = EngineEvent::PlaybackFailed {
+                kind: PlaybackFailureKind::DeviceUnplugged,
+                detail: "disconnected".to_owned(),
+            };
+            assert!(should_print_quiet_event(&failure));
+            print_event(&failure, &mut log, true);
+            assert!(log.has_failed);
+            assert_eq!(report_and_judge(&log, &options), ExitCode::FAILURE);
         }
     }
 
@@ -757,5 +864,31 @@ mod windows_tone {
                 attempt.outcome
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_arguments;
+
+    #[test]
+    fn quiet_preserves_file_and_playback_options() {
+        let options = parse_arguments(
+            ["--quiet", "--exclusive", "--seek-to", "12", "song.flac"].map(str::to_owned),
+        )
+        .unwrap();
+        assert!(options.is_quiet);
+        assert!(options.is_exclusive_requested);
+        assert_eq!(options.file_path.as_deref(), Some("song.flac"));
+        assert_eq!(
+            options.seek_position,
+            Some(std::time::Duration::from_secs(12))
+        );
+        assert!(!parse_arguments(["song.flac".to_owned()]).unwrap().is_quiet);
+    }
+
+    #[test]
+    fn quiet_rejects_tone_instead_of_ignoring_the_option() {
+        assert!(parse_arguments(["--quiet", "--tone"].map(str::to_owned)).is_err());
     }
 }
