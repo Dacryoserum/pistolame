@@ -1,0 +1,48 @@
+// Both palettes from DESIGN.md, bound to the current theme.
+import { AppState } from "state.slint";
+
+export global Tokens {
+    in property <color> surface-content: AppState.is-dark ? #1E1E1E : #FFFFFF;
+    in property <color> surface-sidebar: AppState.is-dark ? #262626 : #F2F2F2;
+    in property <color> surface-toolbar: AppState.is-dark ? #262626 : #F2F2F2;
+    in property <color> surface-lcd: AppState.is-dark ? #2F2F2F : #EBEBEB;
+    in property <color> surface-raised: AppState.is-dark ? #2C2C2C : #FFFFFF;
+    in property <color> surface-field: AppState.is-dark ? #353535 : #E3E3E3;
+    in property <color> border-lcd: AppState.is-dark ? #3D3D3D : #DADADA;
+    in property <color> border-raised: AppState.is-dark ? #3D3D3D : #DADADA;
+    in property <color> separator: AppState.is-dark ? #383838 : #E3E3E3;
+    in property <color> separator-chrome: AppState.is-dark ? #141414 : #D6D6D6;
+    in property <color> fill-control: AppState.is-dark ? #333333 : #EDEDED;
+    in property <color> fill-control-hover: AppState.is-dark ? #3D3D3D : #E3E3E3;
+    in property <color> fill-icon-hover: AppState.is-dark ? #333333 : #E3E3E3;
+    in property <color> fill-icon-pressed: AppState.is-dark ? #3D3D3D : #D9D9D9;
+    in property <color> fill-row-hover: AppState.is-dark ? #2A2A2A : #F3F3F3;
+    in property <color> fill-row-pressed: AppState.is-dark ? #333333 : #E8E8E8;
+    in property <color> fill-row-zebra: AppState.is-dark ? #222222 : #F7F7F7;
+    in property <color> fill-sidebar-hover: AppState.is-dark ? #303030 : #E6E6E6;
+    in property <color> fill-sidebar-selected: AppState.is-dark ? #3A3A3A : #DCDCDC;
+    in property <color> rail: AppState.is-dark ? #4A4A4A : #C8C8C8;
+    in property <color> rail-fill: AppState.is-dark ? #A3A3A3 : #636368;
+    in property <color> scrubber-thumb: AppState.is-dark ? #EBEBEB : #1D1D1F;
+    in property <color> scrollbar-thumb: AppState.is-dark ? #5A5A5A : #C1C1C1;
+    in property <color> text-primary: AppState.is-dark ? #EBEBEB : #1D1D1F;
+    in property <color> text-secondary: AppState.is-dark ? #A3A3A3 : #636368;
+    in property <color> text-tertiary: AppState.is-dark ? #6E6E6E : #A1A1A6;
+    in property <color> text-on-accent: AppState.is-dark ? #1A1204 : #FFFFFF;
+    in property <color> accent: AppState.is-dark ? #E5B454 : #8A5F00;
+    in property <color> accent-hover: AppState.is-dark ? #EDC26A : #7A5400;
+    in property <color> accent-pressed: AppState.is-dark ? #C99A3E : #6B4A00;
+    in property <color> focus-ring: AppState.is-dark ? #E5B454 : #8A5F00;
+    in property <color> status-ok: AppState.is-dark ? #4CC38A : #157443;
+    in property <color> status-ok-tint: AppState.is-dark ? #21352B : #E3F3EA;
+    in property <color> status-caution: AppState.is-dark ? #FF8A4C : #A8420E;
+    in property <color> status-caution-tint: AppState.is-dark ? #3B2A21 : #FBEADF;
+    in property <color> shadow-artwork: AppState.is-dark ? #00000059 : #0000001F;
+    in property <color> shadow-popover: AppState.is-dark ? #00000073 : #00000029;
+    in property <color> overlay-artwork-hover: #00000040;
+    in property <color> overlay-button: #000000A6;
+    in property <color> overlay-button-hover: #000000D9;
+    in property <color> overlay-icon: #FFFFFF;
+    in property <color> spectrogram-label: #FFFFFFB3;
+    in property <color> spectrogram-cutoff: #FF8A4C;
+}

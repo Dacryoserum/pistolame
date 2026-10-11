@@ -1,0 +1,1260 @@
+import { Button, ComboBox, Switch, ScrollView, ListView } from "std-widgets.slint";
+import { Tokens } from "tokens.slint";
+import { AlbumCard, AppState, DataCell, PathStep } from "state.slint";
+
+export global Icons {
+    out property <image> intersect: @image-url("../assets/icons/intersect.svg");
+    out property <image> magnifying-glass: @image-url("../assets/icons/magnifying-glass.svg");
+    out property <image> clock-counter-clockwise: @image-url("../assets/icons/clock-counter-clockwise.svg");
+    out property <image> microphone-stage: @image-url("../assets/icons/microphone-stage.svg");
+    out property <image> vinyl-record: @image-url("../assets/icons/vinyl-record.svg");
+    out property <image> music-note: @image-url("../assets/icons/music-note.svg");
+    out property <image> seal-check: @image-url("../assets/icons/seal-check.svg");
+    out property <image> waveform: @image-url("../assets/icons/waveform.svg");
+    out property <image> speaker-hifi: @image-url("../assets/icons/speaker-hifi.svg");
+    out property <image> playlist: @image-url("../assets/icons/playlist.svg");
+    out property <image> shuffle: @image-url("../assets/icons/shuffle.svg");
+    out property <image> repeat: @image-url("../assets/icons/repeat.svg");
+    out property <image> skip-back-fill: @image-url("../assets/icons/skip-back-fill.svg");
+    out property <image> play-fill: @image-url("../assets/icons/play-fill.svg");
+    out property <image> pause-fill: @image-url("../assets/icons/pause-fill.svg");
+    out property <image> skip-forward-fill: @image-url("../assets/icons/skip-forward-fill.svg");
+    out property <image> speaker-low: @image-url("../assets/icons/speaker-low.svg");
+    out property <image> speaker-high: @image-url("../assets/icons/speaker-high.svg");
+    out property <image> caret-left: @image-url("../assets/icons/caret-left.svg");
+    out property <image> seal-check-fill: @image-url("../assets/icons/seal-check-fill.svg");
+    out property <image> warning-fill: @image-url("../assets/icons/warning-fill.svg");
+    out property <image> sliders-horizontal: @image-url("../assets/icons/sliders-horizontal.svg");
+}
+
+export enum TextRole {
+    display,
+    title-2,
+    title-3,
+    popover-title,
+    headline,
+    body-medium,
+    body,
+    callout,
+    callout-medium,
+    label,
+    caption,
+}
+
+// Text with one of the DESIGN.md roles: family, size, weight and box height are fixed by the role.
+export component Txt inherits Text {
+    in property <TextRole> role: TextRole.body;
+    font-family: role == TextRole.display ? "Inter Display" : "Inter";
+    font-size: role == TextRole.display ? 26px : role == TextRole.title-2 ? 20px : role == TextRole.title-3 ? 17px : role == TextRole.popover-title ? 15px : (role == TextRole.label || role == TextRole.caption) ? 11px : (role == TextRole.callout || role == TextRole.callout-medium) ? 12px : 13px;
+    font-weight: role == TextRole.display ? 700 : (role == TextRole.title-3 || role == TextRole.popover-title || role == TextRole.headline || role == TextRole.label) ? 600 : (role == TextRole.title-2 || role == TextRole.body-medium || role == TextRole.callout-medium || role == TextRole.caption) ? 500 : 400;
+    height: role == TextRole.display ? 32px : role == TextRole.title-2 ? 26px : role == TextRole.title-3 ? 22px : role == TextRole.popover-title ? 20px : (role == TextRole.label || role == TextRole.caption) ? 14px : 16px;
+    color: Tokens.text-primary;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component Icon inherits Image {
+    image-fit: contain;
+}
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-size: 16px;
+    in property <color> icon-color: Tokens.text-primary;
+    in property <string> label;
+    callback clicked();
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    border-radius: 6px;
+    background: touch.pressed ? Tokens.fill-icon-pressed : touch.has-hover ? Tokens.fill-icon-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+    Icon {
+        source: root.icon;
+        colorize: root.icon-color;
+        width: root.icon-size;
+        height: root.icon-size;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SidebarItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> is-selected;
+    callback clicked();
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    x: 10px;
+    width: 220px;
+    height: 28px;
+    border-radius: 6px;
+    background: root.is-selected ? Tokens.fill-sidebar-selected : (touch.has-hover || touch.pressed) ? Tokens.fill-sidebar-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+    Icon {
+        x: 10px;
+        y: 6px;
+        width: 16px;
+        height: 16px;
+        source: root.icon;
+        colorize: Tokens.accent;
+    }
+
+    Txt {
+        x: 34px;
+        y: 0px;
+        width: 176px;
+        height: 28px;
+        text: root.label;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component SidebarHeader inherits Txt {
+    x: 20px;
+    width: 200px;
+    height: 24px;
+    role: TextRole.label;
+    color: Tokens.text-secondary;
+}
+
+export component SearchField inherits Rectangle {
+    width: 216px;
+    height: 28px;
+    border-radius: 7px;
+    background: Tokens.surface-field;
+    border-width: input.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    Icon {
+        x: 9px;
+        y: 7px;
+        width: 14px;
+        height: 14px;
+        source: Icons.magnifying-glass;
+        colorize: Tokens.text-secondary;
+    }
+
+    Txt {
+        x: 30px;
+        width: 178px;
+        height: 28px;
+        text: "Rechercher";
+        color: Tokens.text-secondary;
+        visible: input.text == "";
+    }
+
+    input := TextInput {
+        x: 30px;
+        width: 178px;
+        height: 28px;
+        single-line: true;
+        vertical-alignment: center;
+        font-family: "Inter";
+        font-size: 13px;
+        color: Tokens.text-primary;
+        selection-background-color: Tokens.accent.with-alpha(0.35);
+        selection-foreground-color: Tokens.text-primary;
+        accessible-label: "Rechercher";
+        edited => {
+            AppState.edit-query(self.text);
+        }
+    }
+}
+
+export enum BadgeKind {
+    bit-perfect,
+    processed,
+    shared,
+    unknown,
+    authentic,
+    doubtful,
+}
+
+export component Badge inherits Rectangle {
+    in property <BadgeKind> kind: BadgeKind.authentic;
+    in property <string> label;
+    in property <bool> is-hovered;
+    property <bool> is-ok: kind == BadgeKind.bit-perfect || kind == BadgeKind.authentic;
+    property <color> foreground: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.text-primary : is-ok ? Tokens.status-ok : Tokens.status-caution;
+    width: row.preferred-width;
+    height: 20px;
+    border-radius: 10px;
+    background: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.fill-control : is-ok ? Tokens.status-ok-tint : Tokens.status-caution-tint;
+    border-width: root.is-hovered ? 1px : 0px;
+    border-color: root.foreground;
+    row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        Icon {
+            width: 12px;
+            source: root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
+            colorize: root.foreground;
+        }
+
+        Txt {
+            role: TextRole.label;
+            height: root.height;
+            text: root.label;
+            color: root.foreground;
+        }
+    }
+}
+
+export component PillButton inherits Rectangle {
+    in property <bool> is-primary;
+    in property <image> icon;
+    in property <string> label;
+    callback clicked();
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    width: 112px;
+    height: 32px;
+    border-radius: 16px;
+    background: root.is-primary ? (touch.pressed ? Tokens.accent-pressed : touch.has-hover ? Tokens.accent-hover : Tokens.accent) : (touch.pressed ? Tokens.fill-icon-pressed : touch.has-hover ? Tokens.fill-control-hover : Tokens.fill-control);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        Icon {
+            width: 14px;
+            source: root.icon;
+            colorize: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
+        }
+
+        Txt {
+            role: TextRole.headline;
+            height: root.height;
+            text: root.label;
+            color: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Square artwork with the level-1 shadow (artwork corners stay square by design decision).
+export component Artwork inherits Rectangle {
+    in property <image> source;
+    background: Tokens.surface-field;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: Tokens.shadow-artwork;
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        image-fit: fill;
+    }
+}
+
+export component SignalPath inherits Rectangle {
+    in property <[PathStep]> steps;
+    height: 160px;
+    for step[index] in root.steps: Rectangle {
+        x: 0px;
+        y: index * 32px;
+        width: root.width;
+        height: 32px;
+        if index < 4: Rectangle {
+            x: 7px;
+            y: 20px;
+            width: 2px;
+            height: 24px;
+            background: Tokens.separator;
+        }
+        Rectangle {
+            x: 4px;
+            y: 12px;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: step.value == "Aucune lecture" ? Tokens.text-tertiary : step.is-transparent ? Tokens.status-ok : Tokens.status-caution;
+        }
+
+        Txt {
+            x: 24px;
+            y: 8px;
+            width: 72px;
+            text: step.label;
+            color: Tokens.text-secondary;
+        }
+
+        Txt {
+            role: TextRole.body-medium;
+            x: 104px;
+            y: 8px;
+            width: root.width - 104px;
+            text: step.value;
+        }
+    }
+}
+
+export component EqualizerBars inherits Rectangle {
+    width: 24px;
+    height: 16px;
+    for level[index] in AppState.equalizer-levels: Rectangle {
+        x: 11px + index * 5px;
+        width: 3px;
+        height: Math.round(3 + 9 * level) * 1px;
+        y: 14px - self.height;
+        border-radius: 1px;
+        background: Tokens.accent;
+    }
+}
+
+export component TrackRow inherits Rectangle {
+    in property <int> number;
+    in property <string> title;
+    in property <string> format-label;
+    in property <string> duration-label;
+    in property <bool> is-odd;
+    in property <bool> is-current;
+    callback clicked();
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    height: 36px;
+    border-radius: 6px;
+    background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : is-odd ? Tokens.fill-row-zebra : transparent;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-action-default => {
+        root.clicked();
+    }
+    property <length> duration-x: root.width - 12px - 44px;
+    property <length> format-x: duration-x - 16px - 64px;
+    if !root.is-current: Txt {
+        x: 12px;
+        y: 10px;
+        width: 24px;
+        text: root.number;
+        horizontal-alignment: right;
+        color: Tokens.text-secondary;
+    }
+    if root.is-current: EqualizerBars {
+        x: 12px;
+        y: 10px;
+    }
+    Txt {
+        role: root.is-current ? TextRole.body-medium : TextRole.body;
+        x: 52px;
+        y: 10px;
+        width: root.format-x - 16px - 52px;
+        text: root.title;
+    }
+
+    Txt {
+        role: TextRole.caption;
+        x: root.format-x;
+        y: 10px;
+        width: 64px;
+        text: root.format-label;
+        color: Tokens.text-secondary;
+    }
+
+    Txt {
+        x: root.duration-x;
+        y: 10px;
+        width: 44px;
+        text: root.duration-label;
+        horizontal-alignment: right;
+        color: Tokens.text-secondary;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component VolumeSlider inherits Rectangle {
+    width: 88px;
+    height: 28px;
+    property <length> thumb-center: 88px * AppState.volume / 100;
+    accessible-role: slider;
+    accessible-label: "Volume : utilisez le bouton du DAC";
+
+    accessible-value: AppState.volume;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    function apply(x: length) {
+        AppState.volume = Math.round(Math.clamp(x / 88px, 0, 1) * 100);
+        AppState.volume-changed(AppState.volume);
+    }
+    Rectangle {
+        y: 12.5px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Tokens.rail;
+    }
+
+    Rectangle {
+        y: 12.5px;
+        width: root.thumb-center;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Tokens.rail-fill;
+    }
+
+    Rectangle {
+        x: Math.clamp(root.thumb-center - 5.5px, 0px, 77px);
+        y: 8.5px;
+        width: 11px;
+        height: 11px;
+        border-radius: 5.5px;
+        background: Tokens.scrubber-thumb;
+    }
+
+}
+
+export component Lcd inherits Rectangle {
+    property <length> column-width: root.width - 68px - badge.width;
+    property <bool> is-seeking;
+    property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
+    height: 44px;
+    border-radius: 6px;
+    background: Tokens.surface-lcd;
+    border-width: 1px;
+    border-color: Tokens.border-lcd;
+    function seek-to(x: length) {
+        AppState.seek(Math.clamp((x - 48px) / root.column-width, 0, 1));
+    }
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left && self.mouse-y >= 34px {
+                root.is-seeking = true;
+            } else if event.kind == PointerEventKind.up {
+                if root.is-seeking { root.seek-to(self.mouse-x); }
+                root.is-seeking = false;
+            } else if event.kind == PointerEventKind.cancel {
+                root.is-seeking = false;
+            }
+        }
+    }
+
+    Image {
+        x: 4px;
+        y: 4px;
+        width: 36px;
+        height: 36px;
+        source: AppState.lcd-artwork;
+        image-fit: fill;
+    }
+
+    Txt {
+        role: TextRole.body-medium;
+        x: 48px;
+        y: 6px;
+        width: root.column-width;
+        text: AppState.lcd-title;
+        horizontal-alignment: center;
+    }
+
+    Txt {
+        role: TextRole.callout;
+        x: 88px;
+        y: 22px;
+        width: root.column-width - 80px;
+        text: AppState.lcd-subtitle;
+        horizontal-alignment: center;
+        color: Tokens.text-secondary;
+    }
+
+    // Declared before the extras so the scrubber thumb is drawn on top of the rail.
+    Rectangle {
+        x: 48px;
+        y: 39px;
+        width: root.column-width;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Tokens.rail;
+        Rectangle {
+            x: 0px;
+            width: parent.width * AppState.progress;
+            border-radius: 1.5px;
+            background: Tokens.rail-fill;
+        }
+    }
+
+    Rectangle {
+        opacity: root.are-extras-visible ? 1 : 0;
+        animate opacity { duration: 120ms; easing: ease-out-quint; }
+        Txt {
+            role: TextRole.caption;
+            x: 48px;
+            y: 22px;
+            width: 40px;
+            text: AppState.elapsed-label;
+            color: Tokens.text-secondary;
+        }
+
+        Txt {
+            role: TextRole.caption;
+            x: 48px + root.column-width - 40px;
+            y: 22px;
+            width: 40px;
+            text: AppState.remaining-label;
+            horizontal-alignment: right;
+            color: Tokens.text-secondary;
+        }
+
+        Rectangle {
+            x: 48px + root.column-width * AppState.progress - 4.5px;
+            y: 36px;
+            width: 9px;
+            height: 9px;
+            border-radius: 4.5px;
+            background: Tokens.scrubber-thumb;
+        }
+    }
+
+    Rectangle {
+        x: 48px; y: 4px; width: root.column-width; height: 28px;
+        accessible-role: button;
+        accessible-label: "Afficher le morceau en cours : " + AppState.lcd-title;
+        accessible-action-default => { AppState.show-now-playing(); }
+        border-width: title-keyboard.has-focus ? 2px : 0px;
+        border-color: Tokens.focus-ring;
+        title-keyboard := FocusScope {
+            enabled: AppState.has-current-track;
+            key-pressed(event) => {
+                if event.text == Key.Return || event.text == " " {
+                    AppState.show-now-playing(); return accept;
+                }
+                return reject;
+            }
+        }
+        title-touch := TouchArea {
+            enabled: AppState.has-current-track;
+            mouse-cursor: pointer;
+            clicked => { AppState.show-now-playing(); }
+        }
+    }
+
+    badge := Badge {
+        x: root.width - 8px - self.width;
+        y: 12px;
+        kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
+        label: AppState.badge-label;
+        is-hovered: badge-touch.has-hover;
+        accessible-role: button;
+        accessible-label: AppState.badge-label;
+        accessible-action-default => {
+            AppState.is-popover-open = !AppState.is-popover-open;
+        }
+        badge-touch := TouchArea {
+            clicked => {
+                AppState.is-popover-open = !AppState.is-popover-open;
+            }
+        }
+    }
+}
+
+export component Popover inherits Rectangle {
+    width: 380px;
+    height: body.preferred-height;
+    border-radius: 10px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Tokens.shadow-popover;
+    // Swallows clicks so that only clicks outside close the popover.
+    TouchArea { }
+
+    body := VerticalLayout {
+        padding: 16px;
+        HorizontalLayout {
+            height: 20px;
+            spacing: 8px;
+            Icon {
+                width: 18px;
+                source: AppState.is-bit-perfect ? Icons.seal-check-fill : AppState.is-shared ? Icons.intersect : Icons.waveform;
+                colorize: AppState.is-bit-perfect ? Tokens.status-ok : Tokens.text-secondary;
+            }
+
+            Txt {
+                role: TextRole.popover-title;
+                text: AppState.signal-title;
+            }
+        }
+
+        Rectangle {
+            height: 6px;
+        }
+
+        Text {
+            text: AppState.signal-description;
+            font-family: "Inter";
+            font-size: 12px;
+            wrap: word-wrap;
+            line-height-factor: 1.171;
+            vertical-alignment: top;
+            color: Tokens.text-secondary;
+        }
+
+        Rectangle {
+            height: 12px;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Tokens.separator;
+        }
+
+        Rectangle {
+            height: 12px;
+        }
+
+        SignalPath {
+            steps: AppState.path-steps;
+        }
+
+        Rectangle {
+            height: 12px;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Tokens.separator;
+        }
+
+        Rectangle {
+            height: 12px;
+        }
+
+        Switch {
+            text: "Mode exclusif"; checked: AppState.exclusive;
+            toggled => { AppState.set-exclusive(self.checked); }
+        }
+        if AppState.show-exclusive-notice: Text {
+            text: "En mode exclusif, les autres sons de ce périphérique sont coupés pendant la lecture.";
+            color: Tokens.text-secondary; wrap: word-wrap;
+        }
+        if AppState.show-exclusive-notice: Button { text: "Compris"; clicked => { AppState.dismiss-notice(); } }
+        Text { text: AppState.underrun-label; color: Tokens.text-secondary; }
+        Rectangle { height: 8px; }
+        HorizontalLayout {
+            spacing: 6px;
+            Icon { width: 14px; source: AppState.transmission-ok ? Icons.seal-check-fill : Icons.waveform; colorize: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
+            Text { text: AppState.transmission-text; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-primary; wrap: word-wrap; }
+        }
+        Text { text: AppState.transmission-digest; color: Tokens.text-secondary; wrap: char-wrap; font-size: 11px; }
+        Rectangle { height: 8px; }
+        HorizontalLayout {
+            spacing: 6px;
+            Icon { width: 14px; source: AppState.integrity-ok ? Icons.seal-check-fill : Icons.waveform; colorize: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
+            Text { text: AppState.integrity-text; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-primary; wrap: word-wrap; }
+        }
+        Text { text: AppState.integrity-digest; color: Tokens.text-secondary; wrap: char-wrap; font-size: 11px; }
+
+    }
+}
+
+component AlbumTile inherits Rectangle {
+    in property <AlbumCard> album;
+    in property <length> tile;
+    callback open();
+    callback play();
+    property <bool> is-hovered: open-touch.has-hover || play-touch.has-hover;
+    width: root.tile;
+    height: root.tile + 40px;
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " { root.open(); return accept; }
+            return reject;
+        }
+    }
+    accessible-role: button;
+    accessible-label: root.album.title;
+    accessible-action-default => {
+        root.open();
+    }
+    Artwork {
+        x: 0px;
+        y: 0px;
+        width: root.tile;
+        height: root.tile;
+        source: root.album.artwork;
+    }
+
+    Txt {
+        role: TextRole.body-medium;
+        x: 0px;
+        y: root.tile + 8px;
+        width: root.tile;
+        text: root.album.title;
+    }
+
+    Txt {
+        x: 0px;
+        y: root.tile + 24px;
+        width: root.tile;
+        text: root.album.artist;
+        color: Tokens.text-secondary;
+    }
+
+    open-touch := TouchArea {
+        clicked => {
+            root.open();
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.tile;
+        height: root.tile;
+        visible: root.is-hovered;
+        background: Tokens.overlay-artwork-hover;
+    }
+
+    Rectangle {
+        x: 8px;
+        y: root.tile - 40px;
+        width: 32px;
+        height: 32px;
+        border-radius: 16px;
+        visible: root.is-hovered;
+        background: play-touch.has-hover ? Tokens.overlay-button-hover : Tokens.overlay-button;
+        Icon {
+            x: 10px;
+            y: 9px;
+            width: 14px;
+            height: 14px;
+            source: Icons.play-fill;
+            colorize: Tokens.overlay-icon;
+        }
+    }
+
+    play-touch := TouchArea {
+        x: 8px;
+        y: root.tile - 40px;
+        width: 32px;
+        height: 32px;
+        accessible-role: button;
+        accessible-label: "Lire " + root.album.title;
+        clicked => {
+            root.play();
+        }
+    }
+}
+
+export component AlbumsGrid inherits Rectangle {
+    property <length> inner-width: root.width - 64px;
+    property <int> columns: Math.clamp(Math.floor((root.inner-width + 24px) / 184px), 3, 8);
+    property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
+    property <length> pitch: root.tile + 64px;
+    property <int> row-count: Math.ceil(AppState.albums.length / root.columns);
+    Txt {
+        role: TextRole.display;
+        x: 32px;
+        y: 24px;
+        width: root.width - 64px;
+        text: "Albums";
+    }
+
+    ListView {
+        y: 76px;
+        height: root.height - 76px;
+        content-y <=> AppState.grid-scroll-y;
+        for row-index in root.row-count: Rectangle {
+            height: root.pitch;
+            for column in root.columns: Rectangle {
+                if row-index * root.columns + column < AppState.albums.length: AlbumTile {
+                    x: 32px + column * (root.tile + 24px);
+                    tile: root.tile;
+                    album: AppState.albums[row-index * root.columns + column];
+                    open => {
+                        AppState.show-album(self.album.catalog-index);
+                    }
+                    play => {
+                        AppState.play-track(self.album.catalog-index, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    if AppState.albums.length == 0 && AppState.query == "": HorizontalLayout {
+        x: (root.width - 244px) / 2; y: 272px; width: 244px; height: 32px; spacing: 12px;
+        PillButton { is-primary: true; icon: Icons.music-note; label: "Fichiers"; clicked => { AppState.import-files(); } }
+        PillButton { icon: Icons.vinyl-record; label: "Dossier"; clicked => { AppState.import-folder(); } }
+    }
+    if AppState.albums.length == 0: VerticalLayout {
+        y: 76px + 96px;
+        height: 80px;
+        spacing: 12px;
+        alignment: start;
+        Icon {
+            height: 32px;
+            source: Icons.magnifying-glass;
+            colorize: Tokens.text-tertiary;
+        }
+
+        Txt {
+            text: AppState.no-results-text;
+            horizontal-alignment: center;
+            color: Tokens.text-secondary;
+        }
+    }
+}
+
+component DataCellView inherits Rectangle {
+    in property <DataCell> data;
+    height: 32px;
+    Txt {
+        role: TextRole.caption;
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        text: root.data.label;
+        color: Tokens.text-secondary;
+    }
+
+    Txt {
+        role: TextRole.body-medium;
+        x: 0px;
+        y: 16px;
+        width: root.width;
+        text: root.data.value;
+    }
+}
+
+export component AlbumDetail inherits Rectangle {
+    property <length> content-width: root.width;
+    property <length> list-width: root.content-width - 64px;
+    property <length> list-end: 328px + 36px * AppState.detail-tracks.length;
+    property <length> quality-y: root.list-end + 106px;
+    property <length> right-width: root.content-width - 472px;
+    property <length> spectrogram-y: 28px + summary.height + 12px;
+    property <length> right-height: root.spectrogram-y + 128px + 12px + 120px;
+    property <int> cutoff-y: Math.round((1 - AppState.detail.cutoff-fraction) * 128);
+    ScrollView {
+        content-y <=> AppState.detail-scroll-y;
+        content-width: root.content-width;
+        content-height: root.quality-y + Math.max(192px, root.right-height) + 40px;
+        Rectangle {
+            x: 26px;
+            y: 16px;
+            width: back-row.preferred-width;
+            height: 28px;
+            border-radius: 6px;
+            background: back-touch.pressed ? Tokens.fill-row-pressed : back-touch.has-hover ? Tokens.fill-row-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Retour aux albums";
+            accessible-action-default => {
+                AppState.go-back();
+            }
+            back-row := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 8px;
+                spacing: 4px;
+                Icon {
+                    width: 16px;
+                    source: Icons.caret-left;
+                    colorize: Tokens.accent;
+                }
+
+                Txt {
+                    role: TextRole.body-medium;
+                    height: 28px;
+                    text: "Albums";
+                    color: Tokens.accent;
+                }
+            }
+
+            back-touch := TouchArea {
+                clicked => {
+                    AppState.go-back();
+                }
+            }
+        }
+
+        Artwork {
+            x: 32px;
+            y: 60px;
+            width: 240px;
+            height: 240px;
+            source: AppState.detail.artwork;
+        }
+
+        Txt {
+            role: TextRole.display;
+            x: 300px;
+            y: 160px;
+            width: root.content-width - 332px;
+            text: AppState.detail.title;
+        }
+
+        Txt {
+            role: TextRole.title-2;
+            x: 300px;
+            y: 194px;
+            width: root.content-width - 332px;
+            text: AppState.detail.artist;
+            color: Tokens.accent;
+        }
+
+        HorizontalLayout {
+            x: 300px;
+            y: 228px;
+            width: root.content-width - 332px;
+            height: 20px;
+            spacing: 8px;
+            alignment: start;
+            Txt {
+                role: TextRole.callout-medium;
+                height: 20px;
+                text: AppState.detail.meta-line;
+                color: Tokens.text-secondary;
+            }
+
+            Badge {
+                kind: BadgeKind.unknown;
+                label: AppState.detail.verdict-label;
+            }
+        }
+
+        PillButton {
+            x: 300px;
+            y: 268px;
+            is-primary: true;
+            icon: Icons.play-fill;
+            label: "Lecture";
+            clicked => {
+                AppState.play-detail-album();
+            }
+        }
+
+        PillButton {
+            x: 424px;
+            y: 268px;
+            icon: Icons.shuffle;
+            label: "Aléatoire";
+            clicked => {
+                AppState.is-shuffle-on = true;
+                AppState.shuffle-detail-album();
+            }
+        }
+
+        for track[index] in AppState.detail-tracks: TrackRow {
+            x: 32px;
+            y: 328px + 36px * index;
+            width: root.list-width;
+            number: track.number;
+            title: track.title;
+            format-label: track.format-label;
+            duration-label: track.duration-label;
+            is-odd: Math.mod(index, 2) == 1;
+            is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == index;
+            clicked => {
+                AppState.play-track(AppState.detail-album-index, index);
+            }
+        }
+
+        Txt {
+            role: TextRole.callout;
+            x: 44px;
+            y: root.list-end + 12px;
+            width: root.list-width - 12px;
+            text: AppState.detail.footer-line;
+            color: Tokens.text-secondary;
+        }
+
+        Txt {
+            role: TextRole.title-3;
+            x: 32px;
+            y: root.list-end + 68px;
+            width: root.content-width - 64px;
+            text: "Qualité";
+        }
+
+        // Left column: signal path of this album on the current output.
+        Rectangle {
+            x: 32px;
+            y: root.quality-y;
+            width: 360px;
+            height: 192px;
+            Txt {
+                role: TextRole.headline;
+                x: 0px;
+                y: 2px;
+                width: 240px;
+                text: "Chemin du signal";
+            }
+
+            Badge {
+                y: 0px;
+                x: 360px - self.width;
+                kind: AppState.detail-is-bit-perfect ? BadgeKind.bit-perfect : BadgeKind.unknown;
+                label: AppState.detail-badge-label;
+            }
+
+            SignalPath {
+                y: 32px;
+                width: 360px;
+                steps: AppState.detail-path-steps;
+            }
+        }
+
+        // Right column: authenticity verdict, spectrogram and measurements.
+        Rectangle {
+            x: 440px;
+            y: root.quality-y;
+            width: root.right-width;
+            height: root.right-height;
+            Txt {
+                role: TextRole.headline;
+                x: 0px;
+                y: 2px;
+                width: 240px;
+                text: "Authenticité";
+            }
+
+            Badge {
+                y: 0px;
+                x: root.right-width - self.width;
+                kind: BadgeKind.unknown;
+                label: AppState.detail.verdict-label;
+            }
+
+            summary := Text {
+                x: 0px;
+                y: 28px;
+                width: root.right-width;
+                text: AppState.detail.summary;
+                font-family: "Inter";
+                font-size: 13px;
+                color: Tokens.text-primary;
+                wrap: word-wrap;
+                vertical-alignment: top;
+                line-height-factor: 1.144;
+            }
+
+            Rectangle {
+                y: root.spectrogram-y;
+                width: root.right-width;
+                height: 128px;
+                border-radius: 6px;
+                clip: true;
+                background: Tokens.surface-field;
+                Text {
+                    text: "Aucune analyse spectrale";
+                    color: Tokens.text-secondary;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: AppState.detail.spectrogram;
+                    image-fit: fill;
+                }
+
+                Txt {
+                    role: TextRole.caption;
+                    x: 8px;
+                    y: 6px;
+                    width: 120px;
+                    text: AppState.detail.nyquist-label;
+                    color: Tokens.spectrogram-label;
+                }
+
+                Txt {
+                    role: TextRole.caption;
+                    x: 8px;
+                    y: 108px;
+                    width: 120px;
+                    text: AppState.detail.zero-label;
+                    color: Tokens.spectrogram-label;
+                }
+
+                if AppState.detail.should-mark-cutoff: Rectangle {
+                    y: root.cutoff-y * 1px;
+                    height: 1px;
+                    background: Tokens.spectrogram-cutoff;
+                }
+                if AppState.detail.should-mark-cutoff: Txt {
+                    role: TextRole.caption;
+                    x: root.right-width - 8px - 200px;
+                    y: root.cutoff-y * 1px - 16px;
+                    width: 200px;
+                    text: AppState.detail.cutoff-label;
+                    horizontal-alignment: right;
+                    color: Tokens.spectrogram-cutoff;
+                }
+            }
+
+            for data-cell[index] in AppState.detail.cells: DataCellView {
+                x: Math.mod(index, 2) * ((root.right-width - 16px) / 2 + 16px);
+                y: root.spectrogram-y + 128px + 12px + Math.floor(index / 2) * 44px;
+                width: (root.right-width - 16px) / 2;
+                data: data-cell;
+            }
+        }
+    }
+}
+
+export component PlaceholderView inherits Rectangle {
+    in property <string> title;
+    in property <image> icon;
+    Txt {
+        role: TextRole.display;
+        x: 32px;
+        y: 24px;
+        width: root.width - 64px;
+        text: root.title;
+    }
+
+    VerticalLayout {
+        y: 172px;
+        height: 80px;
+        spacing: 12px;
+        alignment: start;
+        Icon {
+            height: 32px;
+            source: root.icon;
+            colorize: Tokens.text-tertiary;
+        }
+
+        Txt {
+            text: "Cette fonctionnalité n'est pas encore disponible.";
+            horizontal-alignment: center;
+            color: Tokens.text-secondary;
+        }
+    }
+}
+
+
+export component OutputSettings inherits Rectangle {
+    VerticalLayout {
+        alignment: start; spacing: 16px;
+        Txt { role: TextRole.display; text: "Sortie audio"; }
+        HorizontalLayout {
+            spacing: 12px;
+            ComboBox {
+                model: AppState.device-names;
+                current-index: AppState.selected-device-index;
+                selected(value) => { AppState.select-device(self.current-index); }
+            }
+            Button { text: "Actualiser"; clicked => { AppState.refresh-devices(); } }
+        }
+        Switch {
+            text: "Mode exclusif"; checked: AppState.exclusive;
+            toggled => { AppState.set-exclusive(self.checked); }
+        }
+        Text { text: AppState.signal-description; color: Tokens.text-secondary; wrap: word-wrap; }
+        SignalPath { steps: AppState.path-steps; }
+        Text { text: AppState.transmission-text; color: Tokens.text-primary; wrap: word-wrap; }
+        Text { text: AppState.integrity-text; color: Tokens.text-primary; wrap: word-wrap; }
+        Text { text: AppState.underrun-label; color: Tokens.text-secondary; }
+        Text { text: "Volume : utilisez le bouton de votre DAC."; color: Tokens.text-secondary; }
+        Button { text: "Arrêter la lecture"; clicked => { AppState.stop(); } }
+    }
+}
+
+// The current track follows playback independently of the album being browsed.
+export component NowPlaying inherits Rectangle {
+    ScrollView {
+        content-width: root.width;
+        content-height: 800px;
+        IconButton {
+            x: 26px; y: 16px; width: 28px; height: 28px;
+            icon: Icons.caret-left; icon-color: Tokens.accent;
+            label: "Retour à la vue précédente";
+            clicked => { AppState.go-back(); }
+        }
+        Txt { x: 60px; y: 22px; text: "À l'écoute"; color: Tokens.text-secondary; }
+        Artwork { x: 32px; y: 60px; width: 300px; height: 300px; source: AppState.lcd-artwork; }
+        Txt { x: 368px; y: 76px; width: root.width - 400px; role: TextRole.label; text: "MORCEAU EN COURS"; color: Tokens.text-secondary; }
+        Txt { x: 368px; y: 108px; width: root.width - 400px; role: TextRole.display; text: AppState.lcd-title; }
+        Txt { x: 368px; y: 154px; width: root.width - 400px; role: TextRole.title-2; text: AppState.current-artist; color: Tokens.accent; }
+        Txt { x: 368px; y: 194px; width: root.width - 400px; text: AppState.current-album; color: Tokens.text-secondary; }
+        Txt { x: 368px; y: 228px; width: root.width - 400px; role: TextRole.callout; text: AppState.current-format + " · " + AppState.current-duration; color: Tokens.text-secondary; }
+        PillButton {
+            x: 368px; y: 272px; label: AppState.is-playing ? "Pause" : "Lecture";
+            icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill; is-primary: true;
+            clicked => { AppState.toggle-play(); }
+        }
+        PillButton {
+            x: 492px; y: 272px; label: "Voir l'album"; icon: Icons.vinyl-record;
+            clicked => { AppState.open-current-album(); }
+        }
+        Txt { x: 368px; y: 328px; width: root.width - 400px; role: TextRole.caption; text: AppState.elapsed-label + " / " + AppState.current-duration; color: Tokens.text-secondary; }
+        Rectangle { x: 32px; y: 400px; width: root.width - 64px; height: 1px; background: Tokens.separator; }
+        Txt { x: 32px; y: 425px; role: TextRole.title-3; text: "Chemin du signal"; }
+        Badge {
+            x: 32px; y: 461px; label: AppState.badge-label;
+            kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
+        }
+        SignalPath { x: 32px; y: 504px; width: 360px; steps: AppState.path-steps; }
+        Txt { x: 440px; y: 425px; role: TextRole.title-3; text: "Vérification"; }
+        Text { x: 440px; y: 466px; width: root.width - 472px; height: 54px; text: AppState.transmission-text; wrap: word-wrap; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
+        Text { x: 440px; y: 526px; width: root.width - 472px; height: 54px; text: AppState.integrity-text; wrap: word-wrap; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
+        Txt { x: 440px; y: 592px; width: root.width - 472px; role: TextRole.caption; text: AppState.underrun-label; color: Tokens.text-secondary; }
+        PillButton { x: 440px; y: 628px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
+        Txt { x: 32px; y: 710px; role: TextRole.caption; text: "FICHIER SOURCE"; color: Tokens.text-secondary; }
+        Txt { x: 32px; y: 734px; width: root.width - 64px; text: AppState.current-filename; color: Tokens.text-secondary; }
+    }
+}

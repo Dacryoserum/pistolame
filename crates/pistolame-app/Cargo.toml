@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 pistolame-core.workspace = true
+pistolame-library.workspace = true
 pistolame-output.workspace = true
 slint.workspace = true
 rfd.workspace = true

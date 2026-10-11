@@ -1,0 +1,167 @@
+// Data and callbacks shared between the Slint components and the Rust controller.
+
+export struct AlbumCard {
+    catalog-index: int,
+    title: string,
+    artist: string,
+    artwork: image,
+}
+
+export struct TrackRowData {
+    number: int,
+    title: string,
+    format-label: string,
+    duration-label: string,
+}
+
+export struct PathStep {
+    label: string,
+    value: string,
+    is-transparent: bool,
+}
+
+export struct DataCell {
+    label: string,
+    value: string,
+}
+
+export struct DetailInfo {
+    title: string,
+    artist: string,
+    meta-line: string,
+    artwork: image,
+    footer-line: string,
+    is-authentic: bool,
+    verdict-label: string,
+    summary: string,
+    spectrogram: image,
+    should-mark-cutoff: bool,
+    cutoff-fraction: float,
+    cutoff-label: string,
+    nyquist-label: string,
+    zero-label: string,
+    cells: [DataCell],
+}
+
+export enum ViewKind {
+    grid,
+    detail,
+    placeholder,
+    now-playing,
+}
+
+export global AppState {
+    in property <[string]> device-names;
+    in property <int> selected-device-index: -1;
+    in property <bool> exclusive;
+    in property <bool> show-exclusive-notice;
+    in property <string> transmission-text;
+    in property <string> integrity-text;
+    in property <string> transmission-digest;
+    in property <string> integrity-digest;
+    in property <bool> transmission-ok;
+    in property <bool> integrity-ok;
+    in-out property <string> message;
+    in property <string> import-status;
+    in property <string> underrun-label: "Coupures : 0";
+    callback import-files();
+    callback import-folder();
+    callback stop();
+    callback select-device(int);
+    callback refresh-devices();
+    callback set-exclusive(bool);
+    callback dismiss-notice();
+
+    in property <bool> has-current-track;
+    in property <string> current-artist;
+    in property <string> current-album;
+    in property <string> current-format;
+    in property <string> current-duration;
+    in property <string> current-filename;
+    in-out property <ViewKind> previous-view: ViewKind.grid;
+    callback open-current-album();
+
+    public function show-now-playing() {
+        if has-current-track && view != ViewKind.now-playing {
+            previous-view = view;
+            is-popover-open = false;
+            view = ViewKind.now-playing;
+        }
+    }
+
+    // Filled by Rust.
+    in property <[AlbumCard]> albums;
+    in property <string> no-results-text;
+    in property <string> lcd-title;
+    in property <string> lcd-subtitle;
+    in property <image> lcd-artwork;
+    in property <float> progress;
+    in property <string> elapsed-label;
+    in property <string> remaining-label;
+    in property <bool> is-playing: false;
+    in property <string> badge-label;
+    in property <bool> is-shared;
+    in property <bool> is-bit-perfect: false;
+    in property <string> signal-title;
+    in property <string> signal-description;
+    in property <string> md5-label;
+    in property <[PathStep]> path-steps;
+    in property <[float]> equalizer-levels;
+    in property <int> playing-album-index;
+    in property <int> playing-track-index;
+    in property <int> detail-album-index;
+    in property <DetailInfo> detail;
+    in property <[TrackRowData]> detail-tracks;
+    in property <[PathStep]> detail-path-steps;
+    in property <string> detail-badge-label;
+    in property <bool> detail-is-bit-perfect: false;
+
+    // UI state owned by Slint (Rust may read or reset it).
+    in-out property <bool> is-dark: true;
+    in-out property <int> volume: 100;
+    in-out property <int> selected-item: 2;
+    in-out property <ViewKind> view: ViewKind.grid;
+    in-out property <bool> is-popover-open;
+    in-out property <bool> is-shuffle-on;
+    in-out property <bool> is-repeat-on;
+    in-out property <length> grid-scroll-y;
+    in-out property <length> detail-scroll-y;
+    in-out property <string> query;
+
+    // Events handled by Rust.
+    callback search-changed(string);
+    callback open-album(int);
+    callback play-track(int, int);
+    callback play-detail-album();
+    callback shuffle-detail-album();
+    callback toggle-play();
+    callback previous-track();
+    callback next-track();
+    callback seek(float);
+    callback volume-changed(int);
+    callback toggle-theme();
+
+    public function select-item(item: int) {
+        selected-item = item;
+        is-popover-open = false;
+        view = item == 2 ? ViewKind.grid : ViewKind.placeholder;
+    }
+
+    public function show-album(catalog-index: int) {
+        view = ViewKind.detail;
+        detail-scroll-y = 0px;
+        open-album(catalog-index);
+    }
+
+    public function go-back() {
+        view = view == ViewKind.now-playing ? previous-view : ViewKind.grid;
+    }
+
+    public function edit-query(text: string) {
+        query = text;
+        selected-item = 2;
+        view = ViewKind.grid;
+        grid-scroll-y = 0px;
+        search-changed(text);
+    }
+}

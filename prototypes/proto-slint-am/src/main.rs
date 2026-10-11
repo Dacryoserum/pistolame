@@ -58,3 +58,6 @@ fn wire_callbacks(window: &AppWindow, controller: &Rc<Controller>) {
     let handle = controller.clone();
     app_state.on_toggle_theme(move || handle.toggle_theme());
 }
+
+#[cfg(test)]
+mod visual_comparison;

@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: macos-latest
+            platform: macos-universal
+          - os: ubuntu-24.04
+            platform: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev
+      - name: Install both Mac targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build Windows or Linux
+        if: runner.os != 'macOS'
+        run: cargo build --release --locked -p pistolame-app
+      - name: Build Mac Apple Silicon and Intel
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          cargo build --release --locked -p pistolame-app --target aarch64-apple-darwin
+          cargo build --release --locked -p pistolame-app --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create target/aarch64-apple-darwin/release/pistolame-app target/x86_64-apple-darwin/release/pistolame-app -output target/release/pistolame-app
+          lipo -verify_arch arm64 x86_64 target/release/pistolame-app
+      - name: Assemble and verify archive
+        run: python scripts/package_release.py --platform ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: target/dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  draft:
+    needs: [validate, package]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete release and create draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(find dist -name '*.zip' | wc -l)" -eq 2
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -name '*.sha256' | wc -l)" -eq 3
+          cd dist
+          sha256sum -c *.sha256
+          cd ..
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --title "Pistolame $RELEASE_TAG" --notes-file RELEASE_NOTES.md

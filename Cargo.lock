@@ -3531,11 +3531,12 @@ dependencies = [
 
 [[package]]
 name = "pistolame-app"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
  "pistolame-core",
+ "pistolame-library",
  "pistolame-output",
  "rfd",
  "slint",
@@ -3544,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-core"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "crossbeam-channel",
  "flacenc",
@@ -3556,11 +3557,16 @@ dependencies = [
 
 [[package]]
 name = "pistolame-library"
-version = "0.1.0"
+version = "0.1.0-preview.1"
+dependencies = [
+ "pistolame-core",
+ "symphonia",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "pistolame-output"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "crossbeam-channel",
  "pistolame-core",

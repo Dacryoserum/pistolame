@@ -1,9 +1,14 @@
-//! Pistolame desktop application: the Slint user interface.
+//! Pistolame desktop player using the approved album-oriented layout.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use slint::ComponentHandle;
+mod presentation;
+mod settings;
+mod transport;
+mod ui_bridge;
+#[cfg(test)]
+mod ui_preview;
 
-/// Holds the code generated from the `.slint` files, which we cannot annotate: lints that guard
-/// hand-written code are relaxed here only.
 #[allow(
     missing_docs,
     clippy::unwrap_used,
@@ -14,15 +19,25 @@ use slint::ComponentHandle;
 mod generated_ui {
     slint::include_modules!();
 }
-
-// Not wired yet: the UI (task T11) loads and saves the settings. Remove this allow then.
-#[allow(dead_code)]
-mod settings;
-
-use generated_ui::MainWindow;
+use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
-    let main_window = MainWindow::new()?;
-    main_window.run()?;
+    let window = AppWindow::new()?;
+    let bridge = ui_bridge::UiBridge::new(&window)?;
+    bridge.connect(&window);
+    let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
+    if !paths.is_empty() {
+        bridge.import(paths);
+    }
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        pistolame_core::timing::UI_REFRESH_INTERVAL,
+        move || bridge.tick(),
+    );
+    window.run()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod visual_comparison;

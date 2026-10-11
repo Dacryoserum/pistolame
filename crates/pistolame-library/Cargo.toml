@@ -9,3 +9,10 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+symphonia.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pistolame-core = { workspace = true, features = ["test-support"] }
