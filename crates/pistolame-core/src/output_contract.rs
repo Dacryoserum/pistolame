@@ -211,12 +211,17 @@ pub trait AudioOutput: Send {
 /// An open stream. There is no "paused but holding the device" state: pause closes the stream
 /// with `QueuedAudioOnClose::PlayOut` so other apps get the device back (B13.1 Q6).
 /// Dropping a stream equals `close(QueuedAudioOnClose::Discard)`.
+///
+/// Failure reporting (decided for M1): a failure on the real-time side is published only
+/// through `status()`. There is no wake-up channel to the engine; the engine polls `status()`
+/// (for example on its UI refresh tick) and closes the stream when it reads `Failed`.
 pub trait OutputStream: Send {
     /// What the platform actually granted when the stream was opened.
     fn negotiated(&self) -> &NegotiatedOutput;
     /// Starts rendering after `open_stream`'s prefill.
     fn play(&mut self) -> Result<(), OutputError>;
-    /// Health of the real-time side, readable at any time without locking.
+    /// Health of the real-time side, readable at any time without locking. This is the only
+    /// way a real-time failure reaches the engine, which polls it.
     fn status(&self) -> OutputStreamStatus;
     /// Stops, releases the device and returns the render source so the ring and the feeder's
     /// position survive a reopen (pause/resume, mode switch, gapless format change later).
@@ -241,7 +246,8 @@ pub struct ClosedStream {
     pub render_source: Box<dyn RenderSource>,
     /// `false` when `PlayOut` timed out or failed, so some queued audio was never played and
     /// the feeder's position is past the last played frame. The engine reports it to the
-    /// verifier (`QueuedAudioLostOnPause`).
+    /// verifier (`QueuedAudioLostOnPause`). Always `false` after `Discard`, which drops the
+    /// queued audio by definition; the engine ignores it on stop and seek.
     pub was_queued_audio_fully_played: bool,
 }
 
@@ -274,7 +280,10 @@ pub enum OutputFailure {
 pub struct OpenStreamError {
     /// Why the stream could not be opened.
     pub error: OutputError,
-    /// The render source that was passed to `open_stream`, handed back unused.
+    /// The render source that was passed to `open_stream`, handed back. Usually unused, but
+    /// if the open failed after `begin_stream` (for example while prefilling), `render` may
+    /// already have consumed frames that were never played: its position is then past them,
+    /// and the engine must treat the next open as a discontinuity, not a seamless resume.
     pub render_source: Box<dyn RenderSource>,
 }
 

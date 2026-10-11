@@ -16,7 +16,20 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+# Features needed by the WASAPI backend (walking-skeleton plan, B5.1).
+windows = { workspace = true, features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 
 [dev-dependencies]
 pistolame-core = { workspace = true, features = ["test-support"] }
