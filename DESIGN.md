@@ -148,7 +148,9 @@ from the red of the app it is inspired by.
 **Status.** `status-ok` (green) = verified / bit-perfect / authentic. `status-caution` (orange)
 = doubtful authenticity, the processing step in a signal path. A "processed" (non bit-perfect)
 signal is shown **neutral** (`fill-control` + `text-primary` + sliders icon + the word
-"Traité"): it is a state the user chose (volume), not an error.
+"Traité"): it is a state the user chose (volume), not an error. Shared mode is shown the same
+neutral way with its own icon and word ("Mode partagé"): the Windows mixer *may* alter the
+signal, so bit-perfect is not claimed, but nothing is known to be wrong either.
 
 **Contrast (WCAG 2.1 formula, computed).** Text needs 4.5:1; icons 3:1.
 
@@ -270,6 +272,7 @@ license `https://raw.githubusercontent.com/phosphor-icons/core/v2.0.8/LICENSE`.
 | seal-check-fill | fill | Bit-perfect, Authentique |
 | warning-fill | fill | Douteux |
 | sliders-horizontal | regular | Traité (processed signal) |
+| intersect | regular | Mode partagé (signal goes through the system mixer) |
 
 Sizes: 14 (inline in fields/buttons), 16 (sidebar, toggles), 18 (prev/next, output), 22 (play).
 
@@ -292,8 +295,14 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
 - **Quality badge** — pill, 20 high, padding 8, gap 4, icon 12 + label role text.
   *Bit-perfect · 24/96*: `status-ok-tint` / `status-ok` / seal-check-fill.
   *Traité · 24/96*: `fill-control` / `text-primary` / sliders-horizontal.
+  *Mode partagé · 24/96*: `fill-control` / `text-primary` / intersect. The default output mode;
+  the popover says why ("Windows peut convertir, rééchantillonner ou mixer le signal ; le
+  bit-perfect n'est pas garanti") and shows the system mix format (e.g. 176,4 kHz, flottant).
   *Authentique*: ok colors, seal-check-fill. *Douteux*: `status-caution-tint` /
   `status-caution` / warning-fill. In the LCD the badge is a button that opens the signal path.
+- **Exclusive mode switch** — a small labelled toggle "Mode exclusif" next to the LCD badge
+  (off by default, remembered). The first time it is turned on, an inline note says once: "En
+  mode exclusif, les autres sons de ce périphérique sont coupés pendant la lecture."
 - **Album tile** — square artwork (radius 0 — square like a record sleeve, decided 2026-10-11; level 1), 8 gap, title body-medium, artist body
   `text-secondary`. Hover: 25 % black veil + 32 px round play button bottom-left.
 - **Track row** — 36 high, radius 6, zebra on odd rows, hover `fill-row-hover`, pressed
@@ -321,7 +330,11 @@ The reference app shows a "Lossless" badge you have to believe. Pistolame's badg
    "Traité · 24/96" immediately: the claim retracts itself.
 2. **One click to the evidence.** The badge (and the output button) opens the signal path:
    each step with what it does to the samples, the one that alters them marked in caution
-   color, plus the live MD5 check of the decoded stream.
+   color, plus the live check, on two lines with their own status:
+   - **Transmission vérifiée**: the bytes delivered to the device equal the decoded PCM
+     (exclusive mode only; in shared mode the line says it does not apply).
+   - **Fichier intègre**: the decoded PCM matches the file's own MD5 (only when the file has
+     one; otherwise the line says the file carries no checksum).
 3. **Files are judged, not trusted.** Album pages end with "Qualité": signal path for this
    album on the current output, and an authenticity verdict with its measured reasons
    (effective bits, spectral cutoff, DR, clipping, MD5) and a spectrogram where a fake hi-res
