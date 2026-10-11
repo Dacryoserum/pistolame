@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["prototypes"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Dacryoserum/pistolame"
+version = "0.1.0"
+
+[workspace.dependencies]
+pistolame-core    = { path = "crates/pistolame-core" }
+pistolame-output  = { path = "crates/pistolame-output" }
+pistolame-library = { path = "crates/pistolame-library" }
+
+symphonia         = { version = "0.6.1", default-features = false, features = ["flac"] }
+rtrb              = "0.4.0"
+md-5              = "0.11.0"
+crossbeam-channel = "0.5.17"
+thiserror         = "2.0.21"
+anyhow            = "1.0.104"
+slint             = "=1.18.1"
+slint-build       = "=1.18.1"
+rfd               = "0.17.2"
+flacenc           = { version = "0.5.1", default-features = false }
+windows           = "0.62.2"   # features listed per crate
+
+[workspace.lints.rust]
+unsafe_code = "deny"            # overridden with #![allow(unsafe_code)] only in backend modules
+missing_docs = "warn"           # -D warnings in CI turns this into an error
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"   # every unsafe block needs a // SAFETY: comment
+unwrap_used = "deny"                  # AGENTS.md: no unwrap outside tests
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "warn"                 # examples opt out locally
+float_arithmetic = "allow"            # set to "deny" inside pcm/ and feeder/ via #![deny(...)]
+
+[profile.release]
+opt-level = 3
+debug = "line-tables-only"   # usable backtraces from user crash reports
+strip = "debuginfo"
+lto = "thin"

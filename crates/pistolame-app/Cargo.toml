@@ -1,0 +1,22 @@
+[package]
+name = "pistolame-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+pistolame-core.workspace = true
+pistolame-output.workspace = true
+slint.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

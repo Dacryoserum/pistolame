@@ -1,0 +1,26 @@
+[package]
+name = "pistolame-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+symphonia.workspace = true
+rtrb.workspace = true
+md-5.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+flacenc = { workspace = true, optional = true }
+
+[dev-dependencies]
+flacenc.workspace = true
+
+[features]
+# Exposes the `testing` module (fixture generator, fake output) to other crates' tests.
+test-support = ["dep:flacenc"]
