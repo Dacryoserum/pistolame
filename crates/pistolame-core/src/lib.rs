@@ -10,6 +10,8 @@ pub mod output_contract;
 pub mod pcm;
 pub mod playback_ring;
 pub mod signal_path;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod timing;
 pub mod verification;
 
