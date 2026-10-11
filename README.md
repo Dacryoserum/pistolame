@@ -28,7 +28,6 @@ able to **prove** what it claims.
 PRODUCT.md        users, jobs to be done, product principles
 DESIGN.md         visual system (tokens, type, components)
 docs/decisions/   architecture decision records
-docs/plans/       implementation plans
 docs/ideas.md     idea backlog
 prototypes/       throwaway UI spikes (Slint, iced, GPUI)
 ```
