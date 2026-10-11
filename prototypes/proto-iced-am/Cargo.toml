@@ -1,0 +1,8 @@
+[package]
+name = "proto-iced-am"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common = { path = "../common" }
+iced = { version = "0.14.0", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "thread-pool", "web-colors", "svg", "image-without-codecs"] }

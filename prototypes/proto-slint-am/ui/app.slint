@@ -1,0 +1,396 @@
+import "../../assets/fonts/Inter-Regular.ttf";
+import "../../assets/fonts/Inter-Medium.ttf";
+import "../../assets/fonts/Inter-SemiBold.ttf";
+import "../../assets/fonts/InterDisplay-Bold.ttf";
+import { Palette } from "std-widgets.slint";
+import { AlbumDetail, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AppState, ViewKind } from "state.slint";
+import { Tokens } from "tokens.slint";
+
+export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, TrackRowData, ViewKind } from "state.slint";
+export { Tokens } from "tokens.slint";
+
+export component AppWindow inherits Window {
+    title: "Pistolame";
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 1100px;
+    min-height: 700px;
+    default-font-family: "Inter";
+    default-font-size: 13px;
+    background: Tokens.surface-content;
+
+    property <bool> is-dark: AppState.is-dark;
+    property <length> toolbar-width: root.width - 240px;
+    property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - 168px - 20px - 48px, 360px, 560px);
+    property <length> side-gap: (root.toolbar-width - 20px - 172px - 168px - 20px - root.lcd-width) / 2;
+    property <length> lcd-x: 20px + 172px + root.side-gap;
+    property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
+    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Sortie audio", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
+    property <[image]> item-icons: [Icons.clock-counter-clockwise, Icons.microphone-stage, Icons.vinyl-record, Icons.music-note, Icons.seal-check, Icons.waveform, Icons.speaker-hifi, Icons.playlist, Icons.playlist, Icons.playlist];
+
+    // The std widgets (scrollbars) follow the theme through the Palette global.
+    changed is-dark => {
+        Palette.color-scheme = root.is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = root.is-dark ? ColorScheme.dark : ColorScheme.light;
+        key-scope.focus();
+    }
+
+    function close-popover-or-go-back() {
+        if AppState.is-popover-open {
+            AppState.is-popover-open = false;
+        } else if AppState.view == ViewKind.detail {
+            AppState.go-back();
+        }
+    }
+
+    key-scope := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " {
+                AppState.toggle-play();
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.close-popover-or-go-back();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "t" || event.text == "T" || event.text == "\u{14}") {
+                AppState.toggle-theme();
+                return accept;
+            }
+            return reject;
+        }
+
+        // Clicks on empty areas take the keyboard focus back from the search field.
+        TouchArea {
+            clicked => {
+                key-scope.focus();
+            }
+        }
+
+        // Content region.
+        Rectangle {
+            x: 240px;
+            y: 60px;
+            width: root.toolbar-width;
+            height: root.height - 60px;
+            background: Tokens.surface-content;
+            clip: true;
+            AlbumsGrid {
+                visible: AppState.view == ViewKind.grid;
+            }
+
+            AlbumDetail {
+                visible: AppState.view == ViewKind.detail;
+            }
+
+            PlaceholderView {
+                visible: AppState.view == ViewKind.placeholder;
+                title: root.item-labels[AppState.selected-item];
+                icon: root.item-icons[AppState.selected-item];
+            }
+        }
+
+        // Toolbar.
+        Rectangle {
+            x: 240px;
+            y: 0px;
+            width: root.toolbar-width;
+            height: 60px;
+            background: Tokens.surface-toolbar;
+            Rectangle {
+                x: 0px;
+                y: 59px;
+                height: 1px;
+                background: Tokens.separator-chrome;
+            }
+
+            IconButton {
+                x: 20px;
+                y: 16px;
+                width: 28px;
+                height: 28px;
+                icon: Icons.shuffle;
+                icon-size: 16px;
+                icon-color: AppState.is-shuffle-on ? Tokens.accent : Tokens.text-secondary;
+                label: "Aléatoire";
+                clicked => {
+                    AppState.is-shuffle-on = !AppState.is-shuffle-on;
+                    key-scope.focus();
+                }
+            }
+
+            IconButton {
+                x: 52px;
+                y: 14px;
+                width: 32px;
+                height: 32px;
+                icon: Icons.skip-back-fill;
+                icon-size: 18px;
+                label: "Précédent";
+                clicked => {
+                    AppState.previous-track();
+                    key-scope.focus();
+                }
+            }
+
+            IconButton {
+                x: 88px;
+                y: 12px;
+                width: 36px;
+                height: 36px;
+                icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill;
+                icon-size: 22px;
+                label: AppState.is-playing ? "Pause" : "Lecture";
+                clicked => {
+                    AppState.toggle-play();
+                    key-scope.focus();
+                }
+            }
+
+            IconButton {
+                x: 128px;
+                y: 14px;
+                width: 32px;
+                height: 32px;
+                icon: Icons.skip-forward-fill;
+                icon-size: 18px;
+                label: "Suivant";
+                clicked => {
+                    AppState.next-track();
+                    key-scope.focus();
+                }
+            }
+
+            IconButton {
+                x: 164px;
+                y: 16px;
+                width: 28px;
+                height: 28px;
+                icon: Icons.repeat;
+                icon-size: 16px;
+                icon-color: AppState.is-repeat-on ? Tokens.accent : Tokens.text-secondary;
+                label: "Répéter";
+                clicked => {
+                    AppState.is-repeat-on = !AppState.is-repeat-on;
+                    key-scope.focus();
+                }
+            }
+
+            Lcd {
+                x: root.lcd-x;
+                y: 8px;
+                width: root.lcd-width;
+            }
+
+            Rectangle {
+                x: root.toolbar-width - 20px - 168px;
+                y: 0px;
+                width: 168px;
+                height: 60px;
+                Image {
+                    x: 0px;
+                    y: 23px;
+                    width: 14px;
+                    height: 14px;
+                    source: Icons.speaker-low;
+                    colorize: Tokens.text-secondary;
+                }
+
+                VolumeSlider {
+                    x: 20px;
+                    y: 16px;
+                }
+
+                Image {
+                    x: 114px;
+                    y: 23px;
+                    width: 14px;
+                    height: 14px;
+                    source: Icons.speaker-high;
+                    colorize: Tokens.text-secondary;
+                }
+
+                IconButton {
+                    x: 140px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                    icon: Icons.speaker-hifi;
+                    icon-size: 18px;
+                    icon-color: AppState.is-popover-open ? Tokens.accent : Tokens.text-secondary;
+                    label: "Sortie audio";
+                    clicked => {
+                        AppState.is-popover-open = !AppState.is-popover-open;
+                    }
+                }
+            }
+        }
+
+        // Sidebar.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 240px;
+            height: root.height;
+            background: Tokens.surface-sidebar;
+            Rectangle {
+                x: 239px;
+                y: 0px;
+                width: 1px;
+                background: Tokens.separator-chrome;
+            }
+
+            SearchField {
+                x: 12px;
+                y: 16px;
+            }
+
+            SidebarHeader {
+                y: 60px;
+                text: "Bibliothèque";
+            }
+
+            SidebarItem {
+                y: 84px;
+                icon: Icons.clock-counter-clockwise;
+                label: "Ajouts récents";
+                is-selected: AppState.selected-item == 0;
+                clicked => {
+                    AppState.select-item(0);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 112px;
+                icon: Icons.microphone-stage;
+                label: "Artistes";
+                is-selected: AppState.selected-item == 1;
+                clicked => {
+                    AppState.select-item(1);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 140px;
+                icon: Icons.vinyl-record;
+                label: "Albums";
+                is-selected: AppState.selected-item == 2;
+                clicked => {
+                    AppState.select-item(2);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 168px;
+                icon: Icons.music-note;
+                label: "Morceaux";
+                is-selected: AppState.selected-item == 3;
+                clicked => {
+                    AppState.select-item(3);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarHeader {
+                y: 212px;
+                text: "Analyse";
+            }
+
+            SidebarItem {
+                y: 236px;
+                icon: Icons.seal-check;
+                label: "Authenticité";
+                is-selected: AppState.selected-item == 4;
+                clicked => {
+                    AppState.select-item(4);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 264px;
+                icon: Icons.waveform;
+                label: "Spectrogrammes";
+                is-selected: AppState.selected-item == 5;
+                clicked => {
+                    AppState.select-item(5);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 292px;
+                icon: Icons.speaker-hifi;
+                label: "Sortie audio";
+                is-selected: AppState.selected-item == 6;
+                clicked => {
+                    AppState.select-item(6);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarHeader {
+                y: 336px;
+                text: "Playlists";
+            }
+
+            SidebarItem {
+                y: 360px;
+                icon: Icons.playlist;
+                label: "Écoute critique";
+                is-selected: AppState.selected-item == 7;
+                clicked => {
+                    AppState.select-item(7);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 388px;
+                icon: Icons.playlist;
+                label: "Hi-Res 24/192";
+                is-selected: AppState.selected-item == 8;
+                clicked => {
+                    AppState.select-item(8);
+                    key-scope.focus();
+                }
+            }
+
+            SidebarItem {
+                y: 416px;
+                icon: Icons.playlist;
+                label: "Vinyles numérisés";
+                is-selected: AppState.selected-item == 9;
+                clicked => {
+                    AppState.select-item(9);
+                    key-scope.focus();
+                }
+            }
+        }
+
+        // Popover layer: an outside click closes it.
+        if AppState.is-popover-open: TouchArea {
+            clicked => {
+                AppState.is-popover-open = false;
+                key-scope.focus();
+            }
+        }
+        if AppState.is-popover-open: Popover {
+            // Fades in and slides from y = 60 to 64; closing is instant.
+            property <float> appear: 0;
+            init => {
+                self.appear = 1;
+            }
+            animate appear { duration: 200ms; easing: ease-out-quint; }
+            x: root.lcd-right-window - 380px;
+            y: 60px + 4px * self.appear;
+            opacity: self.appear;
+        }
+    }
+}

@@ -1,0 +1,339 @@
+import { ListView } from "std-widgets.slint";
+
+global Palette {
+    out property <color> bg: #0B0C0F;
+    out property <color> surface: #14161B;
+    out property <color> surface-2: #1C1F26;
+    out property <color> border: #262A33;
+    out property <color> text: #E8E6E1;
+    out property <color> muted: #8B8F98;
+    out property <color> accent: #D9A441;
+    out property <color> ok: #4CC38A;
+}
+
+export struct TrackRow {
+    number: string,
+    title: string,
+    artist: string,
+    album: string,
+    format: string,
+    duration: string,
+}
+
+export struct AlbumCard {
+    title: string,
+    artist: string,
+    c1: color,
+    c2: color,
+}
+
+export struct SignalStep {
+    label: string,
+    value: string,
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    height: 34px;
+    border-radius: 8px;
+    background: active ? Palette.surface-2 : touch.has-hover ? Palette.surface : transparent;
+    animate background { duration: 120ms; }
+    touch := TouchArea { }
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 10px;
+        Rectangle {
+            width: 3px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 2px;
+            background: active ? Palette.accent : transparent;
+        }
+        Text {
+            text: label;
+            vertical-alignment: center;
+            color: active ? Palette.text : Palette.muted;
+            font-size: 13px;
+            font-weight: active ? 600 : 400;
+        }
+    }
+}
+
+component Cover inherits Rectangle {
+    in property <color> c1;
+    in property <color> c2;
+    border-radius: 10px;
+    clip: true;
+    background: @linear-gradient(135deg, c1 0%, c2 100%);
+    Rectangle {
+        width: parent.width * 0.42;
+        height: self.width;
+        border-radius: self.width / 2;
+        x: parent.width * 0.5;
+        y: parent.height * 0.12;
+        background: #ffffff14;
+    }
+}
+
+component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> primary;
+    callback clicked;
+    width: primary ? 44px : 34px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: primary ? (touch.pressed ? Palette.accent.darker(0.2) : Palette.accent)
+                        : (touch.has-hover ? Palette.surface-2 : transparent);
+    animate background { duration: 100ms; }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        text: glyph;
+        color: primary ? Palette.bg : Palette.text;
+        font-size: primary ? 16px : 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Pistolame — maquette Slint";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Palette.bg;
+    default-font-size: 13px;
+
+    in property <[TrackRow]> tracks;
+    in property <[AlbumCard]> albums;
+    in property <[SignalStep]> signal;
+    in property <[float]> spectrum;
+    in property <int> track-count;
+    in property <int> album-count;
+    in property <string> now-title;
+    in property <string> now-artist;
+    in property <string> now-album;
+    in property <string> now-format;
+    in property <color> now-c1;
+    in property <color> now-c2;
+    in property <float> progress;
+    in property <string> elapsed;
+    in property <string> total;
+    in property <bool> playing;
+    in-out property <int> selected: -1;
+    callback toggle-play;
+    callback select(int);
+
+    VerticalLayout {
+        HorizontalLayout {
+            // Barre latérale
+            Rectangle {
+                width: 220px;
+                background: Palette.surface;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 4px;
+                    Text {
+                        text: "PISTOLAME";
+                        color: Palette.accent;
+                        font-size: 15px;
+                        font-weight: 800;
+                        letter-spacing: 3px;
+                        height: 48px;
+                        vertical-alignment: center;
+                    }
+                    NavItem { label: "Bibliothèque"; active: true; }
+                    NavItem { label: "Albums"; }
+                    NavItem { label: "Artistes"; }
+                    NavItem { label: "Dossiers"; }
+                    NavItem { label: "Analyse"; }
+                    Rectangle { }
+                    Rectangle {
+                        height: 64px;
+                        border-radius: 10px;
+                        background: Palette.surface-2;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+                            Text { text: "SORTIE"; color: Palette.muted; font-size: 10px; letter-spacing: 1.5px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 8px; height: 8px; border-radius: 4px;
+                                    y: (parent.height - self.height) / 2;
+                                    background: Palette.ok;
+                                }
+                                Text { text: "FiiO K11 · WASAPI excl."; color: Palette.text; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Contenu principal
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                HorizontalLayout {
+                    height: 40px;
+                    Text { text: "Bibliothèque"; color: Palette.text; font-size: 26px; font-weight: 700; vertical-alignment: center; }
+                    Text {
+                        text: track-count + " titres · " + album-count + " albums";
+                        color: Palette.muted;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+                // Bandeau d'albums
+                Flickable {
+                    height: 170px;
+                    content-width: albums.length * 142px;
+                    for album[i] in albums: Rectangle {
+                        x: i * 142px;
+                        width: 128px;
+                        height: 170px;
+                        Cover { y: 0; width: 128px; height: 128px; c1: album.c1; c2: album.c2; }
+                        Text { y: 134px; width: 128px; text: album.title; color: Palette.text; overflow: elide; }
+                        Text { y: 152px; width: 128px; text: album.artist; color: Palette.muted; font-size: 11px; overflow: elide; }
+                    }
+                }
+                // En-tête du tableau
+                HorizontalLayout {
+                    height: 28px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+                    Text { width: 32px; text: "#"; color: Palette.muted; font-size: 11px; vertical-alignment: center; }
+                    Text { text: "TITRE"; color: Palette.muted; font-size: 11px; letter-spacing: 1px; vertical-alignment: center; horizontal-stretch: 2; }
+                    Text { text: "ARTISTE"; color: Palette.muted; font-size: 11px; letter-spacing: 1px; vertical-alignment: center; horizontal-stretch: 1.4; }
+                    Text { text: "ALBUM"; color: Palette.muted; font-size: 11px; letter-spacing: 1px; vertical-alignment: center; horizontal-stretch: 1.4; }
+                    Text { width: 96px; text: "FORMAT"; color: Palette.muted; font-size: 11px; letter-spacing: 1px; vertical-alignment: center; }
+                    Text { width: 48px; text: "DURÉE"; color: Palette.muted; font-size: 11px; horizontal-alignment: right; vertical-alignment: center; }
+                }
+                // Liste virtualisée de 10 000 titres
+                ListView {
+                    vertical-stretch: 1;
+                    for t[i] in tracks: Rectangle {
+                        height: 36px;
+                        border-radius: 6px;
+                        background: i == selected ? Palette.surface-2 : row-touch.has-hover ? #ffffff08 : transparent;
+                        row-touch := TouchArea { clicked => { root.select(i); } }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 12px;
+                            Text { width: 32px; text: t.number; color: Palette.muted; vertical-alignment: center; }
+                            Text { text: t.title; color: i == selected ? Palette.accent : Palette.text; vertical-alignment: center; overflow: elide; horizontal-stretch: 2; }
+                            Text { text: t.artist; color: Palette.muted; vertical-alignment: center; overflow: elide; horizontal-stretch: 1.4; }
+                            Text { text: t.album; color: Palette.muted; vertical-alignment: center; overflow: elide; horizontal-stretch: 1.4; }
+                            Text { width: 96px; text: t.format; color: Palette.muted; font-size: 11px; vertical-alignment: center; }
+                            Text { width: 48px; text: t.duration; color: Palette.muted; horizontal-alignment: right; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+
+            // Panneau « En lecture »
+            Rectangle {
+                width: 320px;
+                background: Palette.surface;
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 14px;
+                    Text { text: "EN LECTURE"; color: Palette.muted; font-size: 10px; letter-spacing: 1.5px; }
+                    Cover { width: 272px; height: 272px; c1: now-c1; c2: now-c2; border-radius: 14px; }
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text { text: now-title; color: Palette.text; font-size: 18px; font-weight: 700; overflow: elide; }
+                        Text { text: now-artist + " — " + now-album; color: Palette.muted; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Rectangle {
+                            height: 24px;
+                            width: badge.preferred-width + 20px;
+                            border-radius: 12px;
+                            background: Palette.ok.with-alpha(0.14);
+                            border-width: 1px;
+                            border-color: Palette.ok.with-alpha(0.4);
+                            badge := Text { text: "✓ BIT-PERFECT · 24/96 → 24/96"; color: Palette.ok; font-size: 11px; font-weight: 700; }
+                        }
+                    }
+                    // Chemin du signal
+                    VerticalLayout {
+                        spacing: 6px;
+                        for step in signal: HorizontalLayout {
+                            spacing: 10px;
+                            Rectangle { width: 6px; height: 6px; border-radius: 3px; y: (parent.height - self.height) / 2; background: Palette.ok; }
+                            Text { width: 70px; text: step.label; color: Palette.muted; font-size: 11px; }
+                            Text { text: step.value; color: Palette.text; font-size: 12px; }
+                        }
+                    }
+                    // Spectre
+                    Rectangle {
+                        height: 110px;
+                        border-radius: 8px;
+                        background: Palette.bg;
+                        for v[i] in spectrum: Rectangle {
+                            x: 6px + i * ((parent.width - 12px) / spectrum.length);
+                            width: (parent.width - 12px) / spectrum.length - 2px;
+                            height: max(2px, v * (parent.height - 12px));
+                            y: parent.height - 6px - self.height;
+                            border-radius: 1px;
+                            background: @linear-gradient(0deg, Palette.accent 0%, Palette.ok 100%);
+                        }
+                    }
+                    Rectangle { }
+                }
+            }
+        }
+
+        // Barre de lecture
+        Rectangle {
+            height: 76px;
+            background: Palette.surface;
+            border-width: 0px;
+            Rectangle { y: 0; height: 1px; background: Palette.border; }
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 16px;
+                alignment: stretch;
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: center;
+                    IconButton { glyph: "⏮\u{FE0E}"; y: (parent.height - self.height) / 2; }
+                    IconButton { glyph: playing ? "⏸\u{FE0E}" : "▶"; primary: true; y: (parent.height - self.height) / 2; clicked => { root.toggle-play(); } }
+                    IconButton { glyph: "⏭\u{FE0E}"; y: (parent.height - self.height) / 2; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        Text { text: now-title + " · " + now-artist; color: Palette.text; overflow: elide; }
+                        Text { text: elapsed + " / " + total; color: Palette.muted; horizontal-alignment: right; font-size: 12px; }
+                    }
+                    Rectangle {
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Palette.border;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * progress;
+                            border-radius: 2px;
+                            background: Palette.accent;
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 120px;
+                    height: 26px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 6px;
+                    background: Palette.surface-2;
+                    Text { text: now-format; color: Palette.accent; font-size: 11px; font-weight: 700; }
+                }
+            }
+        }
+    }
+}

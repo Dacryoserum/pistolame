@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["common", "proto-slint", "proto-iced", "proto-gpui", "proto-slint-am", "proto-iced-am"]
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = true
