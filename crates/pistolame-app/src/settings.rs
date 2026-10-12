@@ -27,6 +27,8 @@ const KEY_VALUE_SEPARATOR: char = '=';
 
 const SETTINGS_FILE_NAME: &str = "settings.txt";
 const TEMPORARY_FILE_NAME: &str = "settings.txt.tmp";
+/// SQLite file of the persistent library (docs/plans/persistent-library.md).
+const LIBRARY_FILE_NAME: &str = "library.sqlite3";
 /// Folder under `%APPDATA%` (Windows convention: capitalized product name).
 const APPDATA_FOLDER_NAME: &str = "Pistolame";
 /// Folder under the XDG config directory (Unix convention: lowercase).
@@ -205,17 +207,28 @@ fn push_entry(text: &mut String, key: &str, value: &str) -> anyhow::Result<()> {
 /// `$XDG_CONFIG_HOME/pistolame/settings.txt`, else `$HOME/.config/pistolame/settings.txt`.
 /// Chosen from environment variables so no `cfg` is needed (plan T15).
 fn settings_file_path() -> Option<PathBuf> {
+    Some(app_data_directory()?.join(SETTINGS_FILE_NAME))
+}
+
+/// The library database, beside the settings file.
+pub(crate) fn library_database_path() -> Option<PathBuf> {
+    Some(app_data_directory()?.join(LIBRARY_FILE_NAME))
+}
+
+/// The folder holding everything the app stores: `%APPDATA%\Pistolame` on Windows,
+/// `$XDG_CONFIG_HOME/pistolame` or `~/.config/pistolame` elsewhere.
+fn app_data_directory() -> Option<PathBuf> {
     let environment_directory = |name: &str| {
         std::env::var_os(name)
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty())
     };
     if let Some(app_data) = environment_directory("APPDATA") {
-        return Some(app_data.join(APPDATA_FOLDER_NAME).join(SETTINGS_FILE_NAME));
+        return Some(app_data.join(APPDATA_FOLDER_NAME));
     }
     let config_home = environment_directory("XDG_CONFIG_HOME")
         .or_else(|| environment_directory("HOME").map(|home| home.join(HOME_CONFIG_FOLDER_NAME)))?;
-    Some(config_home.join(XDG_FOLDER_NAME).join(SETTINGS_FILE_NAME))
+    Some(config_home.join(XDG_FOLDER_NAME))
 }
 
 #[cfg(test)]

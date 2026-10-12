@@ -710,6 +710,30 @@ export component Popover inherits Rectangle {
     }
 }
 
+// Right-click menu on an album cover. Only the right button is handled: clicks, hover and the
+// play button underneath keep working. The chosen cover lives in the library, never in files.
+component AlbumArtworkMenu inherits Rectangle {
+    in property <int> album-index;
+    in property <bool> has-custom-artwork;
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Choisir une pochette…";
+                activated => {
+                    AppState.choose-album-artwork(root.album-index);
+                }
+            }
+            MenuItem {
+                title: "Rétablir la pochette d’origine";
+                enabled: root.has-custom-artwork;
+                activated => {
+                    AppState.reset-album-artwork(root.album-index);
+                }
+            }
+        }
+    }
+}
+
 component AlbumTile inherits Rectangle {
     in property <AlbumCard> album;
     in property <length> tile;
@@ -798,6 +822,15 @@ component AlbumTile inherits Rectangle {
         clicked => {
             root.play();
         }
+    }
+
+    AlbumArtworkMenu {
+        x: 0px;
+        y: 0px;
+        width: root.tile;
+        height: root.tile;
+        album-index: root.album.catalog-index;
+        has-custom-artwork: root.album.has-custom-artwork;
     }
 }
 
@@ -938,6 +971,15 @@ export component AlbumDetail inherits Rectangle {
             width: 240px;
             height: 240px;
             source: AppState.detail.artwork;
+        }
+
+        AlbumArtworkMenu {
+            x: 32px;
+            y: 60px;
+            width: 240px;
+            height: 240px;
+            album-index: AppState.detail-album-index;
+            has-custom-artwork: AppState.detail.has-custom-artwork;
         }
 
         Txt {

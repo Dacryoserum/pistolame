@@ -46,6 +46,7 @@ mod tests {
                 title: format!("Album {}", index + 1).into(),
                 artist: "Artiste témoin".into(),
                 artwork: artwork.clone(),
+                has_custom_artwork: false,
             })
             .collect::<Vec<_>>();
         state.set_albums(ModelRc::new(VecModel::from(albums)));

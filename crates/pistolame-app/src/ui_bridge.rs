@@ -3,7 +3,7 @@ use crate::{AlbumCard, AppState, AppWindow, DetailInfo, PathStep, TrackRowData};
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
-use pistolame_library::MusicFile;
+use pistolame_library::{AlbumKey, LibrarySnapshot, LibraryStore, MusicFile};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,25 +11,35 @@ use std::rc::Rc;
 use std::time::Duration;
 
 struct Album {
+    key: AlbumKey,
     title: String,
     artist: String,
-    directory: PathBuf,
     tracks: Vec<MusicFile>,
     artwork: slint::Image,
+    /// Whether the user chose this cover (stored in the library, files untouched).
+    has_custom_artwork: bool,
 }
-struct Imported {
-    files: Vec<MusicFile>,
+
+/// What the library worker sends back to the UI thread.
+struct LibraryUpdate {
+    /// The whole library, when it changed; `None` when nothing needs to be redrawn.
+    snapshot: Option<LibrarySnapshot>,
+    /// Files or folders that could not be read, as display text.
     errors: Vec<String>,
+    /// The last message of a synchronization: the worker is done.
+    is_final: bool,
 }
 
 pub(crate) struct UiBridge {
     window: slint::Weak<AppWindow>,
     engine: EngineHandle,
     settings: RefCell<AppSettings>,
+    /// The SQLite file of the persistent library; `None` when no app folder exists.
+    library_database: Option<PathBuf>,
     devices: RefCell<Vec<OutputDeviceInfo>>,
     albums: RefCell<Vec<Album>>,
-    imports: Receiver<Imported>,
-    import_sender: Sender<Imported>,
+    imports: Receiver<LibraryUpdate>,
+    import_sender: Sender<LibraryUpdate>,
     is_importing: Cell<bool>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
@@ -46,6 +56,14 @@ pub(crate) struct UiBridge {
 
 impl UiBridge {
     pub(crate) fn new(window: &AppWindow) -> anyhow::Result<Rc<Self>> {
+        Self::with_library_database(window, crate::settings::library_database_path())
+    }
+
+    /// Like `new`, with an explicit library database (`None`: no persistence available).
+    pub(crate) fn with_library_database(
+        window: &AppWindow,
+        library_database: Option<PathBuf>,
+    ) -> anyhow::Result<Rc<Self>> {
         let settings = AppSettings::load();
         let engine = EngineHandle::start(
             pistolame_output::platform_default_output(),
@@ -57,6 +75,7 @@ impl UiBridge {
             window: window.as_weak(),
             engine,
             settings: RefCell::new(settings),
+            library_database,
             devices: RefCell::new(Vec::new()),
             albums: RefCell::new(Vec::new()),
             imports: receiver,
@@ -111,7 +130,7 @@ impl UiBridge {
                     .add_filter("FLAC", &["flac"])
                     .pick_files()
             {
-                handle.import(paths);
+                handle.synchronize_library(paths);
             }
         });
         let handle = self.clone();
@@ -119,11 +138,23 @@ impl UiBridge {
             if !handle.is_importing.get()
                 && let Some(path) = rfd::FileDialog::new().pick_folder()
             {
-                handle.import(vec![path]);
+                handle.synchronize_library(vec![path]);
             }
         });
         let handle = self.clone();
         state.on_search_changed(move |query| handle.update_grid(query.as_str()));
+        let handle = self.clone();
+        state.on_choose_album_artwork(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.choose_album_artwork(index);
+            }
+        });
+        let handle = self.clone();
+        state.on_reset_album_artwork(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.reset_album_artwork(index);
+            }
+        });
         let handle = self.clone();
         state.on_open_current_album(move || {
             if let Some((album, _)) = handle.selected_track.get() {
@@ -258,36 +289,36 @@ impl UiBridge {
         }
     }
 
-    pub(crate) fn import(&self, paths: Vec<PathBuf>) {
+    /// Remembers `new_roots` (none at start-up), shows the stored library at once, then
+    /// rescans every root in the background (docs/plans/persistent-library.md).
+    pub(crate) fn synchronize_library(&self, new_roots: Vec<PathBuf>) {
+        let Some(database) = self.library_database.clone() else {
+            self.message("Aucun dossier pour enregistrer la bibliothèque.".into());
+            return;
+        };
         self.is_importing.set(true);
         if let Some(window) = self.window.upgrade() {
-            window
-                .global::<AppState>()
-                .set_import_status("Lecture des fichiers…".into());
+            window.global::<AppState>().set_import_status(
+                if new_roots.is_empty() {
+                    "Mise à jour de la bibliothèque…"
+                } else {
+                    "Lecture des fichiers…"
+                }
+                .into(),
+            );
         }
         let sender = self.import_sender.clone();
         let result = std::thread::Builder::new()
-            .name("pistolame-import".into())
+            .name("pistolame-library".into())
             .spawn(move || {
-                let (paths, mut errors) = pistolame_library::collect_flac_paths(&paths);
-                let mut files = Vec::new();
-                let mut covers = std::collections::HashMap::new();
-                for path in paths {
-                    match pistolame_library::read_music_file(&path) {
-                        Ok(mut file) => {
-                            // Albums share one encoded cover, rather than retaining a copy per track.
-                            let key = (path.parent().map(ToOwned::to_owned), file.album.clone());
-                            if let Some(cover) = covers.get(&key) {
-                                file.artwork = Some(std::sync::Arc::clone(cover));
-                            } else if let Some(cover) = &file.artwork {
-                                covers.insert(key, cover.clone());
-                            }
-                            files.push(file);
-                        }
-                        Err(error) => errors.push(format!("{} : {error}", path.display())),
-                    }
+                let outcome = synchronize_in_background(&database, &new_roots, &sender);
+                if let Err(error) = outcome {
+                    let _ = sender.send(LibraryUpdate {
+                        snapshot: None,
+                        errors: vec![error.to_string()],
+                        is_final: true,
+                    });
                 }
-                let _ = sender.send(Imported { files, errors });
             });
         if let Err(error) = result {
             self.is_importing.set(false);
@@ -295,8 +326,37 @@ impl UiBridge {
         }
     }
 
-    fn finish_import(&self, imported: Imported) {
-        self.is_importing.set(false);
+    fn apply_library_update(&self, update: LibraryUpdate) {
+        if update.is_final {
+            self.is_importing.set(false);
+        }
+        if let Some(snapshot) = update.snapshot {
+            self.replace_albums(snapshot);
+        }
+        if let Some(window) = self.window.upgrade() {
+            let albums = self.albums.borrow();
+            let count: usize = albums.iter().map(|album| album.tracks.len()).sum();
+            window.global::<AppState>().set_import_status(
+                format!(
+                    "{count} morceau{} · {} album{}",
+                    if count == 1 { "" } else { "x" },
+                    albums.len(),
+                    if albums.len() == 1 { "" } else { "s" }
+                )
+                .into(),
+            );
+        }
+        if let Some(first) = update.errors.first() {
+            self.message(format!(
+                "{} problème(s) d’import. {first}",
+                update.errors.len()
+            ));
+        }
+    }
+
+    /// Rebuilds the albums from a library snapshot, keeping the selected track and the open
+    /// album when they still exist.
+    fn replace_albums(&self, snapshot: LibrarySnapshot) {
         let selected_path = self.selected_track.get().and_then(|(album, track)| {
             self.albums
                 .borrow()
@@ -304,87 +364,130 @@ impl UiBridge {
                 .and_then(|album| album.tracks.get(track))
                 .map(|track| track.path.clone())
         });
-        let mut albums = self.albums.borrow_mut();
-        for file in imported.files {
-            if albums
-                .iter()
-                .any(|album| album.tracks.iter().any(|track| track.path == file.path))
-            {
-                continue;
-            }
-            let directory = file
-                .path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(""))
-                .to_owned();
-            let existing = albums
-                .iter()
-                .position(|album| album.directory == directory && album.title == file.album);
-            let index = existing.unwrap_or_else(|| {
-                let artwork = file
-                    .artwork
-                    .as_ref()
-                    .and_then(|bytes| slint::Image::load_from_data(bytes, None).ok())
-                    .unwrap_or_default();
-                albums.push(Album {
-                    title: file.album.clone(),
-                    artist: file.artist.clone(),
-                    directory,
-                    tracks: Vec::new(),
-                    artwork,
-                });
-                albums.len() - 1
-            });
-            albums[index].tracks.push(file);
+        let detail_key = self
+            .albums
+            .borrow()
+            .get(self.detail_album.get())
+            .map(|album| album.key.clone());
+        let albums = albums_from_snapshot(snapshot);
+        self.selected_track.set(selected_path.and_then(|path| {
+            albums.iter().enumerate().find_map(|(album, entry)| {
+                entry
+                    .tracks
+                    .iter()
+                    .position(|track| track.path == path)
+                    .map(|track| (album, track))
+            })
+        }));
+        if let Some(index) =
+            detail_key.and_then(|key| albums.iter().position(|album| album.key == key))
+        {
+            self.detail_album.set(index);
         }
-        for album in albums.iter_mut() {
-            album.tracks.sort_by(|left, right| {
-                (left.disc_number, left.track_number, &left.path).cmp(&(
-                    right.disc_number,
-                    right.track_number,
-                    &right.path,
-                ))
-            });
-        }
-        if let Some(path) = selected_path {
-            self.selected_track
-                .set(albums.iter().enumerate().find_map(|(album, entry)| {
-                    entry
-                        .tracks
-                        .iter()
-                        .position(|track| track.path == path)
-                        .map(|track| (album, track))
-                }));
-        }
-        let count: usize = albums.iter().map(|album| album.tracks.len()).sum();
-        drop(albums);
+        *self.albums.borrow_mut() = albums;
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
-            state.set_import_status(
-                format!(
-                    "{count} morceau{} · {} album{}",
-                    if count == 1 { "" } else { "x" },
-                    self.albums.borrow().len(),
-                    if self.albums.borrow().len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                )
-                .into(),
-            );
             self.update_grid(state.get_query().as_str());
             self.show_album(self.detail_album.get());
-            if let Some((album, track)) = self.selected_track.get() {
-                state.set_playing_album_index(album as i32);
-                state.set_playing_track_index(track as i32);
+            let (album, track) = self
+                .selected_track
+                .get()
+                .map_or((-1, -1), |(album, track)| (album as i32, track as i32));
+            state.set_playing_album_index(album);
+            state.set_playing_track_index(track);
+        }
+    }
+
+    /// Lets the user pick a JPEG or PNG for album `index`; the music files stay untouched.
+    fn choose_album_artwork(&self, index: usize) {
+        let Some(key) = self.album_key(index) else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Image", &["jpg", "jpeg", "png"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.message(format!("Impossible de lire l’image : {error}"));
+                return;
+            }
+        };
+        let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
+            self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
+            return;
+        };
+        let stored = self.with_library(|store| store.set_album_artwork(&key, &bytes));
+        if stored {
+            self.set_album_artwork(index, image, true);
+        }
+    }
+
+    /// Goes back to the cover found in the files for album `index`.
+    fn reset_album_artwork(&self, index: usize) {
+        let Some(key) = self.album_key(index) else {
+            return;
+        };
+        if self.with_library(|store| store.clear_album_artwork(&key)) {
+            let original = self
+                .albums
+                .borrow()
+                .get(index)
+                .map(|album| decode_artwork(original_artwork(&album.tracks)))
+                .unwrap_or_default();
+            self.set_album_artwork(index, original, false);
+        }
+    }
+
+    fn album_key(&self, index: usize) -> Option<AlbumKey> {
+        self.albums
+            .borrow()
+            .get(index)
+            .map(|album| album.key.clone())
+    }
+
+    /// Runs one quick library change on the UI thread; `false` (and a message) on failure.
+    fn with_library(
+        &self,
+        change: impl FnOnce(&mut LibraryStore) -> Result<(), pistolame_library::LibraryError>,
+    ) -> bool {
+        let result = self
+            .library_database
+            .clone()
+            .ok_or_else(|| "aucun dossier pour la bibliothèque".to_owned())
+            .and_then(|database| LibraryStore::open(&database).map_err(|error| error.to_string()))
+            .and_then(|mut store| change(&mut store).map_err(|error| error.to_string()));
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                self.message(format!("Pochette non enregistrée : {error}"));
+                false
             }
         }
-        if let Some(first) = imported.errors.first() {
-            self.message(format!(
-                "{} problème(s) d’import. {first}",
-                imported.errors.len()
-            ));
+    }
+
+    fn set_album_artwork(&self, index: usize, artwork: slint::Image, is_custom: bool) {
+        if let Some(album) = self.albums.borrow_mut().get_mut(index) {
+            album.artwork = artwork.clone();
+            album.has_custom_artwork = is_custom;
+        }
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        self.update_grid(state.get_query().as_str());
+        if self.detail_album.get() == index {
+            self.show_album(index);
+        }
+        if self
+            .selected_track
+            .get()
+            .is_some_and(|(album, _)| album == index)
+        {
+            state.set_lcd_artwork(artwork);
         }
     }
 
@@ -408,6 +511,7 @@ impl UiBridge {
                 title: album.title.as_str().into(),
                 artist: album.artist.as_str().into(),
                 artwork: album.artwork.clone(),
+                has_custom_artwork: album.has_custom_artwork,
             })
             .collect();
         window
@@ -437,6 +541,7 @@ impl UiBridge {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
             artwork: album.artwork.clone(),
+            has_custom_artwork: album.has_custom_artwork,
             meta_line: format!("{} morceaux · FLAC", album.tracks.len()).into(),
             footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
             verdict_label: "Non analysé".into(),
@@ -600,8 +705,8 @@ impl UiBridge {
     }
 
     pub(crate) fn tick(&self) {
-        for imported in self.imports.try_iter() {
-            self.finish_import(imported);
+        for update in self.imports.try_iter() {
+            self.apply_library_update(update);
         }
         for event in self.engine.try_receive_events() {
             self.handle_event(event);
@@ -819,4 +924,77 @@ impl UiBridge {
             }
         }
     }
+}
+
+/// The worker side of `synchronize_library`: the stored library first, then the rescan.
+fn synchronize_in_background(
+    database: &std::path::Path,
+    new_roots: &[PathBuf],
+    sender: &Sender<LibraryUpdate>,
+) -> Result<(), pistolame_library::LibraryError> {
+    let mut store = LibraryStore::open(database)?;
+    store.add_roots(new_roots)?;
+    let _ = sender.send(LibraryUpdate {
+        snapshot: Some(store.snapshot()?),
+        errors: Vec::new(),
+        is_final: false,
+    });
+    let report = store.synchronize()?;
+    let _ = sender.send(LibraryUpdate {
+        snapshot: if report.has_changed {
+            Some(store.snapshot()?)
+        } else {
+            None
+        },
+        errors: report.errors,
+        is_final: true,
+    });
+    Ok(())
+}
+
+/// Groups tracks into albums (same folder, same album tag), tracks in disc/track order. The
+/// chosen cover wins over the files' own cover.
+fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
+    let mut albums: Vec<Album> = Vec::new();
+    let mut positions: std::collections::HashMap<AlbumKey, usize> =
+        std::collections::HashMap::new();
+    for track in snapshot.tracks {
+        let key = AlbumKey::of(&track);
+        let index = *positions.entry(key.clone()).or_insert_with(|| {
+            albums.push(Album {
+                title: track.album.clone(),
+                artist: track.artist.clone(),
+                key,
+                tracks: Vec::new(),
+                artwork: slint::Image::default(),
+                has_custom_artwork: false,
+            });
+            albums.len() - 1
+        });
+        albums[index].tracks.push(track);
+    }
+    for album in &mut albums {
+        album.tracks.sort_by(|left, right| {
+            (left.disc_number, left.track_number, &left.path).cmp(&(
+                right.disc_number,
+                right.track_number,
+                &right.path,
+            ))
+        });
+        let custom = snapshot.artwork_overrides.get(&album.key);
+        album.has_custom_artwork = custom.is_some();
+        album.artwork = decode_artwork(custom.or_else(|| original_artwork(&album.tracks)));
+    }
+    albums
+}
+
+/// The first cover found in an album's files (embedded or beside them).
+fn original_artwork(tracks: &[MusicFile]) -> Option<&std::sync::Arc<[u8]>> {
+    tracks.iter().find_map(|track| track.artwork.as_ref())
+}
+
+fn decode_artwork(bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
+    bytes
+        .and_then(|bytes| slint::Image::load_from_data(bytes, None).ok())
+        .unwrap_or_default()
 }

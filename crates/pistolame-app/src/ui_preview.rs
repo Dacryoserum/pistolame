@@ -11,8 +11,11 @@ mod tests {
     #[test]
     #[ignore = "opens a desktop window to render the UI without playing audio"]
     fn render_album_preview() -> anyhow::Result<()> {
+        // The preview imports into a throwaway library, never into the user's.
+        let database = std::env::temp_dir().join("pistolame-preview-library.sqlite3");
+        let _ = std::fs::remove_file(&database);
         let window = AppWindow::new()?;
-        let bridge = ui_bridge::UiBridge::new(&window)?;
+        let bridge = ui_bridge::UiBridge::with_library_database(&window, Some(database))?;
         bridge.connect(&window);
         if std::env::var_os("PISTOLAME_PREVIEW_LIGHT").is_some() {
             window.global::<AppState>().invoke_toggle_theme();
@@ -25,7 +28,7 @@ mod tests {
 
         let root = std::env::var_os("PISTOLAME_PREVIEW_MUSIC").map(std::path::PathBuf::from);
         if let Some(root) = root {
-            bridge.import(vec![root]);
+            bridge.synchronize_library(vec![root]);
         }
         let timer = slint::Timer::default();
         timer.start(
