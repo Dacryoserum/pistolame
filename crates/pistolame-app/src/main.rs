@@ -22,6 +22,7 @@ mod generated_ui {
 use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
+    settings::migrate_legacy_app_data();
     let window = AppWindow::new()?;
     let bridge = ui_bridge::UiBridge::new(&window)?;
     bridge.connect(&window);

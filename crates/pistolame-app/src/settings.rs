@@ -29,10 +29,15 @@ const SETTINGS_FILE_NAME: &str = "settings.txt";
 const TEMPORARY_FILE_NAME: &str = "settings.txt.tmp";
 /// SQLite file of the persistent library (docs/plans/persistent-library.md).
 const LIBRARY_FILE_NAME: &str = "library.sqlite3";
-/// Folder under `%APPDATA%` (Windows convention: capitalized product name).
-const APPDATA_FOLDER_NAME: &str = "Pistolame";
-/// Folder under the XDG config directory (Unix convention: lowercase).
-const XDG_FOLDER_NAME: &str = "pistolame";
+/// The app's folder inside the system configuration folder: capitalized product name on Windows
+/// and macOS, lowercase on Linux (each platform's convention).
+const APP_FOLDER_NAME: &str = if cfg!(target_os = "linux") {
+    "pistolame"
+} else {
+    "Pistolame"
+};
+/// The folder older versions used on macOS, under `~/.config`.
+const LEGACY_FOLDER_NAME: &str = "pistolame";
 const HOME_CONFIG_FOLDER_NAME: &str = ".config";
 
 /// Choices remembered between runs.
@@ -215,20 +220,46 @@ pub(crate) fn library_database_path() -> Option<PathBuf> {
     Some(app_data_directory()?.join(LIBRARY_FILE_NAME))
 }
 
-/// The folder holding everything the app stores: `%APPDATA%\Pistolame` on Windows,
-/// `$XDG_CONFIG_HOME/pistolame` or `~/.config/pistolame` elsewhere.
+/// The folder holding everything the app stores, in each system's own convention:
+/// `%APPDATA%\Pistolame` (Windows), `~/Library/Application Support/Pistolame` (macOS),
+/// `$XDG_CONFIG_HOME/pistolame` or `~/.config/pistolame` (Linux).
 fn app_data_directory() -> Option<PathBuf> {
-    let environment_directory = |name: &str| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|path| !path.as_os_str().is_empty())
+    Some(dirs::config_dir()?.join(APP_FOLDER_NAME))
+}
+
+/// Moves the settings and the library from the folder older versions used on macOS
+/// (`~/.config/pistolame`) to the system's folder, once. Runs before anything is read.
+/// Never overwrites: it does nothing when the new folder already exists. Best effort: on failure
+/// the app starts with the new, empty folder and the old files stay where they were.
+pub(crate) fn migrate_legacy_app_data() {
+    let (Some(new_directory), Some(home)) = (app_data_directory(), dirs::home_dir()) else {
+        return;
     };
-    if let Some(app_data) = environment_directory("APPDATA") {
-        return Some(app_data.join(APPDATA_FOLDER_NAME));
+    let legacy_directory = home.join(HOME_CONFIG_FOLDER_NAME).join(LEGACY_FOLDER_NAME);
+    let _ = move_directory_once(&legacy_directory, &new_directory);
+}
+
+/// Moves `from` to `to` when `from` exists and `to` does not. Same-volume rename first, then
+/// copy-and-delete (the user's home and its Library are normally on one volume).
+fn move_directory_once(from: &Path, to: &Path) -> std::io::Result<bool> {
+    if from == to || !from.is_dir() || to.exists() {
+        return Ok(false);
     }
-    let config_home = environment_directory("XDG_CONFIG_HOME")
-        .or_else(|| environment_directory("HOME").map(|home| home.join(HOME_CONFIG_FOLDER_NAME)))?;
-    Some(config_home.join(XDG_FOLDER_NAME))
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::rename(from, to).is_ok() {
+        return Ok(true);
+    }
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), to.join(entry.file_name()))?;
+        }
+    }
+    fs::remove_dir_all(from)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -366,5 +397,23 @@ mod tests {
             options.preferred_device_id,
             Some(OutputDeviceId("dev1".to_owned()))
         );
+    }
+
+    #[test]
+    fn legacy_folder_moves_once_and_never_overwrites() {
+        let root = fresh_test_directory("migration");
+        let legacy = root.join("legacy");
+        let new = root.join("Application Support").join("Pistolame");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join(SETTINGS_FILE_NAME), "output_mode = exclusive\n").unwrap();
+        fs::write(legacy.join(LIBRARY_FILE_NAME), "db").unwrap();
+        assert!(move_directory_once(&legacy, &new).unwrap());
+        assert!(!legacy.exists());
+        assert_eq!(fs::read(new.join(LIBRARY_FILE_NAME)).unwrap(), b"db");
+        // A second legacy folder is left alone once the new folder exists.
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join(LIBRARY_FILE_NAME), "other").unwrap();
+        assert!(!move_directory_once(&legacy, &new).unwrap());
+        assert_eq!(fs::read(new.join(LIBRARY_FILE_NAME)).unwrap(), b"db");
     }
 }

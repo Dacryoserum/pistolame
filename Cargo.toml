@@ -24,6 +24,8 @@ anyhow            = "1.0.104"
 slint             = "=1.18.1"
 slint-build       = "=1.18.1"
 rfd               = "0.17.2"
+# Per-OS application folders (MIT OR Apache-2.0).
+dirs              = "7.0.0"
 # SQLite for the library (MIT; `bundled` builds the public-domain SQLite, no system library).
 rusqlite          = { version = "0.40.2", features = ["bundled"] }
 flacenc           = { version = "0.5.1", default-features = false }
