@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use pistolame_core::testing::{CD_STEREO, generate_fixture};
-use pistolame_library::{AlbumKey, LibraryStore};
+use pistolame_library::{AlbumKey, AlbumTextOverride, LibraryStore};
 
 /// A fresh folder with a music subfolder holding `track_count` copies of a generated FLAC,
 /// and the database path beside it.
@@ -182,4 +182,27 @@ fn a_too_large_cover_is_refused() {
     let album = album_of(&store);
     let oversized = vec![0u8; pistolame_library::MAX_COVER_BYTES as usize + 1];
     assert!(store.set_album_artwork(&album, &oversized).is_err());
+}
+
+#[test]
+fn edited_album_text_survives_reopening_and_can_be_cleared() {
+    let library = TestLibrary::new("album-text", 1);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let album = album_of(&store);
+    let edited = AlbumTextOverride {
+        title: Some("Live à Paris".into()),
+        artist: None,
+    };
+    store.set_album_text(&album, &edited).unwrap();
+    drop(store);
+    let mut store = library.open();
+    assert_eq!(store.snapshot().unwrap().text_overrides[&album], edited);
+    store
+        .set_album_text(&album, &AlbumTextOverride::default())
+        .unwrap();
+    assert!(store.snapshot().unwrap().text_overrides.is_empty());
 }

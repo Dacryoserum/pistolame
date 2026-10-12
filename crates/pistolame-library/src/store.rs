@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS tracks (
     bits_per_sample INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
     artwork_hash TEXT REFERENCES artworks(hash)
+);
+CREATE TABLE IF NOT EXISTS album_text_overrides (
+    directory TEXT NOT NULL,
+    album TEXT NOT NULL,
+    title TEXT,
+    artist TEXT,
+    PRIMARY KEY (directory, album)
 );
 CREATE TABLE IF NOT EXISTS album_artwork_overrides (
     directory TEXT NOT NULL,
@@ -72,6 +79,17 @@ pub struct LibrarySnapshot {
     pub tracks: Vec<MusicFile>,
     /// Covers the user chose, which replace the files' own covers for these albums.
     pub artwork_overrides: HashMap<AlbumKey, Arc<[u8]>>,
+    /// Album titles and artists the user edited, shown instead of the tags.
+    pub text_overrides: HashMap<AlbumKey, AlbumTextOverride>,
+}
+
+/// Album title and artist chosen by the user; `None` keeps what the tags say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlbumTextOverride {
+    /// Title shown instead of the album tag.
+    pub title: Option<String>,
+    /// Artist shown instead of the album artist tag.
+    pub artist: Option<String>,
 }
 
 /// What a synchronization did.
@@ -199,6 +217,7 @@ impl LibraryStore {
         Ok(LibrarySnapshot {
             tracks,
             artwork_overrides,
+            text_overrides: self.text_overrides()?,
         })
     }
 
@@ -272,6 +291,59 @@ impl LibraryStore {
             params![path_text(&album.directory), album.title, hash],
         )?;
         self.delete_unused_artworks()
+    }
+
+    /// Shows `text` instead of the tags for `album`. An override with neither field set removes
+    /// it. Music files are never modified.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn set_album_text(
+        &mut self,
+        album: &AlbumKey,
+        text: &AlbumTextOverride,
+    ) -> Result<(), LibraryError> {
+        if text.title.is_none() && text.artist.is_none() {
+            self.connection.execute(
+                "DELETE FROM album_text_overrides WHERE directory = ?1 AND album = ?2",
+                params![path_text(&album.directory), album.title],
+            )?;
+            return Ok(());
+        }
+        self.connection.execute(
+            "INSERT INTO album_text_overrides (directory, album, title, artist)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (directory, album) DO UPDATE SET
+                title = excluded.title, artist = excluded.artist",
+            params![
+                path_text(&album.directory),
+                album.title,
+                text.title,
+                text.artist
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn text_overrides(&self) -> Result<HashMap<AlbumKey, AlbumTextOverride>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT directory, album, title, artist FROM album_text_overrides")?;
+        let overrides = statement
+            .query_map([], |row| {
+                Ok((
+                    AlbumKey {
+                        directory: PathBuf::from(row.get::<_, String>(0)?),
+                        title: row.get(1)?,
+                    },
+                    AlbumTextOverride {
+                        title: row.get(2)?,
+                        artist: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(overrides)
     }
 
     /// Goes back to the files' own cover for `album`.

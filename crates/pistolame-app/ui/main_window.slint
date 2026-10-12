@@ -2,8 +2,8 @@ import "../assets/fonts/Inter-Regular.ttf";
 import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
-import { Button, Palette } from "std-widgets.slint";
-import { AlbumDetail, NowPlaying, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { Palette } from "std-widgets.slint";
+import { AlbumDetail, AlbumEditor, NowPlaying, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -391,8 +391,21 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 padding: 8px; spacing: 8px;
                 Text { text: AppState.message; color: Tokens.status-caution; wrap: word-wrap; }
-                Button { text: "Fermer"; clicked => { AppState.message = ""; } }
+                IconButton {
+                    width: 24px; height: 24px; icon: Icons.x; icon-size: 14px;
+                    icon-color: Tokens.text-secondary; label: "Fermer le message";
+                    clicked => { AppState.message = ""; }
+                }
             }
+        }
+        // Album editor sheet over a dimmed window; Escape or Annuler closes it.
+        if AppState.is-album-editor-open: Rectangle {
+            background: #00000066;
+            TouchArea { }
+        }
+        if AppState.is-album-editor-open: AlbumEditor {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
         }
         // Popover layer: an outside click closes it.
         if AppState.is-popover-open: TouchArea {

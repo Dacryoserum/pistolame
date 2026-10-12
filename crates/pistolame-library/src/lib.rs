@@ -3,7 +3,9 @@
 
 mod store;
 
-pub use store::{AlbumKey, LibraryError, LibrarySnapshot, LibraryStore, SynchronizationReport};
+pub use store::{
+    AlbumKey, AlbumTextOverride, LibraryError, LibrarySnapshot, LibraryStore, SynchronizationReport,
+};
 
 use std::path::{Path, PathBuf};
 use symphonia::core::codecs::CodecParameters;

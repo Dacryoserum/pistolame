@@ -3,7 +3,7 @@ use crate::{AlbumCard, AppState, AppWindow, DetailInfo, PathStep, TrackRowData};
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
-use pistolame_library::{AlbumKey, LibrarySnapshot, LibraryStore, MusicFile};
+use pistolame_library::{AlbumKey, AlbumTextOverride, LibrarySnapshot, LibraryStore, MusicFile};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -12,12 +12,29 @@ use std::time::Duration;
 
 struct Album {
     key: AlbumKey,
+    /// What the app shows: the user's edit, or the tags.
     title: String,
     artist: String,
+    /// What the tags say, to tell an edit from the original.
+    tag_title: String,
+    tag_artist: String,
     tracks: Vec<MusicFile>,
     artwork: slint::Image,
     /// Whether the user chose this cover (stored in the library, files untouched).
     has_custom_artwork: bool,
+}
+
+/// A cover change waiting for "Enregistrer" in the album editor.
+enum PendingArtwork {
+    Unchanged,
+    Chosen { bytes: Vec<u8>, image: slint::Image },
+    Restored,
+}
+
+/// The album being edited in the "Modifier l'album" sheet.
+struct AlbumEditDraft {
+    index: usize,
+    pending_artwork: PendingArtwork,
 }
 
 /// What the library worker sends back to the UI thread.
@@ -41,6 +58,7 @@ pub(crate) struct UiBridge {
     imports: Receiver<LibraryUpdate>,
     import_sender: Sender<LibraryUpdate>,
     is_importing: Cell<bool>,
+    album_edit: RefCell<Option<AlbumEditDraft>>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
     sample_rate_hz: Cell<u32>,
@@ -81,6 +99,7 @@ impl UiBridge {
             imports: receiver,
             import_sender: sender,
             is_importing: Cell::new(false),
+            album_edit: RefCell::new(None),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
             sample_rate_hz: Cell::new(0),
@@ -144,17 +163,19 @@ impl UiBridge {
         let handle = self.clone();
         state.on_search_changed(move |query| handle.update_grid(query.as_str()));
         let handle = self.clone();
-        state.on_choose_album_artwork(move |index| {
+        state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
-                handle.choose_album_artwork(index);
+                handle.begin_album_edit(index);
             }
         });
         let handle = self.clone();
-        state.on_reset_album_artwork(move |index| {
-            if let Ok(index) = usize::try_from(index) {
-                handle.reset_album_artwork(index);
-            }
-        });
+        state.on_editor_choose_artwork(move || handle.editor_choose_artwork());
+        let handle = self.clone();
+        state.on_editor_reset_artwork(move || handle.editor_reset_artwork());
+        let handle = self.clone();
+        state.on_save_album_edit(move || handle.save_album_edit());
+        let handle = self.clone();
+        state.on_cancel_album_edit(move || handle.close_album_editor());
         let handle = self.clone();
         state.on_open_current_album(move || {
             if let Some((album, _)) = handle.selected_track.get() {
@@ -398,11 +419,29 @@ impl UiBridge {
         }
     }
 
-    /// Lets the user pick a JPEG or PNG for album `index`; the music files stay untouched.
-    fn choose_album_artwork(&self, index: usize) {
-        let Some(key) = self.album_key(index) else {
+    /// Opens the "Modifier l'album" sheet for album `index`.
+    fn begin_album_edit(&self, index: usize) {
+        let Some(window) = self.window.upgrade() else {
             return;
         };
+        let albums = self.albums.borrow();
+        let Some(album) = albums.get(index) else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_editor_title(album.title.as_str().into());
+        state.set_editor_artist(album.artist.as_str().into());
+        state.set_editor_artwork(album.artwork.clone());
+        state.set_editor_has_custom_artwork(album.has_custom_artwork);
+        state.set_is_album_editor_open(true);
+        *self.album_edit.borrow_mut() = Some(AlbumEditDraft {
+            index,
+            pending_artwork: PendingArtwork::Unchanged,
+        });
+    }
+
+    /// Lets the user pick a JPEG or PNG; applied only on "Enregistrer".
+    fn editor_choose_artwork(&self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Image", &["jpg", "jpeg", "png"])
             .pick_file()
@@ -416,37 +455,106 @@ impl UiBridge {
                 return;
             }
         };
+        if bytes.len() as u64 > pistolame_library::MAX_COVER_BYTES {
+            self.message("Cette image dépasse 16 Mo.".into());
+            return;
+        }
         let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
             self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
             return;
         };
-        let stored = self.with_library(|store| store.set_album_artwork(&key, &bytes));
-        if stored {
-            self.set_album_artwork(index, image, true);
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_editor_artwork(image.clone());
+            state.set_editor_has_custom_artwork(true);
+        }
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            draft.pending_artwork = PendingArtwork::Chosen { bytes, image };
         }
     }
 
-    /// Goes back to the cover found in the files for album `index`.
-    fn reset_album_artwork(&self, index: usize) {
-        let Some(key) = self.album_key(index) else {
+    /// Shows the files' own cover again; applied only on "Enregistrer".
+    fn editor_reset_artwork(&self) {
+        let Some(index) = self.album_edit.borrow().as_ref().map(|draft| draft.index) else {
             return;
         };
-        if self.with_library(|store| store.clear_album_artwork(&key)) {
-            let original = self
-                .albums
-                .borrow()
-                .get(index)
-                .map(|album| decode_artwork(original_artwork(&album.tracks)))
-                .unwrap_or_default();
-            self.set_album_artwork(index, original, false);
+        let original = self
+            .albums
+            .borrow()
+            .get(index)
+            .map(|album| decode_artwork(original_artwork(&album.tracks)))
+            .unwrap_or_default();
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_editor_artwork(original);
+            state.set_editor_has_custom_artwork(false);
+        }
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            draft.pending_artwork = PendingArtwork::Restored;
         }
     }
 
-    fn album_key(&self, index: usize) -> Option<AlbumKey> {
-        self.albums
-            .borrow()
-            .get(index)
-            .map(|album| album.key.clone())
+    /// Stores the edits in the library, then shows them everywhere.
+    fn save_album_edit(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(draft) = self.album_edit.borrow_mut().take() else {
+            self.close_album_editor();
+            return;
+        };
+        let state = window.global::<AppState>();
+        let Some((key, tag_title, tag_artist)) =
+            self.albums.borrow().get(draft.index).map(|album| {
+                (
+                    album.key.clone(),
+                    album.tag_title.clone(),
+                    album.tag_artist.clone(),
+                )
+            })
+        else {
+            self.close_album_editor();
+            return;
+        };
+        let text = AlbumTextOverride {
+            title: edited_value(state.get_editor_title().as_str(), &tag_title),
+            artist: edited_value(state.get_editor_artist().as_str(), &tag_artist),
+        };
+        let saved = self.with_library(|store| {
+            store.set_album_text(&key, &text)?;
+            match &draft.pending_artwork {
+                PendingArtwork::Unchanged => Ok(()),
+                PendingArtwork::Chosen { bytes, .. } => store.set_album_artwork(&key, bytes),
+                PendingArtwork::Restored => store.clear_album_artwork(&key),
+            }
+        });
+        if !saved {
+            return;
+        }
+        if let Some(album) = self.albums.borrow_mut().get_mut(draft.index) {
+            album.title = text.title.clone().unwrap_or(tag_title);
+            album.artist = text.artist.clone().unwrap_or(tag_artist);
+            match draft.pending_artwork {
+                PendingArtwork::Unchanged => {}
+                PendingArtwork::Chosen { image, .. } => {
+                    album.artwork = image;
+                    album.has_custom_artwork = true;
+                }
+                PendingArtwork::Restored => {
+                    album.artwork = decode_artwork(original_artwork(&album.tracks));
+                    album.has_custom_artwork = false;
+                }
+            }
+        }
+        self.close_album_editor();
+        self.refresh_album(draft.index);
+    }
+
+    fn close_album_editor(&self) {
+        self.album_edit.borrow_mut().take();
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_is_album_editor_open(false);
+        }
     }
 
     /// Runs one quick library change on the UI thread; `false` (and a message) on failure.
@@ -469,11 +577,8 @@ impl UiBridge {
         }
     }
 
-    fn set_album_artwork(&self, index: usize, artwork: slint::Image, is_custom: bool) {
-        if let Some(album) = self.albums.borrow_mut().get_mut(index) {
-            album.artwork = artwork.clone();
-            album.has_custom_artwork = is_custom;
-        }
+    /// Redraws everything that shows album `index`: grid, album page, LCD and current track.
+    fn refresh_album(&self, index: usize) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -482,12 +587,14 @@ impl UiBridge {
         if self.detail_album.get() == index {
             self.show_album(index);
         }
-        if self
-            .selected_track
-            .get()
-            .is_some_and(|(album, _)| album == index)
+        let albums = self.albums.borrow();
+        if let (Some((album_index, _)), Some(album)) =
+            (self.selected_track.get(), albums.get(index))
+            && album_index == index
         {
-            state.set_lcd_artwork(artwork);
+            state.set_lcd_artwork(album.artwork.clone());
+            state.set_current_album(album.title.as_str().into());
+            state.set_current_artist(album.artist.as_str().into());
         }
     }
 
@@ -511,7 +618,6 @@ impl UiBridge {
                 title: album.title.as_str().into(),
                 artist: album.artist.as_str().into(),
                 artwork: album.artwork.clone(),
-                has_custom_artwork: album.has_custom_artwork,
             })
             .collect();
         window
@@ -541,7 +647,6 @@ impl UiBridge {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
             artwork: album.artwork.clone(),
-            has_custom_artwork: album.has_custom_artwork,
             meta_line: format!("{} morceaux · FLAC", album.tracks.len()).into(),
             footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
             verdict_label: "Non analysé".into(),
@@ -964,6 +1069,8 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
             albums.push(Album {
                 title: track.album.clone(),
                 artist: track.artist.clone(),
+                tag_title: track.album.clone(),
+                tag_artist: track.artist.clone(),
                 key,
                 tracks: Vec::new(),
                 artwork: slint::Image::default(),
@@ -981,6 +1088,14 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
                 &right.path,
             ))
         });
+        if let Some(text) = snapshot.text_overrides.get(&album.key) {
+            if let Some(title) = &text.title {
+                album.title = title.clone();
+            }
+            if let Some(artist) = &text.artist {
+                album.artist = artist.clone();
+            }
+        }
         let custom = snapshot.artwork_overrides.get(&album.key);
         album.has_custom_artwork = custom.is_some();
         album.artwork = decode_artwork(custom.or_else(|| original_artwork(&album.tracks)));
@@ -997,4 +1112,11 @@ fn decode_artwork(bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
     bytes
         .and_then(|bytes| slint::Image::load_from_data(bytes, None).ok())
         .unwrap_or_default()
+}
+
+/// The edited value to store: `None` when the field is empty or equal to the tags, so the app
+/// follows the files again.
+fn edited_value(field: &str, tag_value: &str) -> Option<String> {
+    let trimmed = field.trim();
+    (!trimmed.is_empty() && trimmed != tag_value).then(|| trimmed.to_owned())
 }
