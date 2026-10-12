@@ -48,6 +48,23 @@ export enum ViewKind {
     detail,
     placeholder,
     now-playing,
+    playlist,
+}
+
+export struct PlaylistItem {
+    name: string,
+    track-count: int,
+}
+
+export struct PlaylistTrackRow {
+    // Position among every entry of the playlist (stable for removal).
+    position: int,
+    number: int,
+    title: string,
+    subtitle: string,
+    format-label: string,
+    duration-label: string,
+    is-current: bool,
 }
 
 export global AppState {
@@ -87,6 +104,28 @@ export global AppState {
     in-out property <string> editor-artist;
     in property <image> editor-artwork;
     in property <bool> editor-has-custom-artwork;
+    // Playlists (stored in the library).
+    in property <[PlaylistItem]> playlists;
+    in-out property <int> selected-playlist: -1;
+    in property <string> playlist-title;
+    in property <string> playlist-meta;
+    in property <[PlaylistTrackRow]> playlist-tracks;
+    callback create-playlist();
+    callback open-playlist(int);
+    callback play-playlist-row(int);
+    callback remove-playlist-entry(int);
+    in-out property <bool> is-playlist-editor-open;
+    in-out property <string> playlist-editor-name;
+    callback begin-playlist-edit();
+    callback save-playlist-edit();
+    callback delete-current-playlist();
+    // "Ajouter à une playlist" sheet, for an album or one of its tracks.
+    in-out property <bool> is-add-to-playlist-open;
+    in property <string> add-to-playlist-subject;
+    callback begin-add-album-to-playlist();
+    callback begin-add-track-to-playlist(int);
+    callback add-pending-to-playlist(int);
+    callback add-pending-to-new-playlist();
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();

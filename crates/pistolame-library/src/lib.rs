@@ -4,7 +4,8 @@
 mod store;
 
 pub use store::{
-    AlbumKey, AlbumTextOverride, LibraryError, LibrarySnapshot, LibraryStore, SynchronizationReport,
+    AlbumKey, AlbumTextOverride, LibraryError, LibrarySnapshot, LibraryStore, Playlist,
+    SynchronizationReport,
 };
 
 use std::path::{Path, PathBuf};

@@ -1,6 +1,6 @@
 import { Switch, ScrollView, ListView } from "std-widgets.slint";
 import { Tokens } from "tokens.slint";
-import { AlbumCard, AppState, DataCell, PathStep } from "state.slint";
+import { AlbumCard, AppState, DataCell, PathStep, ViewKind } from "state.slint";
 
 export global Icons {
     out property <image> pencil-simple: @image-url("../assets/icons/pencil-simple.svg");
@@ -66,6 +66,7 @@ export component Icon inherits Image {
 }
 
 export component IconButton inherits Rectangle {
+    out property <bool> has-hover: touch.has-hover;
     in property <image> icon;
     in property <length> icon-size: 16px;
     in property <color> icon-color: Tokens.text-primary;
@@ -370,7 +371,13 @@ export component TrackRow inherits Rectangle {
     in property <string> duration-label;
     in property <bool> is-odd;
     in property <bool> is-current;
+    // Optional discreet action at the end of the row ("Ajouter à une playlist", "Retirer"),
+    // shown while the row is hovered. Its slot is always reserved so columns never move.
+    in property <image> action-icon;
+    in property <string> action-label;
+    in property <string> subtitle;
     callback clicked();
+    callback action();
     border-width: keyboard.has-focus ? 2px : 0px;
     border-color: Tokens.focus-ring;
     keyboard := FocusScope {
@@ -389,7 +396,8 @@ export component TrackRow inherits Rectangle {
     accessible-action-default => {
         root.clicked();
     }
-    property <length> duration-x: root.width - 12px - 44px;
+    property <length> action-slot: 32px;
+    property <length> duration-x: root.width - 12px - root.action-slot - 44px;
     // Wide enough for "24 bits / 192 kHz" in the caption role.
     property <length> format-width: 104px;
     property <length> format-x: duration-x - 16px - root.format-width;
@@ -408,9 +416,20 @@ export component TrackRow inherits Rectangle {
     Txt {
         role: root.is-current ? TextRole.body-medium : TextRole.body;
         x: 52px;
-        y: 10px;
+        y: root.subtitle == "" ? 10px : 3px;
         width: root.format-x - 16px - 52px;
         text: root.title;
+        overflow: elide;
+    }
+
+    if root.subtitle != "": Txt {
+        role: TextRole.caption;
+        x: 52px;
+        y: 19px;
+        width: root.format-x - 16px - 52px;
+        text: root.subtitle;
+        color: Tokens.text-secondary;
+        overflow: elide;
     }
 
     Txt {
@@ -435,6 +454,21 @@ export component TrackRow inherits Rectangle {
     touch := TouchArea {
         clicked => {
             root.clicked();
+        }
+    }
+
+    action-button := IconButton {
+        x: root.width - 12px - 28px;
+        y: 4px;
+        width: 28px;
+        height: 28px;
+        icon: root.action-icon;
+        icon-size: 16px;
+        icon-color: Tokens.text-secondary;
+        label: root.action-label;
+        visible: root.action-label != "" && (touch.has-hover || self.has-hover);
+        clicked => {
+            root.action();
         }
     }
 }
@@ -1009,6 +1043,19 @@ export component AlbumDetail inherits Rectangle {
             source: AppState.detail.artwork;
         }
 
+        IconButton {
+            x: root.content-width - 32px - 28px - 8px - 28px;
+            y: 60px;
+            width: 28px;
+            height: 28px;
+            icon: Icons.plus;
+            icon-color: Tokens.text-secondary;
+            label: "Ajouter l’album à une playlist";
+            clicked => {
+                AppState.begin-add-album-to-playlist();
+            }
+        }
+
         // Discreet edit button, top-aligned with the cover, at the right edge of the content.
         IconButton {
             x: root.content-width - 32px - 28px;
@@ -1093,8 +1140,13 @@ export component AlbumDetail inherits Rectangle {
             duration-label: track.duration-label;
             is-odd: Math.mod(index, 2) == 1;
             is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == index;
+            action-icon: Icons.plus;
+            action-label: "Ajouter à une playlist";
             clicked => {
                 AppState.play-track(AppState.detail-album-index, index);
+            }
+            action => {
+                AppState.begin-add-track-to-playlist(index);
             }
         }
 
@@ -1525,5 +1577,168 @@ export component AlbumEditor inherits Rectangle {
         is-primary: true;
         label: "Enregistrer";
         clicked => { AppState.save-album-edit(); }
+    }
+}
+
+// One user playlist: its tracks in order, each removable.
+export component PlaylistView inherits Rectangle {
+    property <length> list-width: root.width - 64px;
+    ScrollView {
+        content-height: 150px + 36px * AppState.playlist-tracks.length + 32px;
+        Rectangle {
+            x: 32px; y: 24px; width: 56px; height: 56px;
+            border-radius: 8px;
+            background: Tokens.fill-control;
+            Icon { width: 26px; height: 26px; source: Icons.playlist; colorize: Tokens.accent; }
+        }
+        Txt { x: 104px; y: 26px; width: root.list-width - 72px - 76px; role: TextRole.display; text: AppState.playlist-title; overflow: elide; }
+        Txt { x: 104px; y: 60px; width: root.list-width - 72px; role: TextRole.callout; text: AppState.playlist-meta; color: Tokens.text-secondary; }
+        IconButton {
+            x: root.width - 32px - 28px; y: 24px; width: 28px; height: 28px;
+            icon: Icons.pencil-simple; icon-color: Tokens.text-secondary;
+            label: "Modifier la playlist";
+            clicked => { AppState.begin-playlist-edit(); }
+        }
+        PillButton {
+            x: 32px; y: 96px;
+            is-primary: true;
+            label: "Lecture";
+            icon: Icons.play-fill;
+            clicked => { AppState.play-playlist-row(0); }
+        }
+        if AppState.playlist-tracks.length == 0: Txt {
+            x: 32px; y: 152px; width: root.list-width;
+            text: "Cette playlist est vide. Ajoutez des morceaux avec le bouton + d’un album ou d’un morceau.";
+            color: Tokens.text-secondary;
+            wrap: word-wrap;
+        }
+        for track[index] in AppState.playlist-tracks: TrackRow {
+            x: 32px;
+            y: 148px + 36px * index;
+            width: root.list-width;
+            number: track.number;
+            title: track.title;
+            subtitle: track.subtitle;
+            format-label: track.format-label;
+            duration-label: track.duration-label;
+            is-odd: Math.mod(index, 2) == 1;
+            is-current: track.is-current;
+            action-icon: Icons.x;
+            action-label: "Retirer de la playlist";
+            clicked => { AppState.play-playlist-row(index); }
+            action => { AppState.remove-playlist-entry(track.position); }
+        }
+    }
+}
+
+// A dimmed-window sheet frame shared by the editors.
+export component Sheet inherits Rectangle {
+    in property <string> title;
+    border-radius: 12px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-blur: 32px;
+    drop-shadow-color: Tokens.shadow-popover;
+    TouchArea { }
+    Txt { x: 24px; y: 22px; role: TextRole.title-3; text: root.title; }
+    @children
+}
+
+export component PlaylistEditor inherits Sheet {
+    title: "Modifier la playlist";
+    width: 400px;
+    height: 220px;
+    LabeledField { x: 24px; y: 64px; width: root.width - 48px; caption: "NOM"; text <=> AppState.playlist-editor-name; }
+    Rectangle {
+        x: 24px; y: 132px; width: 160px; height: 20px;
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            Icon { width: 14px; source: Icons.trash; colorize: Tokens.status-caution; }
+            Txt { role: TextRole.callout; text: "Supprimer la playlist"; color: Tokens.status-caution; vertical-alignment: center; }
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { AppState.delete-current-playlist(); } }
+    }
+    PillButton {
+        x: root.width - 24px - 112px - 10px - 112px; y: root.height - 48px;
+        label: "Annuler";
+        clicked => { AppState.is-playlist-editor-open = false; }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 48px;
+        is-primary: true;
+        label: "Enregistrer";
+        clicked => { AppState.save-playlist-edit(); }
+    }
+}
+
+component PlaylistChoiceRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <image> icon;
+    in property <bool> has-separator;
+    callback clicked();
+    height: 40px;
+    border-radius: 8px;
+    background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        Icon { width: 16px; source: root.icon; colorize: Tokens.accent; }
+        Txt { height: root.height; text: root.name; vertical-alignment: center; overflow: elide; }
+        Txt { height: root.height; role: TextRole.callout; text: root.detail; color: Tokens.text-secondary; vertical-alignment: center; horizontal-alignment: right; }
+    }
+    if root.has-separator: Rectangle {
+        x: 38px; y: root.height - 1px; width: root.width - 50px; height: 1px;
+        background: Tokens.separator;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component AddToPlaylistSheet inherits Sheet {
+    title: "Ajouter à une playlist";
+    width: 400px;
+    height: 132px + 40px * min(AppState.playlists.length + 1, 6);
+    Txt {
+        x: 24px; y: 48px; width: root.width - 48px;
+        role: TextRole.callout; text: AppState.add-to-playlist-subject;
+        color: Tokens.text-secondary; overflow: elide;
+    }
+    Rectangle {
+        x: 16px; y: 76px; width: root.width - 32px; height: 40px * min(AppState.playlists.length + 1, 6);
+        border-radius: 10px;
+        background: Tokens.fill-row-zebra;
+        border-width: 1px;
+        border-color: Tokens.separator;
+        clip: true;
+        Flickable {
+            content-height: 40px * (AppState.playlists.length + 1);
+            VerticalLayout {
+                PlaylistChoiceRow {
+                    name: "Nouvelle playlist";
+                    icon: Icons.plus;
+                    has-separator: AppState.playlists.length > 0;
+                    clicked => { AppState.add-pending-to-new-playlist(); }
+                }
+                for item[index] in AppState.playlists: PlaylistChoiceRow {
+                    name: item.name;
+                    detail: item.track-count + (item.track-count == 1 ? " morceau" : " morceaux");
+                    icon: Icons.playlist;
+                    has-separator: index < AppState.playlists.length - 1;
+                    clicked => { AppState.add-pending-to-playlist(index); }
+                }
+            }
+        }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 44px;
+        label: "Annuler";
+        clicked => { AppState.is-add-to-playlist-open = false; }
     }
 }

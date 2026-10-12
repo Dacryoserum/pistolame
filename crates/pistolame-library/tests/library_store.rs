@@ -206,3 +206,35 @@ fn edited_album_text_survives_reopening_and_can_be_cleared() {
         .unwrap();
     assert!(store.snapshot().unwrap().text_overrides.is_empty());
 }
+
+#[test]
+fn playlists_keep_order_and_survive_reopening() {
+    let library = TestLibrary::new("playlists", 3);
+    let mut store = library.open();
+    let id = store.create_playlist("Écoute critique").unwrap();
+    store
+        .append_to_playlist(id, &[library.track(3), library.track(1)])
+        .unwrap();
+    store.append_to_playlist(id, &[library.track(2)]).unwrap();
+    drop(store);
+    let mut store = library.open();
+    let playlists = store.snapshot().unwrap().playlists;
+    assert_eq!(playlists.len(), 1);
+    assert_eq!(playlists[0].name, "Écoute critique");
+    assert_eq!(
+        playlists[0].track_paths,
+        vec![library.track(3), library.track(1), library.track(2)]
+    );
+
+    store.remove_from_playlist(id, 1).unwrap();
+    store.rename_playlist(id, "Favoris").unwrap();
+    let playlist = &store.snapshot().unwrap().playlists[0];
+    assert_eq!(playlist.name, "Favoris");
+    assert_eq!(
+        playlist.track_paths,
+        vec![library.track(3), library.track(2)]
+    );
+
+    store.delete_playlist(id).unwrap();
+    assert!(store.snapshot().unwrap().playlists.is_empty());
+}

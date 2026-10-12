@@ -3,11 +3,11 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AlbumDetail, AlbumEditor, NowPlaying, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, TrackRowData, ViewKind } from "state.slint";
+export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, TrackRowData, ViewKind } from "state.slint";
 export { Tokens } from "tokens.slint";
 
 export component AppWindow inherits Window {
@@ -92,6 +92,8 @@ export component AppWindow inherits Window {
             }
 
             NowPlaying { visible: AppState.view == ViewKind.now-playing; }
+
+            PlaylistView { visible: AppState.view == ViewKind.playlist; }
 
             PlaceholderView {
                 visible: AppState.view == ViewKind.placeholder && AppState.selected-item != 6;
@@ -268,7 +270,7 @@ export component AppWindow inherits Window {
                 y: 84px;
                 icon: Icons.clock-counter-clockwise;
                 label: "Ajouts récents";
-                is-selected: AppState.selected-item == 0;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 0;
                 clicked => {
                     AppState.select-item(0);
                     key-scope.focus();
@@ -279,7 +281,7 @@ export component AppWindow inherits Window {
                 y: 112px;
                 icon: Icons.microphone-stage;
                 label: "Artistes";
-                is-selected: AppState.selected-item == 1;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 1;
                 clicked => {
                     AppState.select-item(1);
                     key-scope.focus();
@@ -290,7 +292,7 @@ export component AppWindow inherits Window {
                 y: 140px;
                 icon: Icons.vinyl-record;
                 label: "Albums";
-                is-selected: AppState.selected-item == 2;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 2;
                 clicked => {
                     AppState.select-item(2);
                     key-scope.focus();
@@ -301,7 +303,7 @@ export component AppWindow inherits Window {
                 y: 168px;
                 icon: Icons.music-note;
                 label: "Morceaux";
-                is-selected: AppState.selected-item == 3;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 3;
                 clicked => {
                     AppState.select-item(3);
                     key-scope.focus();
@@ -317,7 +319,7 @@ export component AppWindow inherits Window {
                 y: 236px;
                 icon: Icons.seal-check;
                 label: "Authenticité";
-                is-selected: AppState.selected-item == 4;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 4;
                 clicked => {
                     AppState.select-item(4);
                     key-scope.focus();
@@ -328,7 +330,7 @@ export component AppWindow inherits Window {
                 y: 264px;
                 icon: Icons.waveform;
                 label: "Spectrogrammes";
-                is-selected: AppState.selected-item == 5;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 5;
                 clicked => {
                     AppState.select-item(5);
                     key-scope.focus();
@@ -339,7 +341,7 @@ export component AppWindow inherits Window {
                 y: 292px;
                 icon: Icons.speaker-hifi;
                 label: "Sortie audio";
-                is-selected: AppState.selected-item == 6;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 6;
                 clicked => {
                     AppState.select-item(6);
                     key-scope.focus();
@@ -351,35 +353,28 @@ export component AppWindow inherits Window {
                 text: "Playlists";
             }
 
-            SidebarItem {
-                y: 360px;
-                icon: Icons.playlist;
-                label: "Écoute critique";
-                is-selected: AppState.selected-item == 7;
+            IconButton {
+                x: 196px;
+                y: 332px;
+                width: 24px;
+                height: 24px;
+                icon: Icons.plus;
+                icon-size: 14px;
+                icon-color: Tokens.text-secondary;
+                label: "Nouvelle playlist";
                 clicked => {
-                    AppState.select-item(7);
+                    AppState.create-playlist();
                     key-scope.focus();
                 }
             }
 
-            SidebarItem {
-                y: 388px;
+            for item[index] in AppState.playlists: SidebarItem {
+                y: 360px + 28px * index;
                 icon: Icons.playlist;
-                label: "Hi-Res 24/192";
-                is-selected: AppState.selected-item == 8;
+                label: item.name;
+                is-selected: AppState.view == ViewKind.playlist && AppState.selected-playlist == index;
                 clicked => {
-                    AppState.select-item(8);
-                    key-scope.focus();
-                }
-            }
-
-            SidebarItem {
-                y: 416px;
-                icon: Icons.playlist;
-                label: "Vinyles numérisés";
-                is-selected: AppState.selected-item == 9;
-                clicked => {
-                    AppState.select-item(9);
+                    AppState.open-playlist(index);
                     key-scope.focus();
                 }
             }
@@ -397,6 +392,18 @@ export component AppWindow inherits Window {
                     clicked => { AppState.message = ""; }
                 }
             }
+        }
+        if AppState.is-playlist-editor-open || AppState.is-add-to-playlist-open: Rectangle {
+            background: #00000066;
+            TouchArea { }
+        }
+        if AppState.is-playlist-editor-open: PlaylistEditor {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
+        }
+        if AppState.is-add-to-playlist-open: AddToPlaylistSheet {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
         }
         // Album editor sheet over a dimmed window; Escape or Annuler closes it.
         if AppState.is-album-editor-open: Rectangle {

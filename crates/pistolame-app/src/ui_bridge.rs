@@ -1,9 +1,14 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
-use crate::{AlbumCard, AppState, AppWindow, DetailInfo, PathStep, TrackRowData};
+use crate::{
+    AlbumCard, AppState, AppWindow, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow,
+    TrackRowData, ViewKind,
+};
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
-use pistolame_library::{AlbumKey, AlbumTextOverride, LibrarySnapshot, LibraryStore, MusicFile};
+use pistolame_library::{
+    AlbumKey, AlbumTextOverride, LibrarySnapshot, LibraryStore, MusicFile, Playlist,
+};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -59,6 +64,14 @@ pub(crate) struct UiBridge {
     import_sender: Sender<LibraryUpdate>,
     is_importing: Cell<bool>,
     album_edit: RefCell<Option<AlbumEditDraft>>,
+    /// The user's playlists, as stored in the library.
+    playlists: RefCell<Vec<Playlist>>,
+    /// What plays next: the tracks of an album or a playlist, by path so a library rescan
+    /// cannot shift them, and the position of the current one.
+    queue: RefCell<Vec<PathBuf>>,
+    queue_position: Cell<usize>,
+    /// Tracks waiting in the "Ajouter à une playlist" sheet.
+    pending_playlist_tracks: RefCell<Vec<PathBuf>>,
     /// The latest signal-path assessment, to redraw the path when the volume changes.
     last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
@@ -103,6 +116,10 @@ impl UiBridge {
             is_importing: Cell::new(false),
             album_edit: RefCell::new(None),
             last_assessment: RefCell::new(None),
+            playlists: RefCell::new(Vec::new()),
+            queue: RefCell::new(Vec::new()),
+            queue_position: Cell::new(0),
+            pending_playlist_tracks: RefCell::new(Vec::new()),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
             sample_rate_hz: Cell::new(0),
@@ -173,6 +190,7 @@ impl UiBridge {
                 ..SharedModeVolume::at_decibels(decibels)
             });
         });
+        self.connect_playlists(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -452,6 +470,8 @@ impl UiBridge {
             .borrow()
             .get(self.detail_album.get())
             .map(|album| album.key.clone());
+        let mut snapshot = snapshot;
+        *self.playlists.borrow_mut() = std::mem::take(&mut snapshot.playlists);
         let albums = albums_from_snapshot(snapshot);
         self.selected_track.set(selected_path.and_then(|path| {
             albums.iter().enumerate().find_map(|(album, entry)| {
@@ -479,6 +499,7 @@ impl UiBridge {
             state.set_playing_album_index(album);
             state.set_playing_track_index(track);
         }
+        self.show_playlists();
     }
 
     /// Opens the "Modifier l'album" sheet for album `index`.
@@ -590,7 +611,7 @@ impl UiBridge {
                 PendingArtwork::Restored => store.clear_album_artwork(&key),
             }
         });
-        if !saved {
+        if saved.is_none() {
             return;
         }
         if let Some(album) = self.albums.borrow_mut().get_mut(draft.index) {
@@ -619,11 +640,11 @@ impl UiBridge {
         }
     }
 
-    /// Runs one quick library change on the UI thread; `false` (and a message) on failure.
-    fn with_library(
+    /// Runs one quick library change on the UI thread; `None` (and a message) on failure.
+    fn with_library<T>(
         &self,
-        change: impl FnOnce(&mut LibraryStore) -> Result<(), pistolame_library::LibraryError>,
-    ) -> bool {
+        change: impl FnOnce(&mut LibraryStore) -> Result<T, pistolame_library::LibraryError>,
+    ) -> Option<T> {
         let result = self
             .library_database
             .clone()
@@ -631,10 +652,10 @@ impl UiBridge {
             .and_then(|database| LibraryStore::open(&database).map_err(|error| error.to_string()))
             .and_then(|mut store| change(&mut store).map_err(|error| error.to_string()));
         match result {
-            Ok(()) => true,
+            Ok(value) => Some(value),
             Err(error) => {
-                self.message(format!("Pochette non enregistrée : {error}"));
-                false
+                self.message(format!("Bibliothèque non enregistrée : {error}"));
+                None
             }
         }
     }
@@ -774,19 +795,59 @@ impl UiBridge {
         });
     }
 
+    /// Plays track `track` of album `album`; the album becomes the queue.
     fn play_track(&self, album: usize, track: usize) {
-        let albums = self.albums.borrow();
-        let Some(file) = albums.get(album).and_then(|album| album.tracks.get(track)) else {
+        let paths: Vec<PathBuf> = match self.albums.borrow().get(album) {
+            Some(album) => album
+                .tracks
+                .iter()
+                .map(|track| track.path.clone())
+                .collect(),
+            None => return,
+        };
+        self.play_queue(paths, track);
+    }
+
+    /// Makes `paths` the queue and plays the one at `position`.
+    fn play_queue(&self, paths: Vec<PathBuf>, position: usize) {
+        if position >= paths.len() {
+            return;
+        }
+        *self.queue.borrow_mut() = paths;
+        self.play_queue_position(position);
+    }
+
+    fn play_queue_position(&self, position: usize) {
+        let Some(path) = self.queue.borrow().get(position).cloned() else {
             return;
         };
-        self.selected_track.set(Some((album, track)));
+        let Some(location) = self.track_location(&path) else {
+            self.message(format!("Morceau introuvable : {}", path.display()));
+            return;
+        };
+        self.queue_position.set(position);
+        self.selected_track.set(Some(location));
         self.should_advance.set(true);
         self.stream_end_baseline
             .set(self.engine.counters().stream_ends_reached);
         self.message(String::new());
-        self.engine.send(EngineCommand::OpenFileAndPlay {
-            path: file.path.clone(),
-        });
+        self.engine.send(EngineCommand::OpenFileAndPlay { path });
+        self.refresh_playlist_view();
+    }
+
+    /// The (album, track) indices of a file in the current album list.
+    fn track_location(&self, path: &std::path::Path) -> Option<(usize, usize)> {
+        self.albums
+            .borrow()
+            .iter()
+            .enumerate()
+            .find_map(|(album_index, album)| {
+                album
+                    .tracks
+                    .iter()
+                    .position(|track| track.path == path)
+                    .map(|track_index| (album_index, track_index))
+            })
     }
 
     fn random_track(&self, count: usize) -> usize {
@@ -800,15 +861,8 @@ impl UiBridge {
     }
 
     fn adjacent_track(&self, next: bool) {
-        let Some((album, track)) = self.selected_track.get() else {
-            return;
-        };
-        let count = self
-            .albums
-            .borrow()
-            .get(album)
-            .map_or(0, |entry| entry.tracks.len());
-        if count == 0 {
+        let count = self.queue.borrow().len();
+        if count == 0 || self.selected_track.get().is_none() {
             return;
         }
         if !next
@@ -820,18 +874,19 @@ impl UiBridge {
             });
             return;
         }
+        let position = self.queue_position.get();
         let shuffle = self
             .window
             .upgrade()
             .is_some_and(|window| window.global::<AppState>().get_is_shuffle_on());
         let target = if next && shuffle && count > 1 {
-            (track + 1 + self.random_track(count - 1)) % count
+            (position + 1 + self.random_track(count - 1)) % count
         } else if next {
-            (track + 1) % count
+            (position + 1) % count
         } else {
-            (track + count - 1) % count
+            (position + count - 1) % count
         };
-        self.play_track(album, target);
+        self.play_queue_position(target);
     }
 
     fn advance_after_end(&self) {
@@ -839,21 +894,394 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
-        let Some((album, track)) = self.selected_track.get() else {
-            return;
-        };
-        let count = self
-            .albums
-            .borrow()
-            .get(album)
-            .map_or(0, |entry| entry.tracks.len());
         if crate::transport::can_advance(
-            track,
-            count,
+            self.queue_position.get(),
+            self.queue.borrow().len(),
             state.get_is_repeat_on(),
             state.get_is_shuffle_on(),
         ) {
             self.adjacent_track(true);
+        }
+    }
+
+    fn connect_playlists(self: &Rc<Self>, state: &AppState<'_>) {
+        let handle = self.clone();
+        state.on_create_playlist(move || handle.create_playlist(Vec::new(), true));
+        let handle = self.clone();
+        state.on_open_playlist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.open_playlist(index);
+            }
+        });
+        let handle = self.clone();
+        state.on_play_playlist_row(move |row| {
+            if let Ok(row) = usize::try_from(row) {
+                handle.play_playlist_row(row);
+            }
+        });
+        let handle = self.clone();
+        state.on_remove_playlist_entry(move |position| {
+            if let Ok(position) = usize::try_from(position) {
+                handle.remove_playlist_entry(position);
+            }
+        });
+        let handle = self.clone();
+        state.on_begin_playlist_edit(move || handle.begin_playlist_edit());
+        let handle = self.clone();
+        state.on_save_playlist_edit(move || handle.save_playlist_edit());
+        let handle = self.clone();
+        state.on_delete_current_playlist(move || handle.delete_current_playlist());
+        let handle = self.clone();
+        state.on_begin_add_album_to_playlist(move || handle.begin_add_album_to_playlist());
+        let handle = self.clone();
+        state.on_begin_add_track_to_playlist(move |track| {
+            if let Ok(track) = usize::try_from(track) {
+                handle.begin_add_track_to_playlist(track);
+            }
+        });
+        let handle = self.clone();
+        state.on_add_pending_to_playlist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.add_pending_to_playlist(index);
+            }
+        });
+        let handle = self.clone();
+        state.on_add_pending_to_new_playlist(move || {
+            let tracks = std::mem::take(&mut *handle.pending_playlist_tracks.borrow_mut());
+            handle.close_add_to_playlist();
+            handle.create_playlist(tracks, false);
+        });
+    }
+
+    fn show_playlists(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let items: Vec<PlaylistItem> = self
+            .playlists
+            .borrow()
+            .iter()
+            .map(|playlist| PlaylistItem {
+                name: playlist.name.as_str().into(),
+                track_count: playlist.track_paths.len() as i32,
+            })
+            .collect();
+        window
+            .global::<AppState>()
+            .set_playlists(ModelRc::new(VecModel::from(items)));
+        self.refresh_playlist_view();
+    }
+
+    /// The playlist open in the playlist view, if any.
+    fn current_playlist_index(&self) -> Option<usize> {
+        let window = self.window.upgrade()?;
+        let index = usize::try_from(window.global::<AppState>().get_selected_playlist()).ok()?;
+        (index < self.playlists.borrow().len()).then_some(index)
+    }
+
+    fn open_playlist(&self, index: usize) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_selected_playlist(index as i32);
+        state.set_is_popover_open(false);
+        state.set_view(ViewKind::Playlist);
+        self.refresh_playlist_view();
+    }
+
+    /// The entries of playlist `index` still in the library, with their position among all
+    /// entries (for removal) and their file.
+    fn playable_entries(&self, index: usize) -> Vec<(usize, PathBuf, (usize, usize))> {
+        let Some(paths) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.track_paths.clone())
+        else {
+            return Vec::new();
+        };
+        paths
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, path)| {
+                self.track_location(&path)
+                    .map(|location| (position, path, location))
+            })
+            .collect()
+    }
+
+    fn refresh_playlist_view(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let current_path = self.selected_track.get().and_then(|(album, track)| {
+            self.albums
+                .borrow()
+                .get(album)
+                .and_then(|album| album.tracks.get(track))
+                .map(|track| track.path.clone())
+        });
+        let albums = self.albums.borrow();
+        let mut total_seconds = 0;
+        let rows: Vec<PlaylistTrackRow> = self
+            .playable_entries(index)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(row, (position, path, (album, track)))| {
+                let album = albums.get(album)?;
+                let file = album.tracks.get(track)?;
+                total_seconds += file.duration_seconds;
+                Some(PlaylistTrackRow {
+                    position: position as i32,
+                    number: row as i32 + 1,
+                    title: file.title.as_str().into(),
+                    subtitle: format!("{} — {}", album.artist, album.title).into(),
+                    format_label: presentation::audio_format(
+                        file.bits_per_sample,
+                        file.sample_rate_hz,
+                    )
+                    .into(),
+                    duration_label: presentation::clock(file.duration_seconds).into(),
+                    is_current: current_path.as_ref() == Some(&path),
+                })
+            })
+            .collect();
+        let count = rows.len();
+        if let Some(playlist) = self.playlists.borrow().get(index) {
+            state.set_playlist_title(playlist.name.as_str().into());
+        }
+        state.set_playlist_meta(
+            format!(
+                "{count} morceau{} · {}",
+                if count == 1 { "" } else { "x" },
+                presentation::clock(total_seconds)
+            )
+            .into(),
+        );
+        state.set_playlist_tracks(ModelRc::new(VecModel::from(rows)));
+    }
+
+    fn play_playlist_row(&self, row: usize) {
+        let Some(index) = self.current_playlist_index() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = self
+            .playable_entries(index)
+            .into_iter()
+            .map(|(_, path, _)| path)
+            .collect();
+        self.play_queue(paths, row);
+    }
+
+    /// Creates a playlist named "Nouvelle playlist" (numbered if taken) holding `tracks`. When
+    /// `should_open` is set, it opens it with the rename sheet, as Apple Music does.
+    fn create_playlist(&self, tracks: Vec<PathBuf>, should_open: bool) {
+        let name = {
+            let playlists = self.playlists.borrow();
+            let is_taken = |name: &str| playlists.iter().any(|playlist| playlist.name == name);
+            let mut name = "Nouvelle playlist".to_owned();
+            let mut number = 2;
+            while is_taken(&name) {
+                name = format!("Nouvelle playlist {number}");
+                number += 1;
+            }
+            name
+        };
+        let Some(id) = self.with_library(|store| {
+            let id = store.create_playlist(&name)?;
+            store.append_to_playlist(id, &tracks)?;
+            Ok(id)
+        }) else {
+            return;
+        };
+        self.playlists.borrow_mut().push(Playlist {
+            id,
+            name,
+            track_paths: tracks,
+        });
+        self.show_playlists();
+        if should_open {
+            self.open_playlist(self.playlists.borrow().len() - 1);
+            self.begin_playlist_edit();
+        }
+    }
+
+    fn remove_playlist_entry(&self, position: usize) {
+        let Some(index) = self.current_playlist_index() else {
+            return;
+        };
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.remove_from_playlist(id, position))
+            .is_none()
+        {
+            return;
+        }
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index)
+            && position < playlist.track_paths.len()
+        {
+            playlist.track_paths.remove(position);
+        }
+        self.show_playlists();
+    }
+
+    fn begin_playlist_edit(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        if let Some(playlist) = self.playlists.borrow().get(index) {
+            state.set_playlist_editor_name(playlist.name.as_str().into());
+        }
+        state.set_is_playlist_editor_open(true);
+    }
+
+    fn save_playlist_edit(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let name = state.get_playlist_editor_name().trim().to_owned();
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        if !name.is_empty()
+            && self
+                .with_library(|store| store.rename_playlist(id, &name))
+                .is_some()
+        {
+            if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
+                playlist.name = name;
+            }
+            self.show_playlists();
+        }
+        state.set_is_playlist_editor_open(false);
+    }
+
+    fn delete_current_playlist(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.delete_playlist(id))
+            .is_none()
+        {
+            return;
+        }
+        self.playlists.borrow_mut().remove(index);
+        state.set_is_playlist_editor_open(false);
+        state.set_selected_playlist(-1);
+        state.invoke_select_item(2);
+        self.show_playlists();
+    }
+
+    fn begin_add_album_to_playlist(&self) {
+        let albums = self.albums.borrow();
+        let Some(album) = albums.get(self.detail_album.get()) else {
+            return;
+        };
+        *self.pending_playlist_tracks.borrow_mut() = album
+            .tracks
+            .iter()
+            .map(|track| track.path.clone())
+            .collect();
+        let subject = format!(
+            "L’album « {} » ({} morceaux)",
+            album.title,
+            album.tracks.len()
+        );
+        drop(albums);
+        self.open_add_to_playlist(subject);
+    }
+
+    fn begin_add_track_to_playlist(&self, track: usize) {
+        let albums = self.albums.borrow();
+        let Some(file) = albums
+            .get(self.detail_album.get())
+            .and_then(|album| album.tracks.get(track))
+        else {
+            return;
+        };
+        *self.pending_playlist_tracks.borrow_mut() = vec![file.path.clone()];
+        let subject = format!("« {} »", file.title);
+        drop(albums);
+        self.open_add_to_playlist(subject);
+    }
+
+    fn open_add_to_playlist(&self, subject: String) {
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_add_to_playlist_subject(subject.into());
+            state.set_is_add_to_playlist_open(true);
+        }
+    }
+
+    fn close_add_to_playlist(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window
+                .global::<AppState>()
+                .set_is_add_to_playlist_open(false);
+        }
+    }
+
+    fn add_pending_to_playlist(&self, index: usize) {
+        let tracks = std::mem::take(&mut *self.pending_playlist_tracks.borrow_mut());
+        self.close_add_to_playlist();
+        let Some((id, name)) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| (playlist.id, playlist.name.clone()))
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.append_to_playlist(id, &tracks))
+            .is_none()
+        {
+            return;
+        }
+        let count = tracks.len();
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
+            playlist.track_paths.extend(tracks);
+        }
+        self.show_playlists();
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_import_status(
+                format!(
+                    "{count} morceau{} ajouté{} à « {name} »",
+                    if count == 1 { "" } else { "x" },
+                    if count == 1 { "" } else { "s" }
+                )
+                .into(),
+            );
         }
     }
 

@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -37,6 +37,16 @@ CREATE TABLE IF NOT EXISTS tracks (
     bits_per_sample INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
     artwork_hash TEXT REFERENCES artworks(hash)
+);
+CREATE TABLE IF NOT EXISTS playlists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playlist_entries (
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_path TEXT NOT NULL,
+    PRIMARY KEY (playlist_id, position)
 );
 CREATE TABLE IF NOT EXISTS album_text_overrides (
     directory TEXT NOT NULL,
@@ -81,6 +91,20 @@ pub struct LibrarySnapshot {
     pub artwork_overrides: HashMap<AlbumKey, Arc<[u8]>>,
     /// Album titles and artists the user edited, shown instead of the tags.
     pub text_overrides: HashMap<AlbumKey, AlbumTextOverride>,
+    /// The user's playlists, in creation order.
+    pub playlists: Vec<Playlist>,
+}
+
+/// A user playlist: an ordered list of track paths. A track may appear twice; an entry whose
+/// file left the library stays in the list and is simply not shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Playlist {
+    /// Stable identifier in the database.
+    pub id: i64,
+    /// Name shown in the sidebar.
+    pub name: String,
+    /// Tracks in playing order.
+    pub track_paths: Vec<PathBuf>,
 }
 
 /// Album title and artist chosen by the user; `None` keeps what the tags say.
@@ -218,6 +242,7 @@ impl LibraryStore {
             tracks,
             artwork_overrides,
             text_overrides: self.text_overrides()?,
+            playlists: self.playlists()?,
         })
     }
 
@@ -323,6 +348,119 @@ impl LibraryStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Creates an empty playlist and returns its identifier.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn create_playlist(&mut self, name: &str) -> Result<i64, LibraryError> {
+        self.connection
+            .execute("INSERT INTO playlists (name) VALUES (?1)", params![name])?;
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    /// Renames playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn rename_playlist(&mut self, id: i64, name: &str) -> Result<(), LibraryError> {
+        self.connection.execute(
+            "UPDATE playlists SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes playlist `id` and its entries (the tracks stay in the library).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn delete_playlist(&mut self, id: i64) -> Result<(), LibraryError> {
+        self.connection
+            .execute("DELETE FROM playlists WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Adds `paths` at the end of playlist `id`, in order.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn append_to_playlist(&mut self, id: i64, paths: &[PathBuf]) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        let next_position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_entries WHERE playlist_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        for (offset, path) in paths.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO playlist_entries (playlist_id, position, track_path)
+                 VALUES (?1, ?2, ?3)",
+                params![id, next_position + offset as i64, path_text(path)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Removes the entry at `position` (0-based, among every entry) from playlist `id`; the
+    /// following entries move up by one.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn remove_from_playlist(&mut self, id: i64, position: usize) -> Result<(), LibraryError> {
+        let remaining: Vec<PathBuf> = self
+            .playlist_paths(id)?
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| *index != position)
+            .map(|(_, path)| path)
+            .collect();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM playlist_entries WHERE playlist_id = ?1",
+            params![id],
+        )?;
+        for (index, path) in remaining.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO playlist_entries (playlist_id, position, track_path)
+                 VALUES (?1, ?2, ?3)",
+                params![id, index as i64, path_text(path)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn playlists(&self) -> Result<Vec<Playlist>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, name FROM playlists ORDER BY id")?;
+        let headers: Vec<(i64, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        headers
+            .into_iter()
+            .map(|(id, name)| {
+                Ok(Playlist {
+                    id,
+                    name,
+                    track_paths: self.playlist_paths(id)?,
+                })
+            })
+            .collect()
+    }
+
+    fn playlist_paths(&self, id: i64) -> Result<Vec<PathBuf>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT track_path FROM playlist_entries WHERE playlist_id = ?1 ORDER BY position",
+        )?;
+        let paths = statement
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .map(|path| path.map(PathBuf::from))
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
     }
 
     fn text_overrides(&self) -> Result<HashMap<AlbumKey, AlbumTextOverride>, LibraryError> {
