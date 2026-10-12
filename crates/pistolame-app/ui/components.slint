@@ -1,8 +1,9 @@
 import { Switch, ScrollView, ListView } from "std-widgets.slint";
 import { Tokens } from "tokens.slint";
-import { AlbumCard, AppState, DataCell, PathStep, ViewKind } from "state.slint";
+import { AlbumCard, AppState, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
 
 export global Icons {
+    out property <image> queue: @image-url("../assets/icons/queue.svg");
     out property <image> pencil-simple: @image-url("../assets/icons/pencil-simple.svg");
     out property <image> check: @image-url("../assets/icons/check.svg");
     out property <image> plus: @image-url("../assets/icons/plus.svg");
@@ -386,6 +387,76 @@ export component EqualizerBars inherits Rectangle {
     }
 }
 
+component MenuRow inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> is-destructive;
+    callback clicked();
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Icon { width: 15px; source: root.icon; colorize: root.is-destructive ? Tokens.status-caution : Tokens.accent; }
+        Txt {
+            height: root.height;
+            text: root.label;
+            vertical-alignment: center;
+            color: root.is-destructive ? Tokens.status-caution : Tokens.text-primary;
+        }
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+// "…" button with the actions available on any track, album or playlist: play next, add to the
+// queue, add to a playlist and, inside a playlist, remove. The menu opens under the button.
+export component ActionMenuButton inherits Rectangle {
+    in property <string> label: "Plus d’actions";
+    in property <bool> can-remove;
+    in property <color> icon-color: Tokens.text-secondary;
+    callback action(TrackAction);
+    width: 28px;
+    height: 28px;
+    IconButton {
+        width: root.width;
+        height: root.height;
+        icon: Icons.dots-three;
+        icon-size: 18px;
+        icon-color: root.icon-color;
+        label: root.label;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        x: root.width - 232px;
+        y: root.height + 4px;
+        width: 232px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                MenuRow { icon: Icons.skip-forward-fill; label: "Lire ensuite"; clicked => { root.action(TrackAction.play-next); } }
+                MenuRow { icon: Icons.queue; label: "Ajouter à la file d’attente"; clicked => { root.action(TrackAction.add-to-queue); } }
+                MenuRow { icon: Icons.plus; label: "Ajouter à une playlist…"; clicked => { root.action(TrackAction.add-to-playlist); } }
+                if root.can-remove: MenuRow {
+                    icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
+                    clicked => { root.action(TrackAction.remove-from-playlist); }
+                }
+            }
+        }
+    }
+}
+
 export component TrackRow inherits Rectangle {
     in property <int> number;
     in property <string> title;
@@ -393,13 +464,13 @@ export component TrackRow inherits Rectangle {
     in property <string> duration-label;
     in property <bool> is-odd;
     in property <bool> is-current;
-    // Optional discreet action at the end of the row ("Ajouter à une playlist", "Retirer"),
-    // shown while the row is hovered. Its slot is always reserved so columns never move.
-    in property <image> action-icon;
-    in property <string> action-label;
+    // "…" menu at the end of the row, shown while hovered. Its slot is always reserved so the
+    // columns never move.
+    in property <bool> has-menu: true;
+    in property <bool> can-remove;
     in property <string> subtitle;
     callback clicked();
-    callback action();
+    callback action(TrackAction);
     border-width: keyboard.has-focus ? 2px : 0px;
     border-color: Tokens.focus-ring;
     keyboard := FocusScope {
@@ -479,19 +550,13 @@ export component TrackRow inherits Rectangle {
         }
     }
 
-    action-button := IconButton {
-        x: root.width - 12px - 28px;
+    menu-button := ActionMenuButton {
+        x: root.width - 8px - 28px;
         y: 4px;
-        width: 28px;
-        height: 28px;
-        icon: root.action-icon;
-        icon-size: 16px;
-        icon-color: Tokens.text-secondary;
-        label: root.action-label;
-        visible: root.action-label != "" && (touch.has-hover || self.has-hover);
-        clicked => {
-            root.action();
-        }
+        label: "Actions pour " + root.title;
+        can-remove: root.can-remove;
+        opacity: root.has-menu && touch.has-hover ? 1 : 0;
+        action(kind) => { root.action(kind); }
     }
 }
 
@@ -949,6 +1014,17 @@ component AlbumTile inherits Rectangle {
         }
     }
 
+    ActionMenuButton {
+        x: root.tile - 8px - 28px;
+        y: root.tile - 36px;
+        label: "Actions pour " + root.album.title;
+        icon-color: Tokens.overlay-icon;
+        opacity: root.is-hovered ? 1 : 0;
+        action(kind) => {
+            AppState.track-action({ source: TrackSource.album, album: root.album.catalog-index, track: 0, position: 0 }, kind);
+        }
+    }
+
 }
 
 export component AlbumsGrid inherits Rectangle {
@@ -1090,16 +1166,12 @@ export component AlbumDetail inherits Rectangle {
             source: AppState.detail.artwork;
         }
 
-        IconButton {
+        ActionMenuButton {
             x: root.content-width - 32px - 28px - 8px - 28px;
             y: 60px;
-            width: 28px;
-            height: 28px;
-            icon: Icons.plus;
-            icon-color: Tokens.text-secondary;
-            label: "Ajouter l’album à une playlist";
-            clicked => {
-                AppState.begin-add-album-to-playlist();
+            label: "Actions pour l’album";
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.album, album: AppState.detail-album-index, track: 0, position: 0 }, kind);
             }
         }
 
@@ -1187,13 +1259,11 @@ export component AlbumDetail inherits Rectangle {
             duration-label: track.duration-label;
             is-odd: Math.mod(index, 2) == 1;
             is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == index;
-            action-icon: Icons.plus;
-            action-label: "Ajouter à une playlist";
             clicked => {
                 AppState.play-track(AppState.detail-album-index, index);
             }
-            action => {
-                AppState.begin-add-track-to-playlist(index);
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.album-track, album: AppState.detail-album-index, track: index, position: 0 }, kind);
             }
         }
 
@@ -1647,6 +1717,13 @@ export component PlaylistView inherits Rectangle {
         }
         Txt { x: 104px; y: 26px; width: root.list-width - 72px - 76px; role: TextRole.display; text: AppState.playlist-title; overflow: elide; }
         Txt { x: 104px; y: 60px; width: root.list-width - 72px; role: TextRole.callout; text: AppState.playlist-meta; color: Tokens.text-secondary; }
+        ActionMenuButton {
+            x: root.width - 32px - 28px - 8px - 28px; y: 24px;
+            label: "Actions pour la playlist";
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.playlist, album: 0, track: 0, position: 0 }, kind);
+            }
+        }
         IconButton {
             x: root.width - 32px - 28px; y: 24px; width: 28px; height: 28px;
             icon: Icons.pencil-simple; icon-color: Tokens.text-secondary;
@@ -1677,10 +1754,11 @@ export component PlaylistView inherits Rectangle {
             duration-label: track.duration-label;
             is-odd: Math.mod(index, 2) == 1;
             is-current: track.is-current;
-            action-icon: Icons.x;
-            action-label: "Retirer de la playlist";
+            can-remove: true;
             clicked => { AppState.play-playlist-row(index); }
-            action => { AppState.remove-playlist-entry(track.position); }
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, kind);
+            }
         }
     }
 }
@@ -1819,5 +1897,100 @@ export component AddToPlaylistSheet inherits Sheet {
         x: root.width - 24px - 112px; y: root.height - 44px;
         label: "Annuler";
         clicked => { AppState.is-add-to-playlist-open = false; }
+    }
+}
+
+component QueueTrack inherits Rectangle {
+    in property <QueueRow> entry;
+    in property <bool> can-remove;
+    callback clicked();
+    callback remove();
+    height: 48px;
+    border-radius: 8px;
+    background: touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.entry.title;
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Rectangle {
+        x: 8px; y: 6px; width: 36px; height: 36px;
+        background: Tokens.surface-field;
+        Image { width: parent.width; height: parent.height; source: root.entry.artwork; image-fit: cover; }
+    }
+    Txt { x: 52px; y: 7px; width: root.width - 52px - 76px; text: root.entry.title; overflow: elide; }
+    Txt { x: 52px; y: 25px; width: root.width - 52px - 76px; role: TextRole.callout; text: root.entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
+    Txt { x: root.width - 76px; y: 16px; width: 40px; role: TextRole.callout; text: root.entry.duration-label; color: Tokens.text-secondary; horizontal-alignment: right; }
+    if root.can-remove: IconButton {
+        x: root.width - 32px; y: 12px; width: 24px; height: 24px;
+        icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
+        label: "Retirer de la file d’attente";
+        opacity: touch.has-hover || self.has-hover ? 1 : 0;
+        clicked => { root.remove(); }
+    }
+}
+
+// "À suivre": the current track, the tracks queued by hand, then the rest of the album or
+// playlist being played.
+export component QueuePanel inherits Rectangle {
+    width: 340px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.separator;
+    TouchArea { }
+    Txt { x: 20px; y: 18px; role: TextRole.title-3; text: "À suivre"; }
+    IconButton {
+        x: root.width - 16px - 28px; y: 14px; width: 28px; height: 28px;
+        icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
+        label: "Fermer la file d’attente";
+        clicked => { AppState.is-queue-open = false; }
+    }
+    Flickable {
+        y: 56px;
+        height: root.height - 56px;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 16px;
+            spacing: 2px;
+            alignment: start;
+            if !AppState.has-queue-current: Txt {
+                height: 40px;
+                text: "Lancez un album ou une playlist pour remplir la file.";
+                color: Tokens.text-secondary;
+                wrap: word-wrap;
+            }
+            if AppState.has-queue-current: Txt { height: 24px; role: TextRole.label; text: "EN COURS"; color: Tokens.text-secondary; }
+            if AppState.has-queue-current: QueueTrack { entry: AppState.queue-current; }
+            if AppState.queue-up-next.length > 0: HorizontalLayout {
+                height: 34px;
+                padding-top: 10px;
+                Txt { role: TextRole.label; text: "ENSUITE DANS LA FILE"; color: Tokens.text-secondary; }
+                Rectangle { }
+                Txt {
+                    role: TextRole.callout; text: "Effacer";
+                    color: clear-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+                    clear-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.queue-clear(); } }
+                }
+            }
+            for item[index] in AppState.queue-up-next: QueueTrack {
+                entry: item;
+                can-remove: true;
+                clicked => { AppState.queue-play-up-next(index); }
+                remove => { AppState.queue-remove(index); }
+            }
+            if AppState.queue-upcoming.length > 0: Txt {
+                height: 34px;
+                vertical-alignment: bottom;
+                role: TextRole.label;
+                text: "ENSUITE DEPUIS : " + AppState.queue-context-name;
+                color: Tokens.text-secondary;
+                overflow: elide;
+            }
+            for item[index] in AppState.queue-upcoming: QueueTrack {
+                entry: item;
+                clicked => { AppState.queue-play-upcoming(index); }
+            }
+        }
     }
 }

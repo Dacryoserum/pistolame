@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use slint::ComponentHandle;
+mod play_queue;
 mod presentation;
 mod settings;
 mod transport;

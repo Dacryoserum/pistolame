@@ -1,7 +1,7 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
 use crate::{
-    AlbumCard, AppState, AppWindow, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow,
-    TrackRowData, ViewKind,
+    AlbumCard, AppState, AppWindow, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow,
+    TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind,
 };
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -66,10 +66,8 @@ pub(crate) struct UiBridge {
     album_edit: RefCell<Option<AlbumEditDraft>>,
     /// The user's playlists, as stored in the library.
     playlists: RefCell<Vec<Playlist>>,
-    /// What plays next: the tracks of an album or a playlist, by path so a library rescan
-    /// cannot shift them, and the position of the current one.
-    queue: RefCell<Vec<PathBuf>>,
-    queue_position: Cell<usize>,
+    /// What plays now and next (album or playlist, plus the tracks queued by hand).
+    play_queue: RefCell<crate::play_queue::PlayQueue>,
     /// Cover change waiting for "Enregistrer" in the playlist editor.
     pending_playlist_artwork: RefCell<PendingArtwork>,
     /// Tracks waiting in the "Ajouter à une playlist" sheet.
@@ -119,8 +117,7 @@ impl UiBridge {
             album_edit: RefCell::new(None),
             last_assessment: RefCell::new(None),
             playlists: RefCell::new(Vec::new()),
-            queue: RefCell::new(Vec::new()),
-            queue_position: Cell::new(0),
+            play_queue: RefCell::new(crate::play_queue::PlayQueue::default()),
             pending_playlist_tracks: RefCell::new(Vec::new()),
             pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
@@ -194,6 +191,7 @@ impl UiBridge {
             });
         });
         self.connect_playlists(&state);
+        self.connect_queue(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -803,37 +801,39 @@ impl UiBridge {
         });
     }
 
-    /// Plays track `track` of album `album`; the album becomes the queue.
+    /// Plays track `track` of album `album`; the album becomes the playing context.
     fn play_track(&self, album: usize, track: usize) {
-        let paths: Vec<PathBuf> = match self.albums.borrow().get(album) {
-            Some(album) => album
-                .tracks
-                .iter()
-                .map(|track| track.path.clone())
-                .collect(),
+        let (paths, name) = match self.albums.borrow().get(album) {
+            Some(album) => (
+                album
+                    .tracks
+                    .iter()
+                    .map(|track| track.path.clone())
+                    .collect(),
+                album.title.clone(),
+            ),
             None => return,
         };
-        self.play_queue(paths, track);
+        self.play_context(paths, track, name);
     }
 
-    /// Makes `paths` the queue and plays the one at `position`.
-    fn play_queue(&self, paths: Vec<PathBuf>, position: usize) {
-        if position >= paths.len() {
-            return;
+    /// Plays `paths` (an album or a playlist called `name`) from `position`.
+    fn play_context(&self, paths: Vec<PathBuf>, position: usize, name: String) {
+        let path = self
+            .play_queue
+            .borrow_mut()
+            .play_context(paths, position, name);
+        if let Some(path) = path {
+            self.start_playback(path);
         }
-        *self.queue.borrow_mut() = paths;
-        self.play_queue_position(position);
     }
 
-    fn play_queue_position(&self, position: usize) {
-        let Some(path) = self.queue.borrow().get(position).cloned() else {
-            return;
-        };
+    /// Opens and plays `path`, a track the queue just made current.
+    fn start_playback(&self, path: PathBuf) {
         let Some(location) = self.track_location(&path) else {
             self.message(format!("Morceau introuvable : {}", path.display()));
             return;
         };
-        self.queue_position.set(position);
         self.selected_track.set(Some(location));
         self.should_advance.set(true);
         self.stream_end_baseline
@@ -841,6 +841,7 @@ impl UiBridge {
         self.message(String::new());
         self.engine.send(EngineCommand::OpenFileAndPlay { path });
         self.refresh_playlist_view();
+        self.refresh_queue_view();
     }
 
     /// The (album, track) indices of a file in the current album list.
@@ -868,33 +869,53 @@ impl UiBridge {
         (seed >> 32) as usize % count.max(1)
     }
 
+    /// The previous/next buttons. "Previous" restarts the track after 3 s, like every player.
     fn adjacent_track(&self, next: bool) {
-        let count = self.queue.borrow().len();
-        if count == 0 || self.selected_track.get().is_none() {
+        if self.selected_track.get().is_none() {
             return;
         }
-        if !next
-            && self.engine.counters().frames_rendered_in_track
-                > u64::from(self.sample_rate_hz.get()) * 3
+        if next {
+            self.play_next_in_queue(true);
+            return;
+        }
+        if self.engine.counters().frames_rendered_in_track
+            > u64::from(self.sample_rate_hz.get()) * 3
         {
             self.engine.send(EngineCommand::SeekTo {
                 position_in_track: Duration::ZERO,
             });
             return;
         }
-        let position = self.queue_position.get();
-        let shuffle = self
+        let path = self.play_queue.borrow_mut().previous();
+        if let Some(path) = path {
+            self.start_playback(path);
+        }
+    }
+
+    /// Plays what comes next. The "next" button wraps around the album or playlist; the end of
+    /// a track wraps only when repeat is on.
+    fn play_next_in_queue(&self, is_manual: bool) {
+        let (is_shuffle_on, is_repeat_on) = self
             .window
             .upgrade()
-            .is_some_and(|window| window.global::<AppState>().get_is_shuffle_on());
-        let target = if next && shuffle && count > 1 {
-            (position + 1 + self.random_track(count - 1)) % count
-        } else if next {
-            (position + 1) % count
-        } else {
-            (position + count - 1) % count
+            .map(|window| {
+                let state = window.global::<AppState>();
+                (state.get_is_shuffle_on(), state.get_is_repeat_on())
+            })
+            .unwrap_or_default();
+        let (count, position) = {
+            let queue = self.play_queue.borrow();
+            (queue.context_len(), queue.context_position())
         };
-        self.play_queue_position(target);
+        let shuffled_position = (is_shuffle_on && count > 1)
+            .then(|| (position + 1 + self.random_track(count - 1)) % count);
+        let path = self
+            .play_queue
+            .borrow_mut()
+            .advance(shuffled_position, is_manual || is_repeat_on);
+        if let Some(path) = path {
+            self.start_playback(path);
+        }
     }
 
     fn advance_after_end(&self) {
@@ -902,14 +923,187 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
-        if crate::transport::can_advance(
-            self.queue_position.get(),
-            self.queue.borrow().len(),
-            state.get_is_repeat_on(),
-            state.get_is_shuffle_on(),
-        ) {
-            self.adjacent_track(true);
+        if self
+            .play_queue
+            .borrow()
+            .has_next(state.get_is_repeat_on(), state.get_is_shuffle_on())
+        {
+            self.play_next_in_queue(false);
         }
+    }
+
+    /// Runs a "…" menu action on a track, an album or a playlist.
+    fn run_track_action(&self, target: TrackTarget, action: TrackAction) {
+        if action == TrackAction::RemoveFromPlaylist {
+            if target.source == TrackSource::PlaylistEntry
+                && let Ok(position) = usize::try_from(target.position)
+            {
+                self.remove_playlist_entry(position);
+            }
+            return;
+        }
+        let Some((paths, subject)) = self.target_tracks(&target) else {
+            return;
+        };
+        match action {
+            TrackAction::PlayNext | TrackAction::AddToQueue => {
+                {
+                    let mut queue = self.play_queue.borrow_mut();
+                    if action == TrackAction::PlayNext {
+                        queue.play_next(paths);
+                    } else {
+                        queue.add_to_queue(paths);
+                    }
+                }
+                if self.selected_track.get().is_none() {
+                    // Nothing was playing: start with the first queued track.
+                    self.play_next_in_queue(false);
+                } else {
+                    self.refresh_queue_view();
+                }
+                self.status(format!(
+                    "{subject} : {}",
+                    if action == TrackAction::PlayNext {
+                        "lu ensuite"
+                    } else {
+                        "ajouté à la file d’attente"
+                    }
+                ));
+            }
+            TrackAction::AddToPlaylist => {
+                *self.pending_playlist_tracks.borrow_mut() = paths;
+                self.open_add_to_playlist(subject);
+            }
+            TrackAction::RemoveFromPlaylist => {}
+        }
+    }
+
+    /// The tracks a menu action applies to, and how to name them.
+    fn target_tracks(&self, target: &TrackTarget) -> Option<(Vec<PathBuf>, String)> {
+        let albums = self.albums.borrow();
+        match target.source {
+            TrackSource::AlbumTrack => {
+                let track = albums
+                    .get(usize::try_from(target.album).ok()?)?
+                    .tracks
+                    .get(usize::try_from(target.track).ok()?)?;
+                Some((vec![track.path.clone()], format!("« {} »", track.title)))
+            }
+            TrackSource::Album => {
+                let album = albums.get(usize::try_from(target.album).ok()?)?;
+                Some((
+                    album
+                        .tracks
+                        .iter()
+                        .map(|track| track.path.clone())
+                        .collect(),
+                    format!("L’album « {} »", album.title),
+                ))
+            }
+            TrackSource::PlaylistEntry => {
+                let index = self.current_playlist_index()?;
+                let path = self
+                    .playlists
+                    .borrow()
+                    .get(index)?
+                    .track_paths
+                    .get(usize::try_from(target.position).ok()?)?
+                    .clone();
+                let title = albums
+                    .iter()
+                    .flat_map(|album| &album.tracks)
+                    .find(|track| track.path == path)
+                    .map(|track| track.title.clone())
+                    .unwrap_or_default();
+                Some((vec![path], format!("« {title} »")))
+            }
+            TrackSource::Playlist => {
+                let index = self.current_playlist_index()?;
+                drop(albums);
+                let paths: Vec<PathBuf> = self
+                    .playable_entries(index)
+                    .into_iter()
+                    .map(|(_, path, _)| path)
+                    .collect();
+                let name = self.playlists.borrow().get(index)?.name.clone();
+                Some((paths, format!("La playlist « {name} »")))
+            }
+        }
+    }
+
+    /// A short confirmation in the status line under the sidebar.
+    fn status(&self, text: String) {
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_import_status(text.into());
+        }
+    }
+
+    /// Redraws the "À suivre" panel.
+    fn refresh_queue_view(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let queue = self.play_queue.borrow();
+        let row = |path: &PathBuf| self.queue_row(path);
+        let current = queue.current().and_then(row);
+        state.set_has_queue_current(current.is_some());
+        state.set_queue_current(current.unwrap_or_default());
+        state.set_queue_up_next(ModelRc::new(VecModel::from(
+            queue.up_next().filter_map(row).collect::<Vec<_>>(),
+        )));
+        state.set_queue_upcoming(ModelRc::new(VecModel::from(
+            queue.upcoming().iter().filter_map(row).collect::<Vec<_>>(),
+        )));
+        state.set_queue_context_name(queue.context_name().into());
+    }
+
+    fn queue_row(&self, path: &std::path::Path) -> Option<QueueRow> {
+        let (album, track) = self.track_location(path)?;
+        let albums = self.albums.borrow();
+        let album = albums.get(album)?;
+        let track = album.tracks.get(track)?;
+        Some(QueueRow {
+            title: track.title.as_str().into(),
+            subtitle: format!("{} — {}", album.artist, album.title).into(),
+            duration_label: presentation::clock(track.duration_seconds).into(),
+            artwork: album.artwork.clone(),
+        })
+    }
+
+    fn connect_queue(self: &Rc<Self>, state: &AppState<'_>) {
+        let handle = self.clone();
+        state.on_track_action(move |target, action| handle.run_track_action(target, action));
+        let handle = self.clone();
+        state.on_queue_remove(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.play_queue.borrow_mut().remove_up_next(index);
+                handle.refresh_queue_view();
+            }
+        });
+        let handle = self.clone();
+        state.on_queue_clear(move || {
+            handle.play_queue.borrow_mut().clear_up_next();
+            handle.refresh_queue_view();
+        });
+        let handle = self.clone();
+        state.on_queue_play_up_next(move |index| {
+            let path = usize::try_from(index)
+                .ok()
+                .and_then(|index| handle.play_queue.borrow_mut().jump_to_up_next(index));
+            if let Some(path) = path {
+                handle.start_playback(path);
+            }
+        });
+        let handle = self.clone();
+        state.on_queue_play_upcoming(move |index| {
+            let path = usize::try_from(index)
+                .ok()
+                .and_then(|index| handle.play_queue.borrow_mut().jump_to_upcoming(index));
+            if let Some(path) = path {
+                handle.start_playback(path);
+            }
+        });
     }
 
     fn connect_playlists(self: &Rc<Self>, state: &AppState<'_>) {
@@ -960,14 +1154,6 @@ impl UiBridge {
         });
         let handle = self.clone();
         state.on_delete_current_playlist(move || handle.delete_current_playlist());
-        let handle = self.clone();
-        state.on_begin_add_album_to_playlist(move || handle.begin_add_album_to_playlist());
-        let handle = self.clone();
-        state.on_begin_add_track_to_playlist(move |track| {
-            if let Ok(track) = usize::try_from(track) {
-                handle.begin_add_track_to_playlist(track);
-            }
-        });
         let handle = self.clone();
         state.on_add_pending_to_playlist(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -1104,7 +1290,13 @@ impl UiBridge {
             .into_iter()
             .map(|(_, path, _)| path)
             .collect();
-        self.play_queue(paths, row);
+        let name = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.name.clone())
+            .unwrap_or_default();
+        self.play_context(paths, row, name);
     }
 
     /// Creates a playlist named "Nouvelle playlist" (numbered if taken) holding `tracks`. When
@@ -1251,39 +1443,6 @@ impl UiBridge {
         state.set_selected_playlist(-1);
         state.invoke_select_item(2);
         self.show_playlists();
-    }
-
-    fn begin_add_album_to_playlist(&self) {
-        let albums = self.albums.borrow();
-        let Some(album) = albums.get(self.detail_album.get()) else {
-            return;
-        };
-        *self.pending_playlist_tracks.borrow_mut() = album
-            .tracks
-            .iter()
-            .map(|track| track.path.clone())
-            .collect();
-        let subject = format!(
-            "L’album « {} » ({} morceaux)",
-            album.title,
-            album.tracks.len()
-        );
-        drop(albums);
-        self.open_add_to_playlist(subject);
-    }
-
-    fn begin_add_track_to_playlist(&self, track: usize) {
-        let albums = self.albums.borrow();
-        let Some(file) = albums
-            .get(self.detail_album.get())
-            .and_then(|album| album.tracks.get(track))
-        else {
-            return;
-        };
-        *self.pending_playlist_tracks.borrow_mut() = vec![file.path.clone()];
-        let subject = format!("« {} »", file.title);
-        drop(albums);
-        self.open_add_to_playlist(subject);
     }
 
     fn open_add_to_playlist(&self, subject: String) {

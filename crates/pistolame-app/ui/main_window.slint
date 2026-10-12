@@ -3,11 +3,11 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, QueuePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, TrackRowData, ViewKind } from "state.slint";
+export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind } from "state.slint";
 export { Tokens } from "tokens.slint";
 
 export component AppWindow inherits Window {
@@ -22,8 +22,10 @@ export component AppWindow inherits Window {
 
     property <bool> is-dark: AppState.is-dark;
     property <length> toolbar-width: root.width - 240px;
-    property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - 168px - 20px - 48px, 360px, 560px);
-    property <length> side-gap: (root.toolbar-width - 20px - 172px - 168px - 20px - root.lcd-width) / 2;
+    // Right toolbar group: volume, queue and output buttons.
+    property <length> right-group-width: 200px;
+    property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - root.right-group-width - 20px - 48px, 360px, 560px);
+    property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
     property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Sortie audio", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
@@ -199,9 +201,9 @@ export component AppWindow inherits Window {
             }
 
             Rectangle {
-                x: root.toolbar-width - 20px - 168px;
+                x: root.toolbar-width - 20px - root.right-group-width;
                 y: 0px;
-                width: 168px;
+                width: root.right-group-width;
                 height: 60px;
                 Image {
                     x: 0px;
@@ -228,6 +230,21 @@ export component AppWindow inherits Window {
 
                 IconButton {
                     x: 140px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                    icon: Icons.queue;
+                    icon-size: 18px;
+                    icon-color: AppState.is-queue-open ? Tokens.accent : Tokens.text-secondary;
+                    label: "À suivre";
+                    clicked => {
+                        AppState.is-queue-open = !AppState.is-queue-open;
+                        AppState.is-popover-open = false;
+                    }
+                }
+
+                IconButton {
+                    x: 172px;
                     y: 16px;
                     width: 28px;
                     height: 28px;
@@ -393,6 +410,11 @@ export component AppWindow inherits Window {
                     clicked => { AppState.message = ""; }
                 }
             }
+        }
+        if AppState.is-queue-open: QueuePanel {
+            x: root.width - self.width;
+            y: 60px;
+            height: root.height - 60px;
         }
         if AppState.is-playlist-editor-open || AppState.is-add-to-playlist-open: Rectangle {
             background: #00000066;

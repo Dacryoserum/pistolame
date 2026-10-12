@@ -51,6 +51,37 @@ export enum ViewKind {
     playlist,
 }
 
+// Where a track action applies: one track of an album, a whole album, one playlist entry or a
+// whole playlist.
+export enum TrackSource {
+    album-track,
+    album,
+    playlist-entry,
+    playlist,
+}
+
+export struct TrackTarget {
+    source: TrackSource,
+    album: int,
+    track: int,
+    // Position among every entry of the open playlist.
+    position: int,
+}
+
+export enum TrackAction {
+    play-next,
+    add-to-queue,
+    add-to-playlist,
+    remove-from-playlist,
+}
+
+export struct QueueRow {
+    title: string,
+    subtitle: string,
+    duration-label: string,
+    artwork: image,
+}
+
 export struct PlaylistItem {
     name: string,
     track-count: int,
@@ -127,10 +158,21 @@ export global AppState {
     // "Ajouter à une playlist" sheet, for an album or one of its tracks.
     in-out property <bool> is-add-to-playlist-open;
     in property <string> add-to-playlist-subject;
-    callback begin-add-album-to-playlist();
-    callback begin-add-track-to-playlist(int);
     callback add-pending-to-playlist(int);
     callback add-pending-to-new-playlist();
+    // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
+    // playlist being played.
+    callback track-action(TrackTarget, TrackAction);
+    in-out property <bool> is-queue-open;
+    in property <bool> has-queue-current;
+    in property <QueueRow> queue-current;
+    in property <[QueueRow]> queue-up-next;
+    in property <[QueueRow]> queue-upcoming;
+    in property <string> queue-context-name;
+    callback queue-remove(int);
+    callback queue-clear();
+    callback queue-play-up-next(int);
+    callback queue-play-upcoming(int);
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();
