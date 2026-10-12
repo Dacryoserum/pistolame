@@ -237,6 +237,7 @@ export component Badge inherits Rectangle {
             role: TextRole.label;
             height: root.height;
             text: root.label;
+            overflow: elide;
             color: root.foreground;
         }
     }
@@ -269,7 +270,8 @@ export component PillButton inherits Rectangle {
     HorizontalLayout {
         alignment: center;
         spacing: 6px;
-        Icon {
+        // No icon, no reserved slot: the label stays centered.
+        if root.icon.width > 0: Icon {
             width: 14px;
             source: root.icon;
             colorize: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
@@ -280,6 +282,7 @@ export component PillButton inherits Rectangle {
             height: root.height;
             text: root.label;
             color: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
+            vertical-alignment: center;
         }
     }
 
@@ -387,7 +390,9 @@ export component TrackRow inherits Rectangle {
         root.clicked();
     }
     property <length> duration-x: root.width - 12px - 44px;
-    property <length> format-x: duration-x - 16px - 64px;
+    // Wide enough for "24 bits / 192 kHz" in the caption role.
+    property <length> format-width: 104px;
+    property <length> format-x: duration-x - 16px - root.format-width;
     if !root.is-current: Txt {
         x: 12px;
         y: 10px;
@@ -412,8 +417,9 @@ export component TrackRow inherits Rectangle {
         role: TextRole.caption;
         x: root.format-x;
         y: 10px;
-        width: 64px;
+        width: root.format-width;
         text: root.format-label;
+        horizontal-alignment: right;
         color: Tokens.text-secondary;
     }
 
@@ -433,25 +439,36 @@ export component TrackRow inherits Rectangle {
     }
 }
 
+// Shared-mode volume in dB. Exclusive mode greys it out: the DAC sets the level and the
+// samples stay bit-perfect. The value appears in a small bubble while hovering or dragging.
 export component VolumeSlider inherits Rectangle {
     width: 88px;
     height: 28px;
-    property <length> thumb-center: 88px * AppState.volume / 100;
+    property <bool> is-adjustable: !AppState.exclusive || AppState.is-shared;
+    property <float> position: AppState.is-volume-muted ? 0 : 1 + AppState.volume-decibels / 60;
+    property <length> thumb-center: 88px * root.position;
     accessible-role: slider;
-    accessible-label: "Volume : utilisez le bouton du DAC";
-
-    accessible-value: AppState.volume;
+    accessible-label: root.is-adjustable ? "Volume" : "Volume réglé sur le DAC (mode exclusif)";
+    accessible-value: AppState.volume-label;
     accessible-value-minimum: 0;
-    accessible-value-maximum: 100;
+    accessible-value-maximum: 1;
+    // Half-decibel steps; the far left mutes.
     function apply(x: length) {
-        AppState.volume = Math.round(Math.clamp(x / 88px, 0, 1) * 100);
-        AppState.volume-changed(AppState.volume);
+        if !root.is-adjustable {
+            return;
+        }
+        if x <= 2px {
+            AppState.volume-changed(AppState.volume-decibels, true);
+        } else {
+            AppState.volume-changed(Math.round((Math.clamp(x / 88px, 0, 1) - 1) * 60 * 2) / 2, false);
+        }
     }
     Rectangle {
         y: 12.5px;
         height: 3px;
         border-radius: 1.5px;
         background: Tokens.rail;
+        opacity: root.is-adjustable ? 1 : 0.4;
     }
 
     Rectangle {
@@ -460,6 +477,7 @@ export component VolumeSlider inherits Rectangle {
         height: 3px;
         border-radius: 1.5px;
         background: Tokens.rail-fill;
+        opacity: root.is-adjustable ? 1 : 0.4;
     }
 
     Rectangle {
@@ -468,13 +486,49 @@ export component VolumeSlider inherits Rectangle {
         width: 11px;
         height: 11px;
         border-radius: 5.5px;
-        background: Tokens.scrubber-thumb;
+        background: root.is-adjustable ? Tokens.scrubber-thumb : Tokens.rail;
     }
 
+    touch := TouchArea {
+        mouse-cursor: root.is-adjustable ? MouseCursor.pointer : MouseCursor.not-allowed;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.apply(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.apply(self.mouse-x);
+            }
+        }
+    }
+
+    if touch.has-hover || touch.pressed: Rectangle {
+        property <length> bubble-width: 96px;
+        x: (root.width - self.bubble-width) / 2;
+        y: 30px;
+        width: self.bubble-width;
+        height: 20px;
+        border-radius: 10px;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-raised;
+        Txt {
+            role: TextRole.caption;
+            text: root.is-adjustable ? AppState.volume-label : "Réglé sur le DAC";
+            color: Tokens.text-secondary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
 }
 
 export component Lcd inherits Rectangle {
-    property <length> column-width: root.width - 68px - badge.width;
+    // Fixed slot for the badge: the title and the progress rail never move when the badge text
+    // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
+    // in it and its text is elided if ever too long.
+    property <length> badge-slot-width: 212px;
+    property <length> column-width: root.width - 68px - root.badge-slot-width;
     property <bool> is-seeking;
     property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
     height: 44px;
@@ -598,6 +652,7 @@ export component Lcd inherits Rectangle {
     }
 
     badge := Badge {
+        width: min(self.preferred-width, root.badge-slot-width - 8px);
         x: root.width - 8px - self.width;
         y: 12px;
         kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
@@ -1257,11 +1312,11 @@ export component OutputSettings inherits Rectangle {
             spacing: 12px;
             padding-bottom: 24px;
             Txt { role: TextRole.display; text: "Sortie audio"; }
+            Rectangle { height: 4px; }
             HorizontalLayout {
                 height: 32px;
-                padding-top: 12px;
-                Txt { role: TextRole.title-3; text: "Périphérique"; vertical-alignment: center; }
-                Rectangle { }
+                alignment: space-between;
+                Txt { role: TextRole.title-3; height: 32px; text: "Périphérique"; vertical-alignment: center; }
                 PillButton {
                     width: 128px;
                     label: "Actualiser";
@@ -1319,7 +1374,7 @@ export component OutputSettings inherits Rectangle {
                     Txt { text: AppState.transmission-text; wrap: word-wrap; height: self.preferred-height; }
                     Txt { text: AppState.integrity-text; wrap: word-wrap; height: self.preferred-height; }
                     Txt { role: TextRole.callout; text: AppState.underrun-label; color: Tokens.text-secondary; }
-                    Txt { role: TextRole.callout; text: "Volume : utilisez le bouton de votre DAC."; color: Tokens.text-secondary; }
+                    Txt { role: TextRole.callout; text: AppState.volume-description; color: Tokens.text-secondary; wrap: word-wrap; height: self.preferred-height; }
                 }
             }
             HorizontalLayout {

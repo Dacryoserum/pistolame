@@ -27,13 +27,14 @@ fn is_exclusive_with_exact_float_delivery(value: &SignalPathAssessment) -> bool 
     )
 }
 
+/// A PCM format as audiophiles read it: "24 bits / 48 kHz", "16 bits / 44,1 kHz".
+pub(crate) fn audio_format(bits_per_sample: u32, sample_rate_hz: u32) -> String {
+    format!("{bits_per_sample} bits / {} kHz", frequency(sample_rate_hz))
+}
+
 pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool) {
     let source = value.source_format;
-    let format = format!(
-        "{}/{}",
-        source.bits_per_sample,
-        frequency(source.sample_rate_hz)
-    );
+    let format = audio_format(u32::from(source.bits_per_sample), source.sample_rate_hz);
     let is_perfect = value.verdict == BitPerfectVerdict::BitPerfect;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
     let is_exact_float = is_exclusive_with_exact_float_delivery(value);
@@ -225,8 +226,37 @@ pub(crate) fn failure(kind: PlaybackFailureKind) -> &'static str {
     }
 }
 
+/// The shared-mode volume as shown next to the slider: "0 dB", "−12,5 dB" or "Muet".
+pub(crate) fn volume_label(volume: SharedModeVolume) -> String {
+    if volume.is_muted {
+        return "Muet".into();
+    }
+    if volume.is_unity() {
+        return "0 dB".into();
+    }
+    format!(
+        "−{} dB",
+        format!("{:.1}", -volume.decibels).replace('.', ",")
+    )
+}
+
+/// One line explaining where the volume is set, for the output page.
+pub(crate) fn volume_description(volume: SharedModeVolume, is_exclusive_output: bool) -> String {
+    if is_exclusive_output {
+        "Volume : réglé sur le DAC. En mode exclusif, Pistolame n’applique aucun gain.".into()
+    } else {
+        format!(
+            "Volume : {}, appliqué avant le mixeur du système (mode partagé).",
+            volume_label(volume)
+        )
+    }
+}
+
 /// Five stages of the active pipeline; no claim about physical DAC output.
-pub(crate) fn signal_steps(value: &SignalPathAssessment) -> Vec<(&'static str, String, bool)> {
+pub(crate) fn signal_steps(
+    value: &SignalPathAssessment,
+    volume: SharedModeVolume,
+) -> Vec<(&'static str, String, bool)> {
     let source = value.source_format;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
     vec![
@@ -240,7 +270,15 @@ pub(crate) fn signal_steps(value: &SignalPathAssessment) -> Vec<(&'static str, S
             true,
         ),
         ("Décodage", "PCM entier, sans perte".into(), true),
-        ("Volume", "100 % · aucun gain logiciel".into(), true),
+        if shared {
+            (
+                "Volume",
+                format!("{} · avant le mixeur", volume_label(volume)),
+                volume.is_unity(),
+            )
+        } else {
+            ("Volume", "0 dB · réglé sur le DAC".into(), true)
+        },
         (
             "Sortie",
             if shared {
@@ -295,6 +333,24 @@ mod tests {
         assert!(!transmission(&TransmissionStatus::NotApplicableInSharedMode, 44_100).is_verified);
     }
     #[test]
+    fn volume_labels_use_decibels_and_a_true_minus_sign() {
+        assert_eq!(volume_label(SharedModeVolume::default()), "0 dB");
+        assert_eq!(
+            volume_label(SharedModeVolume::at_decibels(-12.5)),
+            "−12,5 dB"
+        );
+        let muted = SharedModeVolume {
+            is_muted: true,
+            ..SharedModeVolume::default()
+        };
+        assert_eq!(volume_label(muted), "Muet");
+    }
+    #[test]
+    fn audio_formats_name_bits_and_kilohertz() {
+        assert_eq!(audio_format(16, 44_100), "16 bits / 44,1 kHz");
+        assert_eq!(audio_format(24, 192_000), "24 bits / 192 kHz");
+    }
+    #[test]
     fn formats_use_french_decimal_comma() {
         assert_eq!(frequency(44_100), "44,1");
         assert_eq!(clock(125), "2:05");
@@ -339,7 +395,7 @@ mod tests {
         let (badge, reason, is_perfect) = assessment(&exclusive_assessment(
             DeviceSampleDelivery::ExactFloat32Conversion,
         ));
-        assert_eq!(badge, "Exclusif · 24/96");
+        assert_eq!(badge, "Exclusif · 24 bits / 96 kHz");
         assert!(!is_perfect);
         assert!(reason.contains("CoreAudio exclusif"));
         assert!(reason.contains("pas vérifiable"));
@@ -348,7 +404,7 @@ mod tests {
     fn unchanged_exclusive_delivery_names_the_backend() {
         let (badge, reason, is_perfect) =
             assessment(&exclusive_assessment(DeviceSampleDelivery::Unchanged));
-        assert_eq!(badge, "Bit-perfect · 24/96");
+        assert_eq!(badge, "Bit-perfect · 24 bits / 96 kHz");
         assert!(is_perfect);
         assert!(reason.ends_with("CoreAudio exclusif"));
     }

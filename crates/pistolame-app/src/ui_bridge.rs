@@ -59,6 +59,8 @@ pub(crate) struct UiBridge {
     import_sender: Sender<LibraryUpdate>,
     is_importing: Cell<bool>,
     album_edit: RefCell<Option<AlbumEditDraft>>,
+    /// The latest signal-path assessment, to redraw the path when the volume changes.
+    last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
     sample_rate_hz: Cell<u32>,
@@ -100,6 +102,7 @@ impl UiBridge {
             import_sender: sender,
             is_importing: Cell::new(false),
             album_edit: RefCell::new(None),
+            last_assessment: RefCell::new(None),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
             sample_rate_hz: Cell::new(0),
@@ -141,6 +144,7 @@ impl UiBridge {
     }
 
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {
+        self.show_volume();
         let state = window.global::<AppState>();
         let handle = self.clone();
         state.on_import_files(move || {
@@ -162,6 +166,13 @@ impl UiBridge {
         });
         let handle = self.clone();
         state.on_search_changed(move |query| handle.update_grid(query.as_str()));
+        let handle = self.clone();
+        state.on_volume_changed(move |decibels, is_muted| {
+            handle.set_shared_mode_volume(SharedModeVolume {
+                is_muted,
+                ..SharedModeVolume::at_decibels(decibels)
+            });
+        });
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -266,6 +277,57 @@ impl UiBridge {
         if let Err(error) = self.settings.borrow().save() {
             self.message(format!("Impossible d’enregistrer les réglages : {error}"));
         }
+    }
+
+    /// Applies, remembers and shows the shared-mode volume.
+    fn set_shared_mode_volume(&self, volume: SharedModeVolume) {
+        self.engine
+            .send(EngineCommand::SetSharedModeVolume { volume });
+        self.settings.borrow_mut().set_shared_mode_volume(volume);
+        self.save_settings();
+        self.show_volume();
+    }
+
+    /// Shows the remembered volume on the slider, the output page and the signal path.
+    fn show_volume(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let volume = self.settings.borrow().shared_mode_volume();
+        state.set_volume_decibels(volume.decibels);
+        state.set_is_volume_muted(volume.is_muted);
+        state.set_volume_label(presentation::volume_label(volume).into());
+        let is_exclusive_output = self
+            .last_assessment
+            .borrow()
+            .as_ref()
+            .map_or(state.get_exclusive(), |assessment| {
+                assessment.negotiated.access_mode == DeviceAccessMode::Exclusive
+            });
+        state.set_volume_description(
+            presentation::volume_description(volume, is_exclusive_output).into(),
+        );
+        if let Some(assessment) = self.last_assessment.borrow().as_ref() {
+            state.set_path_steps(Self::path_steps(assessment, volume));
+            self.update_detail_signal();
+        }
+    }
+
+    fn path_steps(
+        assessment: &SignalPathAssessment,
+        volume: SharedModeVolume,
+    ) -> ModelRc<PathStep> {
+        ModelRc::new(VecModel::from(
+            presentation::signal_steps(assessment, volume)
+                .into_iter()
+                .map(|(label, value, is_transparent)| PathStep {
+                    label: label.into(),
+                    value: value.into(),
+                    is_transparent,
+                })
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn set_exclusive(&self, enabled: bool) {
@@ -665,10 +727,9 @@ impl UiBridge {
                     index as i32 + 1
                 },
                 title: track.title.as_str().into(),
-                format_label: format!(
-                    "{}/{}",
+                format_label: presentation::audio_format(
                     track.bits_per_sample,
-                    presentation::frequency(track.sample_rate_hz)
+                    track.sample_rate_hz,
                 )
                 .into(),
                 duration_label: presentation::clock(track.duration_seconds).into(),
@@ -941,9 +1002,8 @@ impl UiBridge {
                     state.set_current_album(album.title.as_str().into());
                     state.set_current_format(
                         format!(
-                            "FLAC {} bits / {} kHz",
-                            track.bits_per_sample,
-                            presentation::frequency(track.sample_rate_hz)
+                            "FLAC {}",
+                            presentation::audio_format(track.bits_per_sample, track.sample_rate_hz)
                         )
                         .into(),
                     );
@@ -979,18 +1039,12 @@ impl UiBridge {
                 state.set_is_shared(
                     value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer,
                 );
-                let steps = presentation::signal_steps(&value)
-                    .into_iter()
-                    .map(|(label, value, is_transparent)| PathStep {
-                        label: label.into(),
-                        value: value.into(),
-                        is_transparent,
-                    })
-                    .collect::<Vec<_>>();
-                state.set_path_steps(ModelRc::new(VecModel::from(steps)));
+                *self.last_assessment.borrow_mut() = Some(value);
+                self.show_volume();
                 self.update_detail_signal();
             }
             EngineEvent::SignalPathChanged { assessment: None } => {
+                self.last_assessment.borrow_mut().take();
                 state.set_is_shared(false);
                 state.set_is_bit_perfect(false);
                 state.set_badge_label("Sortie libérée".into());

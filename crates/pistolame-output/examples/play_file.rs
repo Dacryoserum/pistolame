@@ -187,6 +187,7 @@ mod file_play {
             EngineStartOptions {
                 output_mode_preference: preference,
                 preferred_device_id: None,
+                shared_mode_volume: Default::default(),
             },
         ) {
             Ok(handle) => handle,

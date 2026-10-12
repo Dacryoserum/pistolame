@@ -130,7 +130,12 @@ export global AppState {
 
     // UI state owned by Slint (Rust may read or reset it).
     in-out property <bool> is-dark: true;
-    in-out property <int> volume: 100;
+    // Shared-mode volume: 0 dB (full level) to -60 dB, or muted. Greyed in exclusive mode,
+    // where the DAC sets the level and Pistolame applies no gain.
+    in property <float> volume-decibels: 0;
+    in property <bool> is-volume-muted;
+    in property <string> volume-label: "0 dB";
+    in property <string> volume-description;
     in-out property <int> selected-item: 2;
     in-out property <ViewKind> view: ViewKind.grid;
     in-out property <bool> is-popover-open;
@@ -150,7 +155,7 @@ export global AppState {
     callback previous-track();
     callback next-track();
     callback seek(float);
-    callback volume-changed(int);
+    callback volume-changed(float, bool);
     callback toggle-theme();
 
     public function select-item(item: int) {

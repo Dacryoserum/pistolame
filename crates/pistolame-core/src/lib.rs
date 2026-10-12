@@ -15,6 +15,7 @@ pub mod signal_path;
 pub mod testing;
 pub mod timing;
 pub mod verification;
+pub mod volume;
 
 pub use decoder::*;
 pub use engine::*;
@@ -25,3 +26,4 @@ pub use pcm::*;
 pub use playback_ring::*;
 pub use signal_path::*;
 pub use verification::*;
+pub use volume::*;
