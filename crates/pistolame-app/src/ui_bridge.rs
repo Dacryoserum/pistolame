@@ -70,6 +70,8 @@ pub(crate) struct UiBridge {
     /// cannot shift them, and the position of the current one.
     queue: RefCell<Vec<PathBuf>>,
     queue_position: Cell<usize>,
+    /// Cover change waiting for "Enregistrer" in the playlist editor.
+    pending_playlist_artwork: RefCell<PendingArtwork>,
     /// Tracks waiting in the "Ajouter à une playlist" sheet.
     pending_playlist_tracks: RefCell<Vec<PathBuf>>,
     /// The latest signal-path assessment, to redraw the path when the volume changes.
@@ -120,6 +122,7 @@ impl UiBridge {
             queue: RefCell::new(Vec::new()),
             queue_position: Cell::new(0),
             pending_playlist_tracks: RefCell::new(Vec::new()),
+            pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
             sample_rate_hz: Cell::new(0),
@@ -525,25 +528,7 @@ impl UiBridge {
 
     /// Lets the user pick a JPEG or PNG; applied only on "Enregistrer".
     fn editor_choose_artwork(&self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Image", &["jpg", "jpeg", "png"])
-            .pick_file()
-        else {
-            return;
-        };
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.message(format!("Impossible de lire l’image : {error}"));
-                return;
-            }
-        };
-        if bytes.len() as u64 > pistolame_library::MAX_COVER_BYTES {
-            self.message("Cette image dépasse 16 Mo.".into());
-            return;
-        }
-        let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
-            self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
+        let Some((bytes, image)) = self.pick_cover_image() else {
             return;
         };
         if let Some(window) = self.window.upgrade() {
@@ -554,6 +539,29 @@ impl UiBridge {
         if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
             draft.pending_artwork = PendingArtwork::Chosen { bytes, image };
         }
+    }
+
+    /// Asks for a JPEG or PNG cover and checks it decodes and is not too large.
+    fn pick_cover_image(&self) -> Option<(Vec<u8>, slint::Image)> {
+        let path = rfd::FileDialog::new()
+            .add_filter("Image", &["jpg", "jpeg", "png"])
+            .pick_file()?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.message(format!("Impossible de lire l’image : {error}"));
+                return None;
+            }
+        };
+        if bytes.len() as u64 > pistolame_library::MAX_COVER_BYTES {
+            self.message("Cette image dépasse 16 Mo.".into());
+            return None;
+        }
+        let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
+            self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
+            return None;
+        };
+        Some((bytes, image))
     }
 
     /// Shows the files' own cover again; applied only on "Enregistrer".
@@ -930,6 +938,27 @@ impl UiBridge {
         let handle = self.clone();
         state.on_save_playlist_edit(move || handle.save_playlist_edit());
         let handle = self.clone();
+        state.on_playlist_editor_choose_artwork(move || {
+            if let Some((bytes, image)) = handle.pick_cover_image() {
+                if let Some(window) = handle.window.upgrade() {
+                    window
+                        .global::<AppState>()
+                        .set_playlist_editor_artwork(image.clone());
+                }
+                *handle.pending_playlist_artwork.borrow_mut() =
+                    PendingArtwork::Chosen { bytes, image };
+            }
+        });
+        let handle = self.clone();
+        state.on_playlist_editor_remove_artwork(move || {
+            if let Some(window) = handle.window.upgrade() {
+                window
+                    .global::<AppState>()
+                    .set_playlist_editor_artwork(slint::Image::default());
+            }
+            *handle.pending_playlist_artwork.borrow_mut() = PendingArtwork::Restored;
+        });
+        let handle = self.clone();
         state.on_delete_current_playlist(move || handle.delete_current_playlist());
         let handle = self.clone();
         state.on_begin_add_album_to_playlist(move || handle.begin_add_album_to_playlist());
@@ -964,6 +993,7 @@ impl UiBridge {
             .map(|playlist| PlaylistItem {
                 name: playlist.name.as_str().into(),
                 track_count: playlist.track_paths.len() as i32,
+                artwork: decode_artwork(playlist.artwork.as_ref()),
             })
             .collect();
         window
@@ -1052,6 +1082,7 @@ impl UiBridge {
         let count = rows.len();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_title(playlist.name.as_str().into());
+            state.set_playlist_artwork(decode_artwork(playlist.artwork.as_ref()));
         }
         state.set_playlist_meta(
             format!(
@@ -1101,6 +1132,7 @@ impl UiBridge {
             id,
             name,
             track_paths: tracks,
+            artwork: None,
         });
         self.show_playlists();
         if should_open {
@@ -1143,7 +1175,9 @@ impl UiBridge {
         let state = window.global::<AppState>();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_editor_name(playlist.name.as_str().into());
+            state.set_playlist_editor_artwork(decode_artwork(playlist.artwork.as_ref()));
         }
+        *self.pending_playlist_artwork.borrow_mut() = PendingArtwork::Unchanged;
         state.set_is_playlist_editor_open(true);
     }
 
@@ -1162,13 +1196,30 @@ impl UiBridge {
         else {
             return;
         };
-        if !name.is_empty()
-            && self
-                .with_library(|store| store.rename_playlist(id, &name))
-                .is_some()
-        {
+        let artwork = std::mem::replace(
+            &mut *self.pending_playlist_artwork.borrow_mut(),
+            PendingArtwork::Unchanged,
+        );
+        let saved = self.with_library(|store| {
+            if !name.is_empty() {
+                store.rename_playlist(id, &name)?;
+            }
+            match &artwork {
+                PendingArtwork::Unchanged => Ok(()),
+                PendingArtwork::Chosen { bytes, .. } => store.set_playlist_artwork(id, bytes),
+                PendingArtwork::Restored => store.clear_playlist_artwork(id),
+            }
+        });
+        if saved.is_some() {
             if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
-                playlist.name = name;
+                if !name.is_empty() {
+                    playlist.name = name;
+                }
+                match artwork {
+                    PendingArtwork::Unchanged => {}
+                    PendingArtwork::Chosen { bytes, .. } => playlist.artwork = Some(bytes.into()),
+                    PendingArtwork::Restored => playlist.artwork = None,
+                }
             }
             self.show_playlists();
         }
@@ -1467,12 +1518,14 @@ impl UiBridge {
                 state.set_is_shared(
                     value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer,
                 );
+                state.set_is_output_active(true);
                 *self.last_assessment.borrow_mut() = Some(value);
                 self.show_volume();
                 self.update_detail_signal();
             }
             EngineEvent::SignalPathChanged { assessment: None } => {
                 self.last_assessment.borrow_mut().take();
+                state.set_is_output_active(false);
                 state.set_is_shared(false);
                 state.set_is_bit_perfect(false);
                 state.set_badge_label("Sortie libérée".into());

@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 CREATE TABLE IF NOT EXISTS playlists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    artwork_hash TEXT REFERENCES artworks(hash)
 );
 CREATE TABLE IF NOT EXISTS playlist_entries (
     playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
@@ -105,6 +106,8 @@ pub struct Playlist {
     pub name: String,
     /// Tracks in playing order.
     pub track_paths: Vec<PathBuf>,
+    /// Cover the user chose for the playlist, if any.
+    pub artwork: Option<Arc<[u8]>>,
 }
 
 /// Album title and artist chosen by the user; `None` keeps what the tags say.
@@ -157,6 +160,7 @@ impl LibraryStore {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute_batch(SCHEMA)?;
+        migrate(&connection)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(LibraryStore { connection })
     }
@@ -433,20 +437,54 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Shows `image_bytes` as the cover of playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the image is too large or the database cannot be written.
+    pub fn set_playlist_artwork(
+        &mut self,
+        id: i64,
+        image_bytes: &[u8],
+    ) -> Result<(), LibraryError> {
+        if image_bytes.len() as u64 > MAX_COVER_BYTES {
+            return Err(LibraryError::CoverTooLarge);
+        }
+        let hash = self.store_artwork(image_bytes)?;
+        self.connection.execute(
+            "UPDATE playlists SET artwork_hash = ?2 WHERE id = ?1",
+            params![id, hash],
+        )?;
+        self.delete_unused_artworks()
+    }
+
+    /// Removes the cover of playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn clear_playlist_artwork(&mut self, id: i64) -> Result<(), LibraryError> {
+        self.connection.execute(
+            "UPDATE playlists SET artwork_hash = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        self.delete_unused_artworks()
+    }
+
     fn playlists(&self) -> Result<Vec<Playlist>, LibraryError> {
+        let artworks = self.artworks()?;
         let mut statement = self
             .connection
-            .prepare("SELECT id, name FROM playlists ORDER BY id")?;
-        let headers: Vec<(i64, String)> = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .prepare("SELECT id, name, artwork_hash FROM playlists ORDER BY id")?;
+        let headers: Vec<(i64, String, Option<String>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<_, _>>()?;
         headers
             .into_iter()
-            .map(|(id, name)| {
+            .map(|(id, name, artwork_hash)| {
                 Ok(Playlist {
                     id,
                     name,
                     track_paths: self.playlist_paths(id)?,
+                    artwork: artwork_hash.and_then(|hash| artworks.get(&hash).cloned()),
                 })
             })
             .collect()
@@ -587,7 +625,8 @@ impl LibraryStore {
         self.connection.execute(
             "DELETE FROM artworks WHERE hash NOT IN (
                 SELECT artwork_hash FROM tracks WHERE artwork_hash IS NOT NULL
-                UNION SELECT artwork_hash FROM album_artwork_overrides)",
+                UNION SELECT artwork_hash FROM album_artwork_overrides
+                UNION SELECT artwork_hash FROM playlists WHERE artwork_hash IS NOT NULL)",
             [],
         )?;
         Ok(())
@@ -612,6 +651,21 @@ impl LibraryStore {
             )
             .optional()?)
     }
+}
+
+/// Brings a database created by an older version up to the current schema. `CREATE TABLE IF
+/// NOT EXISTS` never adds columns to an existing table, so added columns are handled here.
+fn migrate(connection: &Connection) -> Result<(), LibraryError> {
+    let has_playlist_artwork = connection
+        .prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name = 'artwork_hash'")?
+        .exists([])?;
+    if !has_playlist_artwork {
+        connection.execute(
+            "ALTER TABLE playlists ADD COLUMN artwork_hash TEXT REFERENCES artworks(hash)",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Size and modification time: a file whose stamp is unchanged is not read again.

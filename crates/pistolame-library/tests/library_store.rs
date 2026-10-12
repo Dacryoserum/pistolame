@@ -238,3 +238,33 @@ fn playlists_keep_order_and_survive_reopening() {
     store.delete_playlist(id).unwrap();
     assert!(store.snapshot().unwrap().playlists.is_empty());
 }
+
+#[test]
+fn a_playlist_cover_is_stored_and_cleared() {
+    let library = TestLibrary::new("playlist-cover", 1);
+    let mut store = library.open();
+    let id = store.create_playlist("Vinyles").unwrap();
+    store.set_playlist_artwork(id, b"png bytes").unwrap();
+    let playlist = &store.snapshot().unwrap().playlists[0];
+    assert_eq!(playlist.artwork.as_deref(), Some(&b"png bytes"[..]));
+    store.clear_playlist_artwork(id).unwrap();
+    assert!(store.snapshot().unwrap().playlists[0].artwork.is_none());
+}
+
+#[test]
+fn a_version_3_database_gains_the_playlist_cover_column() {
+    let library = TestLibrary::new("migration-v3", 1);
+    {
+        let connection = rusqlite::Connection::open(&library.database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+                 INSERT INTO playlists (name) VALUES ('Ancienne');",
+            )
+            .unwrap();
+    }
+    let store = library.open();
+    let playlists = store.snapshot().unwrap().playlists;
+    assert_eq!(playlists[0].name, "Ancienne");
+    assert!(playlists[0].artwork.is_none());
+}

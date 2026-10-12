@@ -54,6 +54,7 @@ export enum ViewKind {
 export struct PlaylistItem {
     name: string,
     track-count: int,
+    artwork: image,
 }
 
 export struct PlaylistTrackRow {
@@ -109,6 +110,7 @@ export global AppState {
     in-out property <int> selected-playlist: -1;
     in property <string> playlist-title;
     in property <string> playlist-meta;
+    in property <image> playlist-artwork;
     in property <[PlaylistTrackRow]> playlist-tracks;
     callback create-playlist();
     callback open-playlist(int);
@@ -116,6 +118,9 @@ export global AppState {
     callback remove-playlist-entry(int);
     in-out property <bool> is-playlist-editor-open;
     in-out property <string> playlist-editor-name;
+    in property <image> playlist-editor-artwork;
+    callback playlist-editor-choose-artwork();
+    callback playlist-editor-remove-artwork();
     callback begin-playlist-edit();
     callback save-playlist-edit();
     callback delete-current-playlist();
@@ -152,6 +157,8 @@ export global AppState {
     in property <bool> is-playing: false;
     in property <string> badge-label;
     in property <bool> is-shared;
+    // A stream is open (playing or paused with the device held); false = output released.
+    in property <bool> is-output-active;
     in property <bool> is-bit-perfect: false;
     in property <string> signal-title;
     in property <string> signal-description;

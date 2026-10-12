@@ -105,6 +105,8 @@ export component IconButton inherits Rectangle {
 
 export component SidebarItem inherits Rectangle {
     in property <image> icon;
+    // A small cover (playlists) replaces the icon when set.
+    in property <image> artwork;
     in property <string> label;
     in property <bool> is-selected;
     callback clicked();
@@ -128,7 +130,7 @@ export component SidebarItem inherits Rectangle {
     accessible-action-default => {
         root.clicked();
     }
-    Icon {
+    if root.artwork.width == 0: Icon {
         x: 10px;
         y: 6px;
         width: 16px;
@@ -137,12 +139,28 @@ export component SidebarItem inherits Rectangle {
         colorize: Tokens.accent;
     }
 
+    if root.artwork.width > 0: Rectangle {
+        x: 9px;
+        y: 5px;
+        width: 18px;
+        height: 18px;
+        border-radius: 3px;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.artwork;
+            image-fit: cover;
+        }
+    }
+
     Txt {
         x: 34px;
         y: 0px;
         width: 176px;
         height: 28px;
         text: root.label;
+        overflow: elide;
     }
 
     touch := TouchArea {
@@ -216,9 +234,12 @@ export component Badge inherits Rectangle {
     in property <BadgeKind> kind: BadgeKind.authentic;
     in property <string> label;
     in property <bool> is-hovered;
+    // The LCD shows the icon alone (the text appears on hover); idle = no stream open.
+    in property <bool> is-icon-only;
+    in property <bool> is-idle;
     property <bool> is-ok: kind == BadgeKind.bit-perfect || kind == BadgeKind.authentic;
     property <color> foreground: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.text-primary : is-ok ? Tokens.status-ok : Tokens.status-caution;
-    width: row.preferred-width;
+    width: root.is-icon-only ? 30px : row.preferred-width;
     height: 20px;
     border-radius: 10px;
     background: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.fill-control : is-ok ? Tokens.status-ok-tint : Tokens.status-caution-tint;
@@ -228,13 +249,14 @@ export component Badge inherits Rectangle {
         padding-left: 8px;
         padding-right: 8px;
         spacing: 4px;
+        alignment: center;
         Icon {
-            width: 12px;
-            source: root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
-            colorize: root.foreground;
+            width: root.is-icon-only ? 14px : 12px;
+            source: root.is-idle ? Icons.speaker-hifi : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
+            colorize: root.is-idle ? Tokens.text-tertiary : root.foreground;
         }
 
-        Txt {
+        if !root.is-icon-only: Txt {
             role: TextRole.label;
             height: root.height;
             text: root.label;
@@ -561,7 +583,7 @@ export component Lcd inherits Rectangle {
     // Fixed slot for the badge: the title and the progress rail never move when the badge text
     // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
     // in it and its text is elided if ever too long.
-    property <length> badge-slot-width: 212px;
+    property <length> badge-slot-width: 46px;
     property <length> column-width: root.width - 68px - root.badge-slot-width;
     property <bool> is-seeking;
     property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
@@ -686,9 +708,10 @@ export component Lcd inherits Rectangle {
     }
 
     badge := Badge {
-        width: min(self.preferred-width, root.badge-slot-width - 8px);
         x: root.width - 8px - self.width;
         y: 12px;
+        is-icon-only: true;
+        is-idle: !AppState.is-output-active;
         kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
         label: AppState.badge-label;
         is-hovered: badge-touch.has-hover;
@@ -698,9 +721,33 @@ export component Lcd inherits Rectangle {
             AppState.is-popover-open = !AppState.is-popover-open;
         }
         badge-touch := TouchArea {
+            mouse-cursor: pointer;
             clicked => {
                 AppState.is-popover-open = !AppState.is-popover-open;
             }
+        }
+    }
+
+    // The full mode and format while hovering the badge; a click opens the signal panel.
+    if badge-touch.has-hover && !AppState.is-popover-open: Rectangle {
+        property <length> bubble-width: hint.preferred-width + 20px;
+        x: root.width - 8px - self.bubble-width;
+        y: root.height + 6px;
+        width: self.bubble-width;
+        height: 24px;
+        border-radius: 12px;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-raised;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Tokens.shadow-popover;
+        hint := Txt {
+            role: TextRole.label;
+            text: AppState.badge-label;
+            color: AppState.is-bit-perfect ? Tokens.status-ok : Tokens.text-primary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }
@@ -1363,6 +1410,8 @@ export component OutputSettings inherits Rectangle {
             alignment: start;
             spacing: 12px;
             padding-bottom: 24px;
+            // Keeps the content clear of the scroll bar on the right.
+            padding-right: 20px;
             Txt { role: TextRole.display; text: "Sortie audio"; }
             Rectangle { height: 4px; }
             HorizontalLayout {
@@ -1589,7 +1638,12 @@ export component PlaylistView inherits Rectangle {
             x: 32px; y: 24px; width: 56px; height: 56px;
             border-radius: 8px;
             background: Tokens.fill-control;
-            Icon { width: 26px; height: 26px; source: Icons.playlist; colorize: Tokens.accent; }
+            clip: true;
+            if AppState.playlist-artwork.width == 0: Icon { width: 26px; height: 26px; source: Icons.playlist; colorize: Tokens.accent; }
+            if AppState.playlist-artwork.width > 0: Image {
+                width: parent.width; height: parent.height;
+                source: AppState.playlist-artwork; image-fit: cover;
+            }
         }
         Txt { x: 104px; y: 26px; width: root.list-width - 72px - 76px; role: TextRole.display; text: AppState.playlist-title; overflow: elide; }
         Txt { x: 104px; y: 60px; width: root.list-width - 72px; role: TextRole.callout; text: AppState.playlist-meta; color: Tokens.text-secondary; }
@@ -1648,11 +1702,36 @@ export component Sheet inherits Rectangle {
 
 export component PlaylistEditor inherits Sheet {
     title: "Modifier la playlist";
-    width: 400px;
-    height: 220px;
-    LabeledField { x: 24px; y: 64px; width: root.width - 48px; caption: "NOM"; text <=> AppState.playlist-editor-name; }
+    width: 460px;
+    height: 260px;
     Rectangle {
-        x: 24px; y: 132px; width: 160px; height: 20px;
+        x: 24px; y: 64px; width: 96px; height: 96px;
+        border-radius: 10px;
+        background: Tokens.fill-control;
+        clip: true;
+        if AppState.playlist-editor-artwork.width == 0: Icon { width: 36px; height: 36px; source: Icons.playlist; colorize: Tokens.accent; }
+        if AppState.playlist-editor-artwork.width > 0: Image {
+            width: parent.width; height: parent.height;
+            source: AppState.playlist-editor-artwork; image-fit: cover;
+        }
+    }
+    PillButton {
+        x: 24px; y: 168px; width: 96px;
+        label: "Choisir…";
+        clicked => { AppState.playlist-editor-choose-artwork(); }
+    }
+    if AppState.playlist-editor-artwork.width > 0: Rectangle {
+        x: 24px; y: 204px; width: 96px; height: 18px;
+        Txt {
+            role: TextRole.callout; text: "Retirer";
+            color: remove-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+            horizontal-alignment: center;
+        }
+        remove-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.playlist-editor-remove-artwork(); } }
+    }
+    LabeledField { x: 144px; y: 64px; width: root.width - 168px; caption: "NOM"; text <=> AppState.playlist-editor-name; }
+    Rectangle {
+        x: 144px; y: 132px; width: 180px; height: 20px;
         HorizontalLayout {
             alignment: start;
             spacing: 6px;

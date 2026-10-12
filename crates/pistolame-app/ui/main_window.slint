@@ -371,6 +371,7 @@ export component AppWindow inherits Window {
             for item[index] in AppState.playlists: SidebarItem {
                 y: 360px + 28px * index;
                 icon: Icons.playlist;
+                artwork: item.artwork;
                 label: item.name;
                 is-selected: AppState.view == ViewKind.playlist && AppState.selected-playlist == index;
                 clicked => {
