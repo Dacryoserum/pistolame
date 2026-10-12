@@ -6,77 +6,11 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use super::hresult_mapping::WasapiCallError;
 use super::win32_event::AutoResetEvent;
-use crate::{OutputFailure, OutputStreamStatus};
+use crate::OutputStreamStatus;
 
-/// What the engine asks the render thread to do. Written by the engine before it signals the
-/// control event; read by the render thread when the event fires.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum RequestedStreamState {
-    /// Nothing requested yet (stream opened and prefilled).
-    Idle = 0,
-    /// Start rendering.
-    Run = 1,
-    /// Stop feeding, play out the queued audio, then close (pause, mode switch).
-    ClosePlayOut = 2,
-    /// Stop and discard the queued audio at once (stop, seek, failure).
-    CloseDiscard = 3,
-}
-
-impl RequestedStreamState {
-    fn from_encoded(encoded: u8) -> RequestedStreamState {
-        match encoded {
-            1 => RequestedStreamState::Run,
-            2 => RequestedStreamState::ClosePlayOut,
-            3 => RequestedStreamState::CloseDiscard,
-            _ => RequestedStreamState::Idle,
-        }
-    }
-}
-
-/// Status tags in the upper 32 bits of the encoded status; the lower 32 bits hold the platform
-/// code of a `Platform` failure. One 64-bit word keeps tag and code consistent without a lock.
-const STATUS_TAG_NOT_STARTED: u64 = 0;
-const STATUS_TAG_RUNNING: u64 = 1;
-const STATUS_TAG_FAILED_DEVICE_INVALIDATED: u64 = 2;
-const STATUS_TAG_FAILED_DEVICE_TIMED_OUT: u64 = 3;
-const STATUS_TAG_FAILED_PLATFORM: u64 = 4;
-/// Position of the tag inside the encoded status.
-const STATUS_TAG_SHIFT: u32 = 32;
-
-/// Packs a status into one word.
-pub(crate) fn encode_stream_status(status: OutputStreamStatus) -> u64 {
-    let (tag, platform_code) = match status {
-        OutputStreamStatus::NotStarted => (STATUS_TAG_NOT_STARTED, 0),
-        OutputStreamStatus::Running => (STATUS_TAG_RUNNING, 0),
-        OutputStreamStatus::Failed(OutputFailure::DeviceInvalidated) => {
-            (STATUS_TAG_FAILED_DEVICE_INVALIDATED, 0)
-        }
-        OutputStreamStatus::Failed(OutputFailure::DeviceTimedOut) => {
-            (STATUS_TAG_FAILED_DEVICE_TIMED_OUT, 0)
-        }
-        OutputStreamStatus::Failed(OutputFailure::Platform { platform_code }) => {
-            (STATUS_TAG_FAILED_PLATFORM, platform_code)
-        }
-    };
-    (tag << STATUS_TAG_SHIFT) | u64::from(platform_code.cast_unsigned())
-}
-
-/// Inverse of `encode_stream_status`.
-pub(crate) fn decode_stream_status(encoded: u64) -> OutputStreamStatus {
-    let platform_code = (encoded as u32).cast_signed();
-    match encoded >> STATUS_TAG_SHIFT {
-        STATUS_TAG_NOT_STARTED => OutputStreamStatus::NotStarted,
-        STATUS_TAG_RUNNING => OutputStreamStatus::Running,
-        STATUS_TAG_FAILED_DEVICE_INVALIDATED => {
-            OutputStreamStatus::Failed(OutputFailure::DeviceInvalidated)
-        }
-        STATUS_TAG_FAILED_DEVICE_TIMED_OUT => {
-            OutputStreamStatus::Failed(OutputFailure::DeviceTimedOut)
-        }
-        _ => OutputStreamStatus::Failed(OutputFailure::Platform { platform_code }),
-    }
-}
+pub(crate) use crate::stream_state::{
+    RequestedStreamState, decode_stream_status, encode_stream_status,
+};
 
 /// Engine ↔ render thread state for one stream.
 pub(crate) struct StreamControl {
@@ -175,22 +109,6 @@ impl WasapiDiagnosticCounters {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_status_survives_encoding() {
-        for status in [
-            OutputStreamStatus::NotStarted,
-            OutputStreamStatus::Running,
-            OutputStreamStatus::Failed(OutputFailure::DeviceInvalidated),
-            OutputStreamStatus::Failed(OutputFailure::DeviceTimedOut),
-            OutputStreamStatus::Failed(OutputFailure::Platform {
-                platform_code: 0x8889_0004_u32.cast_signed(),
-            }),
-            OutputStreamStatus::Failed(OutputFailure::Platform { platform_code: 7 }),
-        ] {
-            assert_eq!(decode_stream_status(encode_stream_status(status)), status);
-        }
-    }
 
     #[test]
     fn requested_state_round_trips_through_the_atomic() {

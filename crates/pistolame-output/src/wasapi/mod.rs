@@ -40,6 +40,9 @@ use crate::{
     SystemMixFormat,
 };
 
+/// Name reported by `backend_name` and carried in every `NegotiatedOutput` of this backend.
+pub(crate) const WASAPI_BACKEND_NAME: &str = "WASAPI";
+
 /// The device's periods as reported by `IAudioClient::GetDevicePeriod`, in 100 ns units.
 /// <https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getdeviceperiod>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,7 +149,7 @@ fn with_audio_client<T>(
 
 impl AudioOutput for WasapiOutput {
     fn backend_name(&self) -> &'static str {
-        "WASAPI"
+        WASAPI_BACKEND_NAME
     }
 
     fn list_devices(&mut self) -> Result<Vec<OutputDeviceInfo>, OutputError> {

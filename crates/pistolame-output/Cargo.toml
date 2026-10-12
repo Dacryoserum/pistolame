@@ -31,5 +31,12 @@ windows = { workspace = true, features = [
     "Win32_UI_Shell_PropertiesSystem",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Features needed by the CoreAudio backend (docs/plans/coreaudio.md §0, §3.1).
+objc2-core-audio = { workspace = true, features = ["std", "AudioHardware", "objc2-core-audio-types"] }
+objc2-core-audio-types = { workspace = true, features = ["std", "CoreAudioBaseTypes"] }
+objc2-audio-toolbox = { workspace = true, features = ["std", "AUComponent", "AudioComponent", "AudioOutputUnit", "AudioUnitProperties", "objc2-core-audio", "objc2-core-audio-types"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFString", "CFBase"] }
+
 [dev-dependencies]
 pistolame-core = { workspace = true, features = ["test-support"] }

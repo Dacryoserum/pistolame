@@ -21,12 +21,15 @@ use std::time::{Duration, Instant};
 
 use crate::format::{DeviceSampleFormat, ValidBitsAlignment, lossless_device_format_candidates};
 use crate::output_contract::{
-    AudioOutput, ClosedStream, DeviceAccessMode, FormatProbeOutcome, FormatProbeResult,
-    NegotiatedOutput, OpenPolicy, OpenStreamError, OpenStreamRequest, OutputDeviceId,
-    OutputDeviceInfo, OutputError, OutputFailure, OutputStream, OutputStreamStatus,
+    AudioOutput, ClosedStream, DeviceAccessMode, DeviceSampleDelivery, FormatProbeOutcome,
+    FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamError, OpenStreamRequest,
+    OutputDeviceId, OutputDeviceInfo, OutputError, OutputFailure, OutputStream, OutputStreamStatus,
     QueuedAudioOnClose, RenderOutcome, RenderSource, RenderStreamDescription, SharedModeCause,
     SystemMixFormat,
 };
+
+/// Name the fake backend reports, in `backend_name` and in every `NegotiatedOutput`.
+const FAKE_BACKEND_NAME: &str = "Fake";
 
 /// Identifier of the single device of the default configuration.
 pub const FAKE_DEVICE_ID: &str = "fake-device";
@@ -299,7 +302,7 @@ impl FakeOutputController {
 
 impl AudioOutput for FakeOutput {
     fn backend_name(&self) -> &'static str {
-        "Fake"
+        FAKE_BACKEND_NAME
     }
 
     fn list_devices(&mut self) -> Result<Vec<OutputDeviceInfo>, OutputError> {
@@ -470,12 +473,14 @@ fn open_shared(
         negotiation_log.push(result.clone());
         if result.outcome == FormatProbeOutcome::Accepted {
             return Ok(NegotiatedOutput {
+                backend_name: FAKE_BACKEND_NAME,
                 device,
                 access_mode: DeviceAccessMode::SharedThroughSystemMixer,
                 shared_mode_cause: Some(cause),
                 device_format: None,
                 system_mix_format: Some(config.system_mix_format),
                 render_format: *candidate,
+                sample_delivery: DeviceSampleDelivery::Unchanged,
                 buffer_frame_count: config.buffer_frame_count,
                 device_period_in_hundred_nanoseconds: FAKE_DEVICE_PERIOD_IN_HUNDRED_NANOSECONDS,
                 negotiation_log,
@@ -494,12 +499,14 @@ fn exclusive_output(
     negotiation_log: Vec<FormatProbeResult>,
 ) -> NegotiatedOutput {
     NegotiatedOutput {
+        backend_name: FAKE_BACKEND_NAME,
         device,
         access_mode: DeviceAccessMode::Exclusive,
         shared_mode_cause: None,
         device_format: Some(format),
         system_mix_format: None,
         render_format: format,
+        sample_delivery: DeviceSampleDelivery::Unchanged,
         buffer_frame_count: config.buffer_frame_count,
         device_period_in_hundred_nanoseconds: FAKE_DEVICE_PERIOD_IN_HUNDRED_NANOSECONDS,
         negotiation_log,

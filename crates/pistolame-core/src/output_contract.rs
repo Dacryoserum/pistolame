@@ -104,10 +104,27 @@ pub struct SystemMixFormat {
     pub channel_count: u8,
 }
 
+/// How the bytes the render source writes reach the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DeviceSampleDelivery {
+    /// The device (or, in shared mode, the system mixer) receives the render format's bytes
+    /// unchanged.
+    #[default]
+    Unchanged,
+    /// The backend converts every integer sample to 32-bit float by an exact division by a
+    /// power of two before the platform gets it (CoreAudio devices that only take float, plan
+    /// coreaudio.md §0). Lossless for up to 24 valid bits, but the platform then handles float
+    /// samples, so the path is never reported as bit-perfect.
+    ExactFloat32Conversion,
+}
+
 /// What the backend actually got. Read back from the platform after initialization, never
 /// copied from the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NegotiatedOutput {
+    /// Short stable name of the backend that opened the stream (`AudioOutput::backend_name`),
+    /// so the signal-path text names the real platform.
+    pub backend_name: &'static str,
     /// Device that was opened.
     pub device: OutputDeviceInfo,
     /// How the device is held.
@@ -121,9 +138,11 @@ pub struct NegotiatedOutput {
     /// Integer format the render source must produce. Equals `device_format` in exclusive
     /// mode; in shared mode it is the lossless candidate Windows accepted for conversion.
     pub render_format: DeviceSampleFormat,
+    /// How the render format's bytes reach the device.
+    pub sample_delivery: DeviceSampleDelivery,
     /// Size of the device buffer in frames.
     pub buffer_frame_count: u32,
-    /// Device period in units of 100 ns (the unit WASAPI uses).
+    /// Device period in units of 100 ns (the unit WASAPI uses; other backends convert to it).
     pub device_period_in_hundred_nanoseconds: i64,
     /// Every candidate tried and the platform's answer, in both modes, for the signal-path
     /// popover and for diagnosing devices remotely. After a fallback it holds the refused

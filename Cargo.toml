@@ -26,6 +26,11 @@ slint-build       = "=1.18.1"
 rfd               = "0.17.2"
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
+# CoreAudio bindings (macOS). Zlib/Apache-2.0/MIT; same objc2 0.6 family Slint already pulls in.
+objc2-core-audio       = { version = "0.3.2", default-features = false }
+objc2-core-audio-types = { version = "0.3.2", default-features = false }
+objc2-audio-toolbox    = { version = "0.3.2", default-features = false }
+objc2-core-foundation  = { version = "0.3.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"            # overridden with #![allow(unsafe_code)] only in backend modules

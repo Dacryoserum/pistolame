@@ -273,6 +273,7 @@ license `https://raw.githubusercontent.com/phosphor-icons/core/v2.0.8/LICENSE`.
 | warning-fill | fill | Douteux |
 | sliders-horizontal | regular | Traité (processed signal) |
 | intersect | regular | Mode partagé (signal goes through the system mixer) |
+| waveform | regular | Exclusif (held exclusively, exact float delivery) |
 
 Sizes: 14 (inline in fields/buttons), 16 (sidebar, toggles), 18 (prev/next, output), 22 (play).
 
@@ -296,8 +297,12 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
   *Bit-perfect · 24/96*: `status-ok-tint` / `status-ok` / seal-check-fill.
   *Traité · 24/96*: `fill-control` / `text-primary` / sliders-horizontal.
   *Mode partagé · 24/96*: `fill-control` / `text-primary` / intersect. The default output mode;
-  the popover says why ("Windows peut convertir, rééchantillonner ou mixer le signal ; le
+  the popover says why ("Le système peut convertir, rééchantillonner ou mixer le signal ; le
   bit-perfect n'est pas garanti") and shows the system mix format (e.g. 176,4 kHz, flottant).
+  *Exclusif · 24/96*: `fill-control` / `text-primary` / waveform. The device is held
+  exclusively at the source rate but only accepts float samples (macOS built-in outputs): the
+  samples are converted to 32-bit float exactly, and what the system does next cannot be
+  verified, so it is never "Bit-perfect".
   *Authentique*: ok colors, seal-check-fill. *Douteux*: `status-caution-tint` /
   `status-caution` / warning-fill. In the LCD the badge is a button that opens the signal path.
 - **Exclusive mode switch** — a small labelled toggle "Mode exclusif" next to the LCD badge

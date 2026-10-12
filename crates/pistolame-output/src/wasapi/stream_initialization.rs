@@ -164,12 +164,14 @@ fn initialize_exclusive_stream(
     let streaming = prepare_streaming(&initialized.audio_client).map_err(failed)?;
     Ok(InitializedStream {
         negotiated: NegotiatedOutput {
+            backend_name: super::WASAPI_BACKEND_NAME,
             device: device_info,
             access_mode: DeviceAccessMode::Exclusive,
             shared_mode_cause: None,
             device_format: Some(device_format),
             system_mix_format: None,
             render_format: device_format,
+            sample_delivery: crate::DeviceSampleDelivery::Unchanged,
             buffer_frame_count: streaming.buffer_frame_count,
             device_period_in_hundred_nanoseconds: initialized.period_in_hundred_nanoseconds,
             negotiation_log: initialization.negotiation_log,

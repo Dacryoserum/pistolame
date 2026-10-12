@@ -17,6 +17,16 @@ pub(crate) fn digest(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Whether the only obstacle to bit-perfect is the exact float delivery of a float-only device:
+/// held exclusively at the source format, shown as "Exclusif", never as "Traité".
+fn is_exclusive_with_exact_float_delivery(value: &SignalPathAssessment) -> bool {
+    matches!(
+        &value.verdict,
+        BitPerfectVerdict::NotBitPerfect { reasons }
+            if reasons == &[NotBitPerfectReason::DeliveredAsFloatToPlatform]
+    )
+}
+
 pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool) {
     let source = value.source_format;
     let format = format!(
@@ -26,20 +36,24 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
     );
     let is_perfect = value.verdict == BitPerfectVerdict::BitPerfect;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
+    let is_exact_float = is_exclusive_with_exact_float_delivery(value);
     let badge = format!(
         "{} · {format}",
         if is_perfect {
             "Bit-perfect"
         } else if shared {
             "Mode partagé"
+        } else if is_exact_float {
+            "Exclusif"
         } else {
             "Traité"
         }
     );
+    let backend = value.negotiated.backend_name;
     let reason = if shared {
         let cause = match value.negotiated.shared_mode_cause {
             Some(SharedModeCause::ExclusiveModeDisabledBySystem) => {
-                "Mode exclusif désactivé dans Windows. "
+                "Mode exclusif désactivé par le système. "
             }
             Some(SharedModeCause::DeviceBusyInSharedMode) => {
                 "Périphérique occupé par d’autres applications. "
@@ -60,12 +74,19 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
             })
             .unwrap_or_default();
         format!(
-            "{cause}Windows peut convertir, rééchantillonner ou mixer le signal ; le bit-perfect n’est pas garanti.{mix}"
+            "{cause}Le système peut convertir, rééchantillonner ou mixer le signal ; le bit-perfect n’est pas garanti.{mix}"
+        )
+    } else if value.negotiated.sample_delivery == DeviceSampleDelivery::ExactFloat32Conversion {
+        format!(
+            "{} bits / {} kHz → flottants 32 bits, conversion exacte / {} kHz · {backend} exclusif. Ce périphérique n’accepte que des flottants : le système les traite ensuite, ce chemin n’est pas vérifiable jusqu’au DAC.",
+            source.bits_per_sample,
+            frequency(source.sample_rate_hz),
+            frequency(value.negotiated.render_format.sample_rate_hz)
         )
     } else {
         let output = value.negotiated.render_format;
         format!(
-            "{} bits / {} kHz → {} bits dans {} / {} kHz · WASAPI exclusif",
+            "{} bits / {} kHz → {} bits dans {} / {} kHz · {backend} exclusif",
             source.bits_per_sample,
             frequency(source.sample_rate_hz),
             output.valid_bits_per_sample,
@@ -195,11 +216,11 @@ pub(crate) fn failure(kind: PlaybackFailureKind) -> &'static str {
             "La sortie audio est occupée par une autre application."
         }
         PlaybackFailureKind::ExclusiveModeDisabled => {
-            "Le mode exclusif est désactivé dans Windows."
+            "Le mode exclusif est désactivé par le système."
         }
         PlaybackFailureKind::FormatRefusedByDevice => "Le périphérique refuse le format audio.",
         PlaybackFailureKind::DeviceStoppedResponding => "La sortie audio ne répond plus.",
-        PlaybackFailureKind::AudioServiceNotRunning => "Le service audio Windows est arrêté.",
+        PlaybackFailureKind::AudioServiceNotRunning => "Le service audio du système est arrêté.",
         PlaybackFailureKind::Internal => "La lecture a rencontré une erreur interne.",
     }
 }
@@ -223,13 +244,27 @@ pub(crate) fn signal_steps(value: &SignalPathAssessment) -> Vec<(&'static str, S
         (
             "Sortie",
             if shared {
-                "WASAPI partagé · mixeur Windows".into()
+                format!(
+                    "{} partagé · mixeur du système",
+                    value.negotiated.backend_name
+                )
+            } else if value.negotiated.sample_delivery
+                == DeviceSampleDelivery::ExactFloat32Conversion
+            {
+                format!(
+                    "{} exclusif · flottants 32 bits exacts",
+                    value.negotiated.backend_name
+                )
             } else {
-                "WASAPI exclusif".into()
+                format!("{} exclusif", value.negotiated.backend_name)
             },
             !shared,
         ),
-        ("DAC", value.negotiated.device.display_name.clone(), !shared),
+        (
+            "DAC",
+            value.negotiated.device.display_name.clone(),
+            !shared && value.negotiated.sample_delivery == DeviceSampleDelivery::Unchanged,
+        ),
     ]
 }
 
@@ -264,5 +299,57 @@ mod tests {
         assert_eq!(frequency(44_100), "44,1");
         assert_eq!(clock(125), "2:05");
         assert_eq!(remaining_clock(125), "−2:05");
+    }
+    fn exclusive_assessment(delivery: DeviceSampleDelivery) -> SignalPathAssessment {
+        let source = StreamFormat {
+            sample_rate_hz: 96_000,
+            bits_per_sample: 24,
+            channel_count: 2,
+            channel_mask: ChannelMask(0x3),
+        };
+        let render_format = DeviceSampleFormat {
+            sample_rate_hz: 96_000,
+            container_bytes: 4,
+            valid_bits_per_sample: 24,
+            alignment: ValidBitsAlignment::MostSignificant,
+            channel_count: 2,
+            channel_mask: ChannelMask(0x3),
+        };
+        let negotiated = NegotiatedOutput {
+            backend_name: "CoreAudio",
+            device: OutputDeviceInfo {
+                id: OutputDeviceId("headphones".into()),
+                display_name: "Écouteurs externes".into(),
+                is_system_default: true,
+            },
+            access_mode: DeviceAccessMode::Exclusive,
+            shared_mode_cause: None,
+            device_format: Some(render_format),
+            system_mix_format: None,
+            render_format,
+            sample_delivery: delivery,
+            buffer_frame_count: 512,
+            device_period_in_hundred_nanoseconds: 53_333,
+            negotiation_log: Vec::new(),
+        };
+        assess_signal_path(&source, &negotiated, &ProcessingState::default())
+    }
+    #[test]
+    fn exact_float_delivery_shows_exclusive_never_bit_perfect() {
+        let (badge, reason, is_perfect) = assessment(&exclusive_assessment(
+            DeviceSampleDelivery::ExactFloat32Conversion,
+        ));
+        assert_eq!(badge, "Exclusif · 24/96");
+        assert!(!is_perfect);
+        assert!(reason.contains("CoreAudio exclusif"));
+        assert!(reason.contains("pas vérifiable"));
+    }
+    #[test]
+    fn unchanged_exclusive_delivery_names_the_backend() {
+        let (badge, reason, is_perfect) =
+            assessment(&exclusive_assessment(DeviceSampleDelivery::Unchanged));
+        assert_eq!(badge, "Bit-perfect · 24/96");
+        assert!(is_perfect);
+        assert!(reason.ends_with("CoreAudio exclusif"));
     }
 }

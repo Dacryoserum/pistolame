@@ -149,12 +149,14 @@ pub(crate) fn shared_negotiated_output(
     negotiation_log: Vec<FormatProbeResult>,
 ) -> NegotiatedOutput {
     NegotiatedOutput {
+        backend_name: super::WASAPI_BACKEND_NAME,
         device,
         access_mode: DeviceAccessMode::SharedThroughSystemMixer,
         shared_mode_cause: Some(shared_mode_cause),
         device_format: None,
         system_mix_format: Some(system_mix_format),
         render_format,
+        sample_delivery: crate::DeviceSampleDelivery::Unchanged,
         buffer_frame_count,
         device_period_in_hundred_nanoseconds,
         negotiation_log,

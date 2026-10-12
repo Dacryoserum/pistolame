@@ -2,7 +2,9 @@
 //! place that decides whether the "Bit-perfect" badge may be shown.
 
 use crate::format::{ChannelMask, DeviceSampleFormat, StreamFormat};
-use crate::output_contract::{DeviceAccessMode, NegotiatedOutput, SharedModeCause};
+use crate::output_contract::{
+    DeviceAccessMode, DeviceSampleDelivery, NegotiatedOutput, SharedModeCause,
+};
 
 const BITS_PER_BYTE: u32 = 8;
 
@@ -48,6 +50,11 @@ pub enum NotBitPerfectReason {
         /// Device speaker mask.
         device_mask: ChannelMask,
     },
+    /// The device is held exclusively at the source rate, but it only takes float samples: the
+    /// backend converts each integer sample to float32 exactly, then the platform handles float
+    /// data the app cannot verify (CoreAudio float-only devices, plan coreaudio.md §0). Badge
+    /// "Exclusif", never "Bit-perfect".
+    DeliveredAsFloatToPlatform,
     /// A software volume is applied.
     SoftwareVolumeActive,
     /// A resampler is applied.
@@ -88,7 +95,8 @@ pub struct SignalPathAssessment {
 ///
 /// Returns `BitPerfect` if and only if the device is held exclusively, its format matches the
 /// source rate and channel layout, its precision is at least the source precision, and no
-/// processing is active. Every failed condition adds its own reason, so the verdict is never
+/// processing is active, and the device receives the render bytes unchanged (no float
+/// delivery). Every failed condition adds its own reason, so the verdict is never
 /// optimistic. In shared mode the only device-side reason is `SharedModeThroughSystemMixer`;
 /// there is no device format to compare, so rules 2 to 4 are not evaluated.
 ///
@@ -114,6 +122,9 @@ pub fn assess_signal_path(
         }
         DeviceAccessMode::Exclusive => {
             reasons.extend(device_format_reasons(source_format, &sent_format));
+            if negotiated.sample_delivery == DeviceSampleDelivery::ExactFloat32Conversion {
+                reasons.push(NotBitPerfectReason::DeliveredAsFloatToPlatform);
+            }
         }
     }
     reasons.extend(processing_reasons(processing));
@@ -211,6 +222,7 @@ mod tests {
         render_format: DeviceSampleFormat,
     ) -> NegotiatedOutput {
         NegotiatedOutput {
+            backend_name: "test",
             device: OutputDeviceInfo {
                 id: OutputDeviceId("test".to_string()),
                 display_name: "Test".to_string(),
@@ -221,6 +233,7 @@ mod tests {
             device_format,
             system_mix_format: None,
             render_format,
+            sample_delivery: DeviceSampleDelivery::Unchanged,
             buffer_frame_count: 1024,
             device_period_in_hundred_nanoseconds: 100_000,
             negotiation_log: Vec::new(),
@@ -535,5 +548,21 @@ mod tests {
         assert_eq!(result.source_format, src);
         assert_eq!(result.negotiated, negotiated);
         assert_eq!(result.processing, processing);
+    }
+
+    #[test]
+    fn exact_float_delivery_is_never_bit_perfect() {
+        let format = device(96_000, 4, 24);
+        let mut negotiated = exclusive(format);
+        negotiated.sample_delivery = DeviceSampleDelivery::ExactFloat32Conversion;
+        let assessment = assess_signal_path(
+            &source(96_000, 24),
+            &negotiated,
+            &ProcessingState::default(),
+        );
+        assert_eq!(
+            reasons_of(&assessment),
+            vec![NotBitPerfectReason::DeliveredAsFloatToPlatform]
+        );
     }
 }
