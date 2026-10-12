@@ -47,7 +47,7 @@ def main():
         subprocess.run(["plutil", "-lint", str(app / "Contents" / "Info.plist")], check=True)
         subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-        subprocess.run(["lipo", "-verify_arch", "arm64", "x86_64", str(executable)], check=True)
+        subprocess.run(["lipo", str(executable), "-verify_arch", "arm64", "x86_64"], check=True)
     else:
         executable = folder / ("Pistolame.exe" if args.platform == "windows-x64" else "Pistolame")
         shutil.copyfile(binary, executable)

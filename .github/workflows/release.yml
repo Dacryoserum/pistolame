@@ -57,7 +57,7 @@ jobs:
           cargo build --release --locked -p pistolame-app --target x86_64-apple-darwin
           mkdir -p target/release
           lipo -create target/aarch64-apple-darwin/release/pistolame-app target/x86_64-apple-darwin/release/pistolame-app -output target/release/pistolame-app
-          lipo -verify_arch arm64 x86_64 target/release/pistolame-app
+          lipo target/release/pistolame-app -verify_arch arm64 x86_64
       - name: Assemble and verify archive
         run: python scripts/package_release.py --platform ${{ matrix.platform }}
       - uses: actions/upload-artifact@v4

@@ -1,4 +1,4 @@
-# Pistolame 0.1.0-preview.1
+# Pistolame 0.1.0-preview.2
 
 Development preview of the native Rust/Slint player. Hardware acceptance of the integrated
 player is still pending; this is not the completed M1 release.
@@ -27,6 +27,12 @@ Follow its Mac setup and handoff guide. The binary archives are for previewing t
 source and project memory are versioned separately.
 
 # Changelog
+
+## 0.1.0-preview.2
+
+### Fixes
+- build the macOS universal package (the preview.1 release job failed at the lipo check)
+
 
 ## 0.1.0-preview.1
 

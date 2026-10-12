@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-app"
-version = "0.1.0-preview.1"
+version = "0.1.0-preview.2"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -3545,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-core"
-version = "0.1.0-preview.1"
+version = "0.1.0-preview.2"
 dependencies = [
  "crossbeam-channel",
  "flacenc",
@@ -3557,7 +3557,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-library"
-version = "0.1.0-preview.1"
+version = "0.1.0-preview.2"
 dependencies = [
  "pistolame-core",
  "symphonia",
@@ -3566,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-output"
-version = "0.1.0-preview.1"
+version = "0.1.0-preview.2"
 dependencies = [
  "crossbeam-channel",
  "pistolame-core",

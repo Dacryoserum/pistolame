@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-preview.2
+
+### Fixes
+- build the macOS universal package (the preview.1 release job failed at the lipo check)
+
+
 ## 0.1.0-preview.1
 
 ### Documentation
