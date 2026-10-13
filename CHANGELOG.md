@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+### Features
+- sort the album grid, show years and disc headings
+- settings page with library folders, rescan and reveal in file manager
+- export playlists as M3U
+- search tracks as well as albums
+- artists view, tracks view and recently added page
+- resume the last session, paused at its position
+- media keys and system now-playing controls
+- keyboard shortcuts
+- favorite tracks, go to album and go to artist
+- watch library folders; drop files and folders on the window
+
+### Fixes
+- apply the shared-mode volume on Windows (618d4c8)
+- clear a packaging folder left by a cached build
+
 ## 0.1.1
 
 ### Features

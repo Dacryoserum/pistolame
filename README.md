@@ -1,7 +1,7 @@
 # Pistolame
 
-A native lossless audio player built with Rust and Slint. Windows is the first supported
-playback platform; macOS and Linux audio backends are planned.
+A native lossless audio player built with Rust and Slint. Plays on Windows (WASAPI) and macOS
+(CoreAudio); the Linux audio backend is planned.
 
 ## Download
 
@@ -21,14 +21,19 @@ download is verified against an ed25519 signature before anything is replaced.
 
 ## What it does
 
-- **Library**: import FLAC files or folders; albums are remembered between launches and
-  rescanned in the background (files that vanish with an unplugged drive are kept). Edit an
-  album's title, artist and cover in the app; your music files are never modified.
-- **Playback**: play, pause, seek, previous/next, shuffle and repeat. Playlists (with covers) and
-  an *Up next* queue: "Play next" or "Add to queue" from any track, album or playlist.
+- **Library**: import FLAC files or folders (or drop them on the window); albums are
+  remembered between launches and the folders are watched, so new music shows up on its own
+  (files that vanish with an unplugged drive are kept). Browse by album (sortable, natural
+  order), artist or track (a sortable table), see what was added or played recently, search
+  albums and tracks, and mark favorites. Edit an album's title, artist and cover in the app;
+  your music files are never modified.
+- **Playback**: play, pause, seek, previous/next, shuffle and repeat, from the window, the
+  keyboard or the media keys (and the system's *Now Playing* panel). Playlists (with covers,
+  M3U export) and an *Up next* queue: "Play next" or "Add to queue" from any track, album or
+  playlist. The app reopens on the last track, paused where you left it.
 - **Output**: choose the device and the mode. Exclusive mode holds the device at the file's
   format; the volume is then set on your DAC. Shared mode offers a volume in decibels (0 to
-  -60 dB) applied before the system mixer (Windows: not yet).
+  -60 dB) applied before the system mixer.
 - **Proof**: the quality badge describes the real audio path (Bit-perfect, Exclusif, Mode
   partagé); hover it for details, click it for the signal path and two independent checks:
   decoded samples versus the device buffer, and decoded samples versus the FLAC's stored MD5.
@@ -42,18 +47,20 @@ Install the Rust toolchain specified in `rust-toolchain.toml` and the platform b
 cargo run --release -p pistolame-app
 ```
 
-From an empty library, add files or a folder, open an album, then choose a track. Once populated, use Ctrl+O or Ctrl+Shift+O to add more music. Space toggles playback; Escape
-closes the signal-path panel or returns to the album grid. Ctrl+T switches themes; Ctrl+O imports files, Ctrl+Shift+O imports a folder, and Ctrl+. stops playback. Click the quality badge or output
-icon to see verification details. Seek by releasing the pointer on the position bar.
+From an empty library, add files or a folder (or drop them on the window), open an album, then
+choose a track. Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere) are listed on the Réglages
+page: Space toggles playback, Cmd/Ctrl+arrows change track or volume, Cmd/Ctrl+F searches,
+Cmd/Ctrl+1 to 4 switch views, Escape goes back. Click the quality badge or output icon to see
+verification details. Seek by releasing the pointer on the position bar.
 
-The three navigation groups, album grid, album detail and two themes follow the visual prototype.
-Views whose backend is not implemented show an unavailable state; authenticity reports never use simulated results.
+Views whose backend is not implemented (authenticity, spectrograms) show an unavailable state;
+authenticity reports never use simulated results.
 
 Click the title in the central display to open the current track page. It follows playback,
 shows artwork, metadata and the two real verification results, and returns to the previous view
 with Back or Escape. The quality badge still opens the signal-path popover.
 
-## Limits of 0.1.0
+## Limits of 0.2.0
 
 No gapless playback, authenticity analysis or spectrograms yet; FLAC only, up to 24 significant
 bits. Hardware acceptance on the reference DAC and screen-reader testing are still pending.

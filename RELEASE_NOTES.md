@@ -1,17 +1,49 @@
-# Pistolame 0.1.1
+# Pistolame 0.2.0
 
-- **New app icon** (a spectral ring, sibling of Nyquist's icon) in the Dock, Finder, Windows
-  Explorer and taskbar, Linux menus, and the window itself.
-- **Windows installer**: `Pistolame-0.1.1-windows-x64-setup.exe` installs for the current user
-  (no administrator rights) into `%LOCALAPPDATA%\Programs\Pistolame`, adds a Start menu entry,
-  an optional desktop shortcut and a clean uninstaller. The portable ZIP is still available.
-- First release delivered through the in-app updater: installed copies of 0.1.0 see a green
-  dot and update themselves after one click.
+A complete library, and the player now fits into daily use.
 
-Known limits are unchanged from 0.1.0 (Windows shared-mode volume, gapless, analyses).
-Windows builds are unsigned: SmartScreen may show "Unknown publisher" on first launch.
+- **Browse your music your way**: an Artists view (round covers, one click for an artist's
+  albums), a Tracks view (the whole library in a table sorted by any column), and *Ajouts
+  récents* with the albums added and played last.
+- **Sorted album grid**: by title, artist then year, year, recently added or recently played.
+  Titles sort naturally ("Season 2" before "Season 10"). Years and "Disque 1 / Disque 2"
+  headings on album pages.
+- **Search** finds tracks as well as albums (accents ignored).
+- **Favorites**: "Ajouter aux favoris" from any track menu, a heart on favorite tracks, and a
+  *Favoris* filter in the Tracks view. Track menus also offer "Aller à l'album" and "Aller à
+  l'artiste", and "Afficher dans le Finder / l'Explorateur".
+- **Media keys and Now Playing** on macOS, Windows and Linux (MPRIS).
+- **Picks up where you left off**: the app reopens on the last track and queue, paused at the
+  same position. It never starts playing on its own.
+- **Keyboard shortcuts**, listed on the new *Réglages* page (output, library folders, rescan,
+  shortcuts, updates).
+- **Drop files or folders** on the window to add them, and library folders are watched: new
+  music appears without restarting.
+- **Playlists**: export to M3U.
+- **Windows**: the shared-mode volume (dB slider, mute) now works.
+
+Known limits: no gapless playback, authenticity analysis or spectrograms yet; Linux has no
+audio backend. Windows builds are unsigned: SmartScreen may show "Unknown publisher".
 
 # Changelog
+
+## 0.2.0
+
+### Features
+- sort the album grid, show years and disc headings
+- settings page with library folders, rescan and reveal in file manager
+- export playlists as M3U
+- search tracks as well as albums
+- artists view, tracks view and recently added page
+- resume the last session, paused at its position
+- media keys and system now-playing controls
+- keyboard shortcuts
+- favorite tracks, go to album and go to artist
+- watch library folders; drop files and folders on the window
+
+### Fixes
+- apply the shared-mode volume on Windows (618d4c8)
+- clear a packaging folder left by a cached build
 
 ## 0.1.1
 
