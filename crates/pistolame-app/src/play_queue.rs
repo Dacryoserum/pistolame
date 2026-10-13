@@ -9,6 +9,18 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
+/// The whole queue as plain data, to store it between runs (`crate::session`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct QueueSnapshot {
+    pub(crate) context: Vec<PathBuf>,
+    pub(crate) context_name: String,
+    pub(crate) context_position: usize,
+    pub(crate) up_next: Vec<PathBuf>,
+    pub(crate) current: Option<PathBuf>,
+}
+
 /// What plays now and next.
 #[derive(Debug, Default)]
 pub(crate) struct PlayQueue {
@@ -152,6 +164,30 @@ impl PlayQueue {
         self.current.as_ref()
     }
 
+    /// The queue as plain data.
+    pub(crate) fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            context: self.context.clone(),
+            context_name: self.context_name.clone(),
+            context_position: self.context_position,
+            up_next: self.up_next.iter().cloned().collect(),
+            current: self.current.clone(),
+        }
+    }
+
+    /// A queue from stored data. A position past the end of the context is clamped to it.
+    pub(crate) fn from_snapshot(snapshot: QueueSnapshot) -> PlayQueue {
+        PlayQueue {
+            context_position: snapshot
+                .context_position
+                .min(snapshot.context.len().saturating_sub(1)),
+            context: snapshot.context,
+            context_name: snapshot.context_name,
+            up_next: snapshot.up_next.into(),
+            current: snapshot.current,
+        }
+    }
+
     fn jump_to_context_position(&mut self, position: usize) -> Option<PathBuf> {
         let path = self.context.get(position)?.clone();
         self.context_position = position;
@@ -236,6 +272,18 @@ mod tests {
         queue.clear_up_next();
         assert_eq!(queue.up_next().count(), 0);
         assert_eq!(queue.upcoming(), &paths(&["a2", "a3"])[..]);
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_same_queue() {
+        let mut queue = album();
+        queue.advance(None, false);
+        queue.add_to_queue(paths(&["q1"]));
+        let mut restored = PlayQueue::from_snapshot(queue.snapshot());
+        assert_eq!(restored.current(), Some(&PathBuf::from("a2")));
+        assert_eq!(restored.context_name(), "Album");
+        assert_eq!(restored.advance(None, false), Some("q1".into()));
+        assert_eq!(restored.advance(None, false), Some("a3".into()));
     }
 
     #[test]

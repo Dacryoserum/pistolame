@@ -110,7 +110,17 @@ pub(crate) struct UiBridge {
     stream_end_baseline: Cell<u64>,
     should_advance: Cell<bool>,
     shuffle_seed: Cell<u64>,
+    /// Position (seconds) of a restored track not opened yet: Play opens it there.
+    resume_position_seconds: Cell<Option<u64>>,
+    /// Whether the stored session was read; nothing is saved before, so an early save cannot
+    /// replace it with an empty one.
+    is_session_restored: Cell<bool>,
+    last_saved_session: RefCell<Option<crate::session::Session>>,
+    next_session_save: Cell<std::time::Instant>,
 }
+
+/// How often the session (queue, position) is written while the app runs.
+const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 impl UiBridge {
     pub(crate) fn new(window: &AppWindow) -> anyhow::Result<Rc<Self>> {
@@ -167,6 +177,10 @@ impl UiBridge {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(1, |duration| duration.as_nanos() as u64),
             ),
+            resume_position_seconds: Cell::new(None),
+            is_session_restored: Cell::new(false),
+            last_saved_session: RefCell::new(None),
+            next_session_save: Cell::new(std::time::Instant::now()),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -371,10 +385,14 @@ impl UiBridge {
             if fraction.is_finite() && handle.sample_rate_hz.get() > 0 {
                 let seconds =
                     handle.total_frames.get() as f64 / f64::from(handle.sample_rate_hz.get());
+                let position = seconds * f64::from(fraction.clamp(0.0, 1.0));
+                if handle.resume_position_seconds.get().is_some() {
+                    // The restored track is not open yet: Play will start it there.
+                    handle.resume_position_seconds.set(Some(position as u64));
+                    return;
+                }
                 handle.engine.send(EngineCommand::SeekTo {
-                    position_in_track: Duration::from_secs_f64(
-                        seconds * f64::from(fraction.clamp(0.0, 1.0)),
-                    ),
+                    position_in_track: Duration::from_secs_f64(position),
                 });
             }
         });
@@ -575,6 +593,10 @@ impl UiBridge {
         }
         if let Some(snapshot) = update.snapshot {
             self.replace_albums(snapshot);
+            if !self.is_session_restored.get() {
+                self.is_session_restored.set(true);
+                self.restore_session();
+            }
         }
         self.show_library_folders();
         if let Some(window) = self.window.upgrade() {
@@ -1134,6 +1156,7 @@ impl UiBridge {
 
     /// Opens and plays `path`, a track the queue just made current.
     fn start_playback(&self, path: PathBuf) {
+        self.resume_position_seconds.set(None);
         let Some(location) = self.track_location(&path) else {
             self.message(format!("Morceau introuvable : {}", path.display()));
             return;
@@ -1989,7 +2012,114 @@ impl UiBridge {
         }
     }
 
+    /// Shows track `track_index` of album `album_index` on the LCD and in the details.
+    fn show_current_track(&self, state: &AppState<'_>, album_index: usize, track_index: usize) {
+        let albums = self.albums.borrow();
+        let Some(album) = albums.get(album_index) else {
+            return;
+        };
+        let Some(track) = album.tracks.get(track_index) else {
+            return;
+        };
+        state.set_has_current_track(true);
+        state.set_current_artist(track.artist.as_str().into());
+        state.set_current_album(album.title.as_str().into());
+        state.set_current_format(
+            format!(
+                "FLAC {}",
+                presentation::audio_format(track.bits_per_sample, track.sample_rate_hz)
+            )
+            .into(),
+        );
+        state.set_current_duration(presentation::clock(track.duration_seconds).into());
+        state.set_current_filename(
+            track
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_ref()
+                .into(),
+        );
+        state.set_lcd_title(track.title.as_str().into());
+        state.set_lcd_subtitle(format!("{} — {}", album.artist, album.title).into());
+        state.set_lcd_artwork(album.artwork.clone());
+        state.set_playing_album_index(album_index as i32);
+        state.set_playing_track_index(track_index as i32);
+    }
+
+    /// Reopens the last session: the queue, and its current track shown paused at the stored
+    /// position. Nothing plays until the user presses Play.
+    fn restore_session(&self) {
+        let Some(session) = crate::session::Session::load() else {
+            return;
+        };
+        let queue = crate::play_queue::PlayQueue::from_snapshot(session.queue.clone());
+        let location = queue.current().and_then(|path| self.track_location(path));
+        *self.play_queue.borrow_mut() = queue;
+        *self.last_saved_session.borrow_mut() = Some(session.clone());
+        let (Some((album_index, track_index)), Some(window)) = (location, self.window.upgrade())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let (sample_rate_hz, duration_seconds) = {
+            let albums = self.albums.borrow();
+            let Some(track) = albums
+                .get(album_index)
+                .and_then(|album| album.tracks.get(track_index))
+            else {
+                return;
+            };
+            (track.sample_rate_hz, track.duration_seconds)
+        };
+        self.selected_track.set(Some((album_index, track_index)));
+        self.sample_rate_hz.set(sample_rate_hz);
+        self.total_frames
+            .set(duration_seconds * u64::from(sample_rate_hz));
+        self.resume_position_seconds
+            .set(Some(session.position_seconds.min(duration_seconds)));
+        self.show_current_track(&state, album_index, track_index);
+        self.refresh_queue_view();
+    }
+
+    /// Writes the session when it changed. Never before the stored one was read.
+    pub(crate) fn save_session(&self) {
+        if !self.is_session_restored.get() {
+            return;
+        }
+        let rate = u64::from(self.sample_rate_hz.get().max(1));
+        let position_seconds = match self.resume_position_seconds.get() {
+            Some(seconds) => seconds,
+            None if self.state.get() == PlaybackState::Stopped => 0,
+            None => self.engine.counters().frames_rendered_in_track / rate,
+        };
+        let session = crate::session::Session {
+            queue: self.play_queue.borrow().snapshot(),
+            position_seconds,
+        };
+        if self.last_saved_session.borrow().as_ref() == Some(&session) {
+            return;
+        }
+        // A failed write only loses the resume point, so it stays silent.
+        if session.save().is_ok() {
+            *self.last_saved_session.borrow_mut() = Some(session);
+        }
+    }
+
     fn toggle_play(&self) {
+        if let Some(position_seconds) = self.resume_position_seconds.get()
+            && self.state.get() == PlaybackState::Stopped
+            && let Some(path) = self.play_queue.borrow().current().cloned()
+        {
+            self.start_playback(path);
+            if position_seconds > 0 {
+                self.engine.send(EngineCommand::SeekTo {
+                    position_in_track: Duration::from_secs(position_seconds),
+                });
+            }
+            return;
+        }
         self.engine.send(
             if matches!(
                 self.state.get(),
@@ -2017,6 +2147,11 @@ impl UiBridge {
         for event in self.engine.try_receive_events() {
             self.handle_event(event);
         }
+        if std::time::Instant::now() >= self.next_session_save.get() {
+            self.next_session_save
+                .set(std::time::Instant::now() + SESSION_SAVE_INTERVAL);
+            self.save_session();
+        }
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -2041,20 +2176,17 @@ impl UiBridge {
         };
         state.set_equalizer_levels(ModelRc::new(VecModel::from(levels)));
         let rate = u64::from(self.sample_rate_hz.get().max(1));
-        state.set_elapsed_label(
-            presentation::clock(counters.frames_rendered_in_track / rate).into(),
-        );
-        let remaining_seconds = self
-            .total_frames
+        let frames_in_track = self
+            .resume_position_seconds
             .get()
-            .saturating_sub(counters.frames_rendered_in_track)
-            / rate;
+            .map_or(counters.frames_rendered_in_track, |seconds| seconds * rate);
+        state.set_elapsed_label(presentation::clock(frames_in_track / rate).into());
+        let remaining_seconds = self.total_frames.get().saturating_sub(frames_in_track) / rate;
         state.set_remaining_label(presentation::remaining_clock(remaining_seconds).into());
         state.set_progress(if self.total_frames.get() == 0 {
             0.0
         } else {
-            (counters.frames_rendered_in_track as f64 / self.total_frames.get() as f64)
-                .clamp(0.0, 1.0) as f32
+            (frames_in_track as f64 / self.total_frames.get() as f64).clamp(0.0, 1.0) as f32
         });
         state.set_underrun_label(
             format!(
@@ -2133,35 +2265,8 @@ impl UiBridge {
                                 .map(|track| (album, track))
                         });
                 self.selected_track.set(selection);
-                if let Some((album_index, track_index)) = selection
-                    && let Some(album) = self.albums.borrow().get(album_index)
-                    && let Some(track) = album.tracks.get(track_index)
-                {
-                    state.set_has_current_track(true);
-                    state.set_current_artist(track.artist.as_str().into());
-                    state.set_current_album(album.title.as_str().into());
-                    state.set_current_format(
-                        format!(
-                            "FLAC {}",
-                            presentation::audio_format(track.bits_per_sample, track.sample_rate_hz)
-                        )
-                        .into(),
-                    );
-                    state.set_current_duration(presentation::clock(track.duration_seconds).into());
-                    state.set_current_filename(
-                        track
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .as_ref()
-                            .into(),
-                    );
-                    state.set_lcd_title(track.title.as_str().into());
-                    state.set_lcd_subtitle(format!("{} — {}", album.artist, album.title).into());
-                    state.set_lcd_artwork(album.artwork.clone());
-                    state.set_playing_album_index(album_index as i32);
-                    state.set_playing_track_index(track_index as i32);
+                if let Some((album_index, track_index)) = selection {
+                    self.show_current_track(&state, album_index, track_index);
                 }
             }
             EngineEvent::PlaybackStateChanged { state: playback } => {

@@ -293,7 +293,7 @@ pub(crate) fn library_database_path() -> Option<PathBuf> {
 /// The folder holding everything the app stores, in each system's own convention:
 /// `%APPDATA%\Pistolame` (Windows), `~/Library/Application Support/Pistolame` (macOS),
 /// `$XDG_CONFIG_HOME/pistolame` or `~/.config/pistolame` (Linux).
-fn app_data_directory() -> Option<PathBuf> {
+pub(crate) fn app_data_directory() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join(APP_FOLDER_NAME))
 }
 

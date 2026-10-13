@@ -7,6 +7,7 @@ mod m3u;
 mod play_queue;
 mod presentation;
 mod search;
+mod session;
 mod settings;
 mod transport;
 mod ui_bridge;
@@ -37,12 +38,14 @@ fn main() -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
     let timer = slint::Timer::default();
+    let ticking_bridge = bridge.clone();
     timer.start(
         slint::TimerMode::Repeated,
         pistolame_core::timing::UI_REFRESH_INTERVAL,
-        move || bridge.tick(),
+        move || ticking_bridge.tick(),
     );
     window.run()?;
+    bridge.save_session();
     Ok(())
 }
 
