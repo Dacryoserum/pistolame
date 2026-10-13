@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+### Features
+- add the app icon on every platform
+- add a per-user Windows installer
+
+
 ## 0.1.0
 
 ### Features

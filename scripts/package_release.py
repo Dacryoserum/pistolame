@@ -41,8 +41,11 @@ def main():
             "CFBundleExecutable": "Pistolame", "CFBundleIdentifier": "com.dacryoserum.pistolame",
             "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version.split("-")[0],
             "CFBundleVersion": version.split("-")[0], "LSMinimumSystemVersion": "11.0",
-            "NSHighResolutionCapable": True,
+            "NSHighResolutionCapable": True, "CFBundleIconFile": "Pistolame",
         }
+        resources = app / "Contents" / "Resources"
+        resources.mkdir()
+        shutil.copyfile(root / "crates/pistolame-app/assets/app-icon/Pistolame.icns", resources / "Pistolame.icns")
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         subprocess.run(["plutil", "-lint", str(app / "Contents" / "Info.plist")], check=True)
         subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
@@ -52,6 +55,14 @@ def main():
         executable = folder / ("Pistolame.exe" if args.platform == "windows-x64" else "Pistolame")
         shutil.copyfile(binary, executable)
         executable.chmod(0o755)
+        if args.platform == "linux-x64":
+            # Icon and desktop entry for menus and docks (freedesktop.org conventions).
+            shutil.copyfile(root / "crates/pistolame-app/assets/app-icon/pistolame-256.png", folder / "pistolame.png")
+            (folder / "pistolame.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=Pistolame\n"
+                "Comment=Lossless audio player for audiophiles\nExec=Pistolame\n"
+                "Icon=pistolame\nCategories=AudioVideo;Audio;Player;\nTerminal=false\n"
+            )
     dist = root / "target" / "dist"
     dist.mkdir(exist_ok=True)
     if args.platform == "linux-x64":
@@ -72,9 +83,31 @@ def main():
         with zipfile.ZipFile(archive) as output:
             assert output.testzip() is None
             assert f"{name}/LICENSE" in output.namelist()
-    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
-    archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n")
-    print(f"Verified {archive.name}: {archive.stat().st_size} bytes, SHA256 {digest}")
+    write_checksum(archive)
+    if args.platform == "windows-x64":
+        write_checksum(build_windows_installer(root, folder, version, dist))
+
+
+def write_checksum(path):
+    digest = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+    path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n")
+    print(f"Verified {path.name}: {path.stat().st_size} bytes, SHA256 {digest}")
+
+
+def build_windows_installer(root, folder, version, dist):
+    """Pistolame-<version>-windows-x64-setup.exe from the packaged folder (Inno Setup 6)."""
+    compiler = os.environ.get("INNO_SETUP_COMPILER", r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
+    if not Path(compiler).is_file():
+        raise SystemExit(f"Inno Setup compiler not found: {compiler}")
+    subprocess.run(
+        [compiler, f"/DAppVersion={version}", f"/DSourceDir={folder}", f"/DOutputDir={dist}",
+         str(root / "installer" / "pistolame.iss")],
+        check=True,
+    )
+    installer = dist / f"Pistolame-{version}-windows-x64-setup.exe"
+    if not installer.is_file():
+        raise SystemExit(f"installer missing: {installer}")
+    return installer
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ playback platform; macOS and Linux audio backends are planned.
 Get the Windows x64, macOS universal (Apple Silicon + Intel, macOS 11+) or Linux x64 archive from
 [Releases](https://github.com/Dacryoserum/pistolame/releases) and check its SHA-256 file.
 
-- **Windows**: FLAC playback through WASAPI, shared (default) or exclusive mode. Unsigned build.
+- **Windows**: FLAC playback through WASAPI, shared (default) or exclusive mode. Use the
+  `…-setup.exe` installer (per user, no administrator rights) or the portable ZIP. Unsigned build.
 - **macOS**: FLAC playback through CoreAudio, shared or exclusive mode (hog mode at the file's
   sample rate). Ad-hoc signed, not notarized: macOS may ask for approval in System Settings >
   Privacy & Security on first launch. Move the app to Applications so it can update itself.

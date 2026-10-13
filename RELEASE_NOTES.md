@@ -1,38 +1,24 @@
-# Pistolame 0.1.0
+# Pistolame 0.1.1
 
-First public release of Pistolame, a native lossless player for audiophiles (Rust + Slint,
-GPL-3.0). Bit-perfect playback you can verify.
+- **New app icon** (a spectral ring, sibling of Nyquist's icon) in the Dock, Finder, Windows
+  Explorer and taskbar, Linux menus, and the window itself.
+- **Windows installer**: `Pistolame-0.1.1-windows-x64-setup.exe` installs for the current user
+  (no administrator rights) into `%LOCALAPPDATA%\Programs\Pistolame`, adds a Start menu entry,
+  an optional desktop shortcut and a clean uninstaller. The portable ZIP is still available.
+- First release delivered through the in-app updater: installed copies of 0.1.0 see a green
+  dot and update themselves after one click.
 
-## Platforms
-
-- **Windows x64**: FLAC through WASAPI, shared mode (default) or exclusive mode.
-- **macOS universal** (Apple Silicon and Intel, macOS 11+): FLAC through CoreAudio. Shared mode,
-  or exclusive mode (hog mode at the file's sample rate, exact float conversion). Built-in Mac
-  outputs only accept float samples, so they show "Exclusif", never "Bit-perfect".
-- **Linux x64**: interface and library only, no audio output yet (ALSA is planned).
-
-## What is new since the previews
-
-- Sound on macOS (CoreAudio backend).
-- Persistent library: albums are kept between launches and rescanned in the background.
-- Edit an album's title, artist and cover inside the app (your files are never modified).
-- Playlists with covers, and an "Up next" queue: play next or add to the queue from anywhere.
-- Shared-mode volume in decibels (0 to -60 dB); disabled in exclusive mode (use your DAC).
-- Icon-only quality badge in the central display; hover for details, click for the signal path.
-- Automatic updates: a green dot appears when a new release exists; one click downloads,
-  verifies the signature and restarts the app.
-
-## Known limits
-
-- Windows: the shared-mode volume slider does not change the level yet.
-- No gapless playback, authenticity analysis or spectrograms yet. FLAC only, up to 24 bits.
-- Hardware acceptance on the reference DAC and screen-reader testing are still pending.
-- Windows builds are unsigned; the Mac app has an ad-hoc signature only (no notarization).
-  macOS may ask for approval in System Settings > Privacy & Security on first launch.
-
-Archives include licenses and SHA-256 checksums; `latest.json` carries the update signatures.
+Known limits are unchanged from 0.1.0 (Windows shared-mode volume, gapless, analyses).
+Windows builds are unsigned: SmartScreen may show "Unknown publisher" on first launch.
 
 # Changelog
+
+## 0.1.1
+
+### Features
+- add the app icon on every platform
+- add a per-user Windows installer
+
 
 ## 0.1.0
 

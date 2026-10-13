@@ -58,6 +58,10 @@ jobs:
           mkdir -p target/release
           lipo -create target/aarch64-apple-darwin/release/pistolame-app target/x86_64-apple-darwin/release/pistolame-app -output target/release/pistolame-app
           lipo target/release/pistolame-app -verify_arch arm64 x86_64
+      - name: Install Inno Setup (Windows installer)
+        if: runner.os == 'Windows'
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
       - name: Assemble and verify archive
         run: python scripts/package_release.py --platform ${{ matrix.platform }}
       - uses: actions/upload-artifact@v4
@@ -89,7 +93,8 @@ jobs:
         run: |
           test "$(find dist -name '*.zip' | wc -l)" -eq 2
           test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
-          test "$(find dist -name '*.sha256' | wc -l)" -eq 3
+          test "$(find dist -name '*-setup.exe' | wc -l)" -eq 1
+          test "$(find dist -name '*.sha256' | wc -l)" -eq 4
           cd dist
           sha256sum -c *.sha256
           cd ..
