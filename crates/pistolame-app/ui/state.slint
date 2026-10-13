@@ -242,6 +242,8 @@ export global AppState {
     in property <int> track-sort-column;
     in property <bool> is-track-sort-descending;
     callback sort-tracks(int);
+    // Files are dragged over the window: show the "Déposez…" veil.
+    in property <bool> is-drop-hovering;
     // "Favoris" filter of the table.
     in property <bool> is-favorites-only;
     callback toggle-favorites-only();

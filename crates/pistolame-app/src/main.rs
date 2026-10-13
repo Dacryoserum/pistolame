@@ -3,6 +3,7 @@
 
 use slint::ComponentHandle;
 mod album_sort;
+mod file_drop;
 mod m3u;
 mod media_controls;
 mod play_queue;

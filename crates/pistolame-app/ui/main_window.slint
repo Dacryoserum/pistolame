@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -540,6 +540,24 @@ export component AppWindow inherits Window {
             x: root.lcd-right-window - 380px;
             y: 60px + 4px * self.appear;
             opacity: self.appear;
+        }
+        // Drop veil while files are dragged over the window.
+        if AppState.is-drop-hovering: Rectangle {
+            x: 8px;
+            y: 8px;
+            width: root.width - 16px;
+            height: root.height - 16px;
+            border-radius: 12px;
+            border-width: 2px;
+            border-color: Tokens.accent;
+            background: Tokens.surface-content.with-alpha(0.9);
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Icon { height: 40px; source: Icons.plus; colorize: Tokens.accent; }
+                Txt { role: TextRole.title-3; text: "Déposez pour ajouter à la bibliothèque"; horizontal-alignment: center; }
+                Txt { text: "Dossiers et fichiers FLAC. Vos fichiers restent où ils sont."; color: Tokens.text-secondary; horizontal-alignment: center; }
+            }
         }
     }
 }

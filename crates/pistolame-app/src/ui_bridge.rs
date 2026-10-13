@@ -125,6 +125,8 @@ pub(crate) struct UiBridge {
     folder_changes: crossbeam_channel::Receiver<()>,
     /// When the last change was seen; the library is synchronized once changes settle.
     last_folder_change: Cell<Option<std::time::Instant>>,
+    /// Files and folders dropped on the window, imported together at the next tick.
+    dropped_paths: crate::file_drop::DroppedPaths,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -200,6 +202,7 @@ impl UiBridge {
             folder_change_sender,
             folder_changes,
             last_folder_change: Cell::new(None),
+            dropped_paths: Rc::default(),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -230,6 +233,7 @@ impl UiBridge {
 
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {
         self.show_volume();
+        crate::file_drop::install(window, self.dropped_paths.clone());
         let state = window.global::<AppState>();
         let handle = self.clone();
         state.on_import_files(move || {
@@ -2577,6 +2581,11 @@ impl UiBridge {
         }
         self.handle_media_commands();
         self.synchronize_after_folder_changes();
+        // Dropped files wait for an import in progress to finish.
+        if !self.is_importing.get() && !self.dropped_paths.borrow().is_empty() {
+            let paths = std::mem::take(&mut *self.dropped_paths.borrow_mut());
+            self.synchronize_library(paths);
+        }
         if std::time::Instant::now() >= self.next_session_save.get() {
             self.next_session_save
                 .set(std::time::Instant::now() + SESSION_SAVE_INTERVAL);
