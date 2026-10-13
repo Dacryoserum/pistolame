@@ -7,6 +7,8 @@ export global Icons {
     out property <image> pencil-simple: @image-url("../assets/icons/pencil-simple.svg");
     out property <image> check: @image-url("../assets/icons/check.svg");
     out property <image> plus: @image-url("../assets/icons/plus.svg");
+    out property <image> heart: @image-url("../assets/icons/heart.svg");
+    out property <image> heart-fill: @image-url("../assets/icons/heart-fill.svg");
     out property <image> trash: @image-url("../assets/icons/trash.svg");
     out property <image> dots-three: @image-url("../assets/icons/dots-three.svg");
     out property <image> x: @image-url("../assets/icons/x.svg");
@@ -424,6 +426,9 @@ export component ActionMenuButton inherits Rectangle {
     out property <bool> has-hover: button.has-hover;
     in property <string> label: "Plus d’actions";
     in property <bool> can-remove;
+    // Track menus offer the favorite toggle; album and playlist menus do not.
+    in property <bool> can-favorite;
+    in property <bool> is-favorite;
     in property <color> icon-color: Tokens.text-secondary;
     callback action(TrackAction);
     width: 28px;
@@ -454,6 +459,11 @@ export component ActionMenuButton inherits Rectangle {
                 MenuRow { icon: Icons.skip-forward-fill; label: "Lire ensuite"; clicked => { root.action(TrackAction.play-next); } }
                 MenuRow { icon: Icons.queue; label: "Ajouter à la file d’attente"; clicked => { root.action(TrackAction.add-to-queue); } }
                 MenuRow { icon: Icons.plus; label: "Ajouter à une playlist…"; clicked => { root.action(TrackAction.add-to-playlist); } }
+                if root.can-favorite: MenuRow {
+                    icon: root.is-favorite ? Icons.heart-fill : Icons.heart;
+                    label: root.is-favorite ? "Retirer des favoris" : "Ajouter aux favoris";
+                    clicked => { root.action(TrackAction.toggle-favorite); }
+                }
                 MenuRow { icon: Icons.magnifying-glass; label: AppState.reveal-label; clicked => { root.action(TrackAction.reveal-in-file-manager); } }
                 if root.can-remove: MenuRow {
                     icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
@@ -475,6 +485,7 @@ export component TrackRow inherits Rectangle {
     // columns never move.
     in property <bool> has-menu: true;
     in property <bool> can-remove;
+    in property <bool> is-favorite;
     in property <string> subtitle;
     callback clicked();
     callback action(TrackAction);
@@ -559,11 +570,22 @@ export component TrackRow inherits Rectangle {
         }
     }
 
+    // A favorite shows a small heart in the menu slot while the row is not hovered.
+    if root.is-favorite && !root.is-hovered: Icon {
+        x: root.width - 8px - 28px + 8px;
+        y: (root.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        source: Icons.heart-fill;
+        colorize: Tokens.accent;
+    }
     menu-button := ActionMenuButton {
         x: root.width - 8px - 28px;
         y: 4px;
         label: "Actions pour " + root.title;
         can-remove: root.can-remove;
+        can-favorite: true;
+        is-favorite: root.is-favorite;
         opacity: root.has-menu && root.is-hovered ? 1 : 0;
         action(kind) => { root.action(kind); }
     }
@@ -1148,6 +1170,7 @@ export component AlbumsGrid inherits Rectangle {
                 duration-label: AppState.search-tracks[parent.track-row].duration-label;
                 is-odd: Math.mod(parent.track-row, 2) == 1;
                 is-current: AppState.search-tracks[parent.track-row].is-current;
+                is-favorite: AppState.search-tracks[parent.track-row].is-favorite;
                 clicked => { AppState.play-search-result(parent.track-row); }
                 action(kind) => {
                     AppState.track-action({ source: TrackSource.search-result, album: 0, track: 0, position: parent.track-row }, kind);
@@ -1362,6 +1385,7 @@ export component AlbumDetail inherits Rectangle {
                 duration-label: track.duration-label;
                 is-odd: Math.mod(track.track-index, 2) == 1;
                 is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == track.track-index;
+                is-favorite: track.is-favorite;
                 clicked => {
                     AppState.play-track(AppState.detail-album-index, track.track-index);
                 }
@@ -1972,6 +1996,7 @@ export component PlaylistView inherits Rectangle {
             duration-label: track.duration-label;
             is-odd: Math.mod(index, 2) == 1;
             is-current: track.is-current;
+            is-favorite: track.is-favorite;
             can-remove: true;
             clicked => { AppState.play-playlist-row(index); }
             action(kind) => {
@@ -2430,10 +2455,20 @@ component LibraryTrackLine inherits Rectangle {
     Txt { role: TextRole.caption; x: root.format-x; width: 128px; height: root.height; vertical-alignment: center; text: root.track.format-label; horizontal-alignment: right; color: Tokens.text-secondary; }
     Txt { x: root.duration-x; width: 56px; height: root.height; vertical-alignment: center; text: root.track.duration-label; horizontal-alignment: right; color: Tokens.text-secondary; }
     touch := TouchArea { clicked => { root.clicked(); } }
+    if root.track.is-favorite && !root.is-hovered: Icon {
+        x: root.width - 8px - 28px + 8px;
+        y: (root.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        source: Icons.heart-fill;
+        colorize: Tokens.accent;
+    }
     menu-button := ActionMenuButton {
         x: root.width - 8px - 28px;
         y: 2px;
         label: "Actions pour " + root.track.title;
+        can-favorite: true;
+        is-favorite: root.track.is-favorite;
         opacity: root.is-hovered ? 1 : 0;
         action(kind) => { root.action(kind); }
     }
@@ -2447,6 +2482,37 @@ export component TracksView inherits Rectangle {
     Txt {
         x: 32px; y: 58px; role: TextRole.callout; color: Tokens.text-secondary;
         text: AppState.library-tracks.length + (AppState.library-tracks.length == 1 ? " morceau" : " morceaux");
+    }
+    // "Favoris" filter, a toggle pill at the top right (brass when on).
+    Rectangle {
+        x: root.width - 32px - self.width;
+        y: 28px;
+        width: 32px + favorites-label.preferred-width + 12px;
+        height: 28px;
+        border-radius: 14px;
+        background: AppState.is-favorites-only ? Tokens.accent.with-alpha(0.18) : favorites-touch.has-hover ? Tokens.fill-row-hover : transparent;
+        border-width: 1px;
+        border-color: AppState.is-favorites-only ? Tokens.accent : Tokens.separator;
+        accessible-role: checkbox;
+        accessible-checked: AppState.is-favorites-only;
+        accessible-label: "Afficher seulement les favoris";
+        Icon {
+            x: 12px;
+            y: 8px;
+            width: 12px;
+            height: 12px;
+            source: AppState.is-favorites-only ? Icons.heart-fill : Icons.heart;
+            colorize: AppState.is-favorites-only ? Tokens.accent : Tokens.text-secondary;
+        }
+        favorites-label := Txt {
+            x: 32px;
+            height: parent.height;
+            role: TextRole.callout-medium;
+            vertical-alignment: center;
+            text: "Favoris";
+            color: AppState.is-favorites-only ? Tokens.accent : Tokens.text-secondary;
+        }
+        favorites-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.toggle-favorites-only(); } }
     }
     Rectangle {
         x: 32px; y: 84px; width: root.width - 64px; height: 28px;
@@ -2478,7 +2544,9 @@ export component TracksView inherits Rectangle {
     }
     if AppState.library-tracks.length == 0: Txt {
         y: 200px; width: root.width;
-        text: "Aucun morceau : importez de la musique pour remplir cette vue.";
+        text: AppState.is-favorites-only
+            ? "Aucun favori : choisissez « Ajouter aux favoris » dans le menu « … » d’un morceau."
+            : "Aucun morceau : importez de la musique pour remplir cette vue.";
         color: Tokens.text-secondary;
         horizontal-alignment: center;
     }

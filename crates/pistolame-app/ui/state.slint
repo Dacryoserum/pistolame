@@ -16,6 +16,7 @@ export struct TrackRowData {
     is-disc-header: bool,
     // Index of the track in the album (rows and tracks differ when there are headings).
     track-index: int,
+    is-favorite: bool,
 }
 
 export struct PathStep {
@@ -82,6 +83,8 @@ export enum TrackAction {
     add-to-playlist,
     remove-from-playlist,
     reveal-in-file-manager,
+    // Adds the tracks to the favorites, or removes them when they all are already.
+    toggle-favorite,
 }
 
 export struct QueueRow {
@@ -101,6 +104,7 @@ export struct LibraryTrackRow {
     duration-label: string,
     // File path, compared with `AppState.current-track-path` to mark the playing row.
     path: string,
+    is-favorite: bool,
 }
 
 export struct ArtistCard {
@@ -124,6 +128,7 @@ export struct PlaylistTrackRow {
     format-label: string,
     duration-label: string,
     is-current: bool,
+    is-favorite: bool,
 }
 
 export global AppState {
@@ -235,6 +240,9 @@ export global AppState {
     in property <int> track-sort-column;
     in property <bool> is-track-sort-descending;
     callback sort-tracks(int);
+    // "Favoris" filter of the table.
+    in property <bool> is-favorites-only;
+    callback toggle-favorites-only();
     callback play-library-track(int);
     callback show-all-albums();
     // Tracks matching the search, listed under the matching albums.

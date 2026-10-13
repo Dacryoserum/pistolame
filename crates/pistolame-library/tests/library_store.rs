@@ -310,3 +310,21 @@ fn removing_a_root_forgets_its_tracks_only() {
     assert_eq!(paths(&store), vec![other.join("x.flac")]);
     assert!(library.track(1).exists(), "files are never deleted");
 }
+
+#[test]
+fn favorites_survive_reopening_and_can_be_removed() {
+    let library = TestLibrary::new("favorites", 2);
+    let mut store = library.open();
+    store.set_favorite(&library.track(1), true).unwrap();
+    store.set_favorite(&library.track(2), true).unwrap();
+    // Marking twice changes nothing.
+    store.set_favorite(&library.track(1), true).unwrap();
+    drop(store);
+    let mut reopened = library.open();
+    assert_eq!(
+        reopened.favorites().unwrap(),
+        vec![library.track(2), library.track(1)]
+    );
+    reopened.set_favorite(&library.track(2), false).unwrap();
+    assert_eq!(reopened.favorites().unwrap(), vec![library.track(1)]);
+}

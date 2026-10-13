@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS tracks (
     added_seconds INTEGER NOT NULL DEFAULT 0,
     play_count INTEGER NOT NULL DEFAULT 0,
     last_played_seconds INTEGER
+);
+CREATE TABLE IF NOT EXISTS favorites (
+    track_path TEXT PRIMARY KEY NOT NULL,
+    added_seconds INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS playlists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -420,6 +424,40 @@ impl LibraryStore {
             params![id, name],
         )?;
         Ok(())
+    }
+
+    /// Marks `path` as a favorite, or not. Kept by path, like playlist entries, so a rescan or a
+    /// folder removed then added again keeps it.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn set_favorite(&mut self, path: &Path, is_favorite: bool) -> Result<(), LibraryError> {
+        if is_favorite {
+            self.connection.execute(
+                "INSERT OR IGNORE INTO favorites (track_path, added_seconds) VALUES (?1, ?2)",
+                params![path_text(path), now_seconds()],
+            )?;
+        } else {
+            self.connection.execute(
+                "DELETE FROM favorites WHERE track_path = ?1",
+                params![path_text(path)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The favorite files, most recently marked first.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn favorites(&self) -> Result<Vec<PathBuf>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT track_path FROM favorites ORDER BY added_seconds DESC, rowid DESC")?;
+        let paths = statement
+            .query_map([], |row| Ok(PathBuf::from(row.get::<_, String>(0)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(paths)
     }
 
     /// Deletes playlist `id` and its entries (the tracks stay in the library).

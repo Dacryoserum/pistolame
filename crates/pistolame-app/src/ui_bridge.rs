@@ -117,6 +117,8 @@ pub(crate) struct UiBridge {
     library_tracks: RefCell<Vec<PathBuf>>,
     track_sort: Cell<(crate::track_sort::TrackColumn, bool)>,
     media_controls: RefCell<crate::media_controls::SystemMediaControls>,
+    /// Files marked as favorites (stored in the library by path).
+    favorites: RefCell<std::collections::HashSet<PathBuf>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -186,6 +188,7 @@ impl UiBridge {
             library_tracks: RefCell::new(Vec::new()),
             track_sort: Cell::new((crate::track_sort::TrackColumn::default(), false)),
             media_controls: RefCell::new(crate::media_controls::SystemMediaControls::new()),
+            favorites: RefCell::new(std::collections::HashSet::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -270,6 +273,14 @@ impl UiBridge {
             handle
                 .track_sort
                 .set((column, current == column && !is_descending));
+            handle.show_library_tracks();
+        });
+        let handle = self.clone();
+        state.on_toggle_favorites_only(move || {
+            if let Some(window) = handle.window.upgrade() {
+                let state = window.global::<AppState>();
+                state.set_is_favorites_only(!state.get_is_favorites_only());
+            }
             handle.show_library_tracks();
         });
         let handle = self.clone();
@@ -693,6 +704,7 @@ impl UiBridge {
             self.detail_album.set(index);
         }
         *self.albums.borrow_mut() = albums;
+        self.load_favorites();
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
             self.update_grid(state.get_query().as_str());
@@ -990,6 +1002,7 @@ impl UiBridge {
                             .into(),
                             duration_label: presentation::clock(file.duration_seconds).into(),
                             is_current: current_path.as_ref() == Some(&file.path),
+                            is_favorite: self.favorites.borrow().contains(&file.path),
                         });
                         results.push(file.path.clone());
                     }
@@ -1024,10 +1037,13 @@ impl UiBridge {
             return;
         };
         let (column, is_descending) = self.track_sort.get();
+        let is_favorites_only = window.global::<AppState>().get_is_favorites_only();
+        let favorites = self.favorites.borrow();
         let albums = self.albums.borrow();
         let mut tracks: Vec<(crate::track_sort::TrackSortKeys, &Album, &MusicFile)> = albums
             .iter()
             .flat_map(|album| album.tracks.iter().map(move |track| (album, track)))
+            .filter(|(_, track)| !is_favorites_only || favorites.contains(&track.path))
             .map(|(album, track)| {
                 let keys = crate::track_sort::TrackSortKeys {
                     title: track.title.clone(),
@@ -1064,6 +1080,7 @@ impl UiBridge {
                 .into(),
                 duration_label: presentation::clock(track.duration_seconds).into(),
                 path: track.path.to_string_lossy().as_ref().into(),
+                is_favorite: favorites.contains(&track.path),
             })
             .collect();
         *self.library_tracks.borrow_mut() = tracks
@@ -1229,6 +1246,7 @@ impl UiBridge {
                 duration_label: presentation::clock(track.duration_seconds).into(),
                 is_disc_header: false,
                 track_index: index as i32,
+                is_favorite: self.favorites.borrow().contains(&track.path),
             });
         }
         state.set_detail_tracks(ModelRc::new(VecModel::from(rows)));
@@ -1471,7 +1489,66 @@ impl UiBridge {
                     reveal_in_file_manager(path);
                 }
             }
+            TrackAction::ToggleFavorite => self.toggle_favorite(&paths, &subject),
             TrackAction::RemoveFromPlaylist => {}
+        }
+    }
+
+    /// Reads the favorites from the library. A read failure keeps the ones in memory.
+    fn load_favorites(&self) {
+        if let Some(database) = &self.library_database
+            && let Ok(store) = LibraryStore::open(database)
+            && let Ok(favorites) = store.favorites()
+        {
+            *self.favorites.borrow_mut() = favorites.into_iter().collect();
+        }
+    }
+
+    /// Adds `paths` to the favorites, or removes them when they all are already.
+    fn toggle_favorite(&self, paths: &[PathBuf], subject: &str) {
+        let Some(database) = &self.library_database else {
+            return;
+        };
+        let should_add = !paths
+            .iter()
+            .all(|path| self.favorites.borrow().contains(path));
+        let saved = LibraryStore::open(database).and_then(|mut store| {
+            paths
+                .iter()
+                .try_for_each(|path| store.set_favorite(path, should_add))
+        });
+        if let Err(error) = saved {
+            self.message(format!("Impossible d’enregistrer le favori : {error}"));
+            return;
+        }
+        {
+            let mut favorites = self.favorites.borrow_mut();
+            for path in paths {
+                if should_add {
+                    favorites.insert(path.clone());
+                } else {
+                    favorites.remove(path);
+                }
+            }
+        }
+        self.refresh_favorite_marks();
+        self.status(format!(
+            "{subject} : {}",
+            if should_add {
+                "ajouté aux favoris"
+            } else {
+                "retiré des favoris"
+            }
+        ));
+    }
+
+    /// Redraws every list that shows a heart.
+    fn refresh_favorite_marks(&self) {
+        self.show_album(self.detail_album.get());
+        self.refresh_playlist_view();
+        self.show_library_tracks();
+        if let Some(window) = self.window.upgrade() {
+            self.update_grid(window.global::<AppState>().get_query().as_str());
         }
     }
 
@@ -1885,6 +1962,7 @@ impl UiBridge {
                     .into(),
                     duration_label: presentation::clock(file.duration_seconds).into(),
                     is_current: current_path.as_ref() == Some(&path),
+                    is_favorite: self.favorites.borrow().contains(&path),
                 })
             })
             .collect();

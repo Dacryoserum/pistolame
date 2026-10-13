@@ -78,8 +78,8 @@ mod tests {
                     title: format!("Morceau {}", index + 1).into(),
                     format_label: "24/96".into(),
                     duration_label: "4:56".into(),
-                    is_disc_header: false,
                     track_index: index,
+                    ..TrackRowData::default()
                 })
                 .collect::<Vec<_>>(),
         )));
