@@ -24,6 +24,8 @@ struct Album {
     tag_title: String,
     tag_artist: String,
     tracks: Vec<MusicFile>,
+    /// What the grid's sort looks at (sort tags, year, added and played dates).
+    sort_keys: crate::album_sort::AlbumSortKeys,
     artwork: slint::Image,
     /// Whether the user chose this cover (stored in the library, files untouched).
     has_custom_artwork: bool,
@@ -215,6 +217,27 @@ impl UiBridge {
             });
         });
         self.connect_playlists(&state);
+        state.set_album_sort_labels(ModelRc::new(VecModel::from(
+            crate::album_sort::AlbumSort::ALL
+                .iter()
+                .map(|sort| SharedString::from(sort.label()))
+                .collect::<Vec<_>>(),
+        )));
+        state.set_album_sort_index(
+            crate::album_sort::AlbumSort::ALL
+                .iter()
+                .position(|sort| *sort == self.album_sort())
+                .unwrap_or(0) as i32,
+        );
+        let handle = self.clone();
+        state.on_set_album_sort(move |index| {
+            if let Some(sort) = usize::try_from(index)
+                .ok()
+                .and_then(|index| crate::album_sort::AlbumSort::ALL.get(index))
+            {
+                handle.set_album_sort(*sort);
+            }
+        });
         state.set_current_version(crate::updater::CURRENT_VERSION.into());
         let handle = self.clone();
         state.on_start_update(move || handle.start_update());
@@ -500,7 +523,11 @@ impl UiBridge {
             .map(|album| album.key.clone());
         let mut snapshot = snapshot;
         *self.playlists.borrow_mut() = std::mem::take(&mut snapshot.playlists);
-        let albums = albums_from_snapshot(snapshot);
+        let mut albums = albums_from_snapshot(snapshot);
+        let sort = self.album_sort();
+        albums.sort_by(|left, right| {
+            crate::album_sort::compare_albums(sort, &left.sort_keys, &right.sort_keys)
+        });
         self.selected_track.set(selected_path.and_then(|path| {
             albums.iter().enumerate().find_map(|(album, entry)| {
                 entry
@@ -748,6 +775,66 @@ impl UiBridge {
             .set_albums(ModelRc::new(VecModel::from(cards)));
     }
 
+    /// The grid order chosen in the settings.
+    fn album_sort(&self) -> crate::album_sort::AlbumSort {
+        self.settings
+            .borrow()
+            .album_sort
+            .as_deref()
+            .and_then(crate::album_sort::AlbumSort::from_key)
+            .unwrap_or_default()
+    }
+
+    /// Changes the grid order, remembers it and re-sorts the albums in place.
+    fn set_album_sort(&self, sort: crate::album_sort::AlbumSort) {
+        self.settings.borrow_mut().album_sort = Some(sort.key().to_owned());
+        self.save_settings();
+        let selected_path = self.selected_track.get().and_then(|(album, track)| {
+            self.albums
+                .borrow()
+                .get(album)
+                .and_then(|album| album.tracks.get(track))
+                .map(|track| track.path.clone())
+        });
+        let detail_key = self
+            .albums
+            .borrow()
+            .get(self.detail_album.get())
+            .map(|album| album.key.clone());
+        self.albums.borrow_mut().sort_by(|left, right| {
+            crate::album_sort::compare_albums(sort, &left.sort_keys, &right.sort_keys)
+        });
+        if let Some(path) = selected_path {
+            self.selected_track.set(self.track_location(&path));
+        }
+        if let Some(index) = detail_key.and_then(|key| {
+            self.albums
+                .borrow()
+                .iter()
+                .position(|album| album.key == key)
+        }) {
+            self.detail_album.set(index);
+        }
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_album_sort_index(
+                crate::album_sort::AlbumSort::ALL
+                    .iter()
+                    .position(|candidate| *candidate == sort)
+                    .unwrap_or(0) as i32,
+            );
+            state.set_grid_scroll_y(0.0);
+            self.update_grid(state.get_query().as_str());
+            let (album, track) = self
+                .selected_track
+                .get()
+                .map_or((-1, -1), |(album, track)| (album as i32, track as i32));
+            state.set_playing_album_index(album);
+            state.set_playing_track_index(track);
+            state.set_detail_album_index(self.detail_album.get() as i32);
+        }
+    }
+
     fn show_album(&self, index: usize) {
         let Some(window) = self.window.upgrade() else {
             return;
@@ -763,18 +850,34 @@ impl UiBridge {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
             artwork: album.artwork.clone(),
-            meta_line: format!("{} morceaux · FLAC", album.tracks.len()).into(),
+            meta_line: match album_year(album) {
+                Some(year) => format!("{year} · {} morceaux · FLAC", album.tracks.len()),
+                None => format!("{} morceaux · FLAC", album.tracks.len()),
+            }
+            .into(),
             footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
             verdict_label: "Non analysé".into(),
             summary: "L’analyse d’authenticité n’a pas été effectuée. Aucun verdict sur la résolution réelle de cet album.".into(),
             cells: ModelRc::new(VecModel::from(["Résolution effective", "Coupure spectrale", "Plage dynamique", "Écrêtage", "Contrôle MD5"].map(|label| crate::DataCell { label: label.into(), value: "Non analysé".into() }).to_vec())),
             ..Default::default()
         });
-        let rows: Vec<TrackRowData> = album
+        let is_multi_disc = album
             .tracks
             .iter()
-            .enumerate()
-            .map(|(index, track)| TrackRowData {
+            .any(|track| track.disc_number != album.tracks[0].disc_number);
+        let mut rows: Vec<TrackRowData> = Vec::new();
+        for (index, track) in album.tracks.iter().enumerate() {
+            let starts_disc =
+                index == 0 || album.tracks[index - 1].disc_number != track.disc_number;
+            if is_multi_disc && starts_disc {
+                rows.push(TrackRowData {
+                    title: format!("Disque {}", track.disc_number.max(1)).into(),
+                    is_disc_header: true,
+                    track_index: -1,
+                    ..Default::default()
+                });
+            }
+            rows.push(TrackRowData {
                 number: if track.track_number > 0 {
                     track.track_number as i32
                 } else {
@@ -787,8 +890,10 @@ impl UiBridge {
                 )
                 .into(),
                 duration_label: presentation::clock(track.duration_seconds).into(),
-            })
-            .collect();
+                is_disc_header: false,
+                track_index: index as i32,
+            });
+        }
         state.set_detail_tracks(ModelRc::new(VecModel::from(rows)));
         drop(albums);
         self.update_detail_signal();
@@ -866,9 +971,30 @@ impl UiBridge {
         self.stream_end_baseline
             .set(self.engine.counters().stream_ends_reached);
         self.message(String::new());
+        self.record_play(&path, location);
         self.engine.send(EngineCommand::OpenFileAndPlay { path });
         self.refresh_playlist_view();
         self.refresh_queue_view();
+    }
+
+    /// Counts a play in the library and in memory ("Écoutés récemment"). A failed write only
+    /// loses the statistic, so it stays silent.
+    fn record_play(&self, path: &std::path::Path, (album, track): (usize, usize)) {
+        if let Some(database) = &self.library_database
+            && let Ok(mut store) = LibraryStore::open(database)
+        {
+            let _ = store.record_play(path);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        if let Some(album) = self.albums.borrow_mut().get_mut(album) {
+            if let Some(file) = album.tracks.get_mut(track) {
+                file.play_count += 1;
+                file.last_played_seconds = Some(now);
+            }
+            album.sort_keys.last_played_seconds = Some(now);
+        }
     }
 
     /// The (album, track) indices of a file in the current album list.
@@ -1894,6 +2020,7 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
                 tag_artist: track.artist.clone(),
                 key,
                 tracks: Vec::new(),
+                sort_keys: crate::album_sort::AlbumSortKeys::default(),
                 artwork: slint::Image::default(),
                 has_custom_artwork: false,
             });
@@ -1920,8 +2047,42 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
         let custom = snapshot.artwork_overrides.get(&album.key);
         album.has_custom_artwork = custom.is_some();
         album.artwork = decode_artwork(custom.or_else(|| original_artwork(&album.tracks)));
+        album.sort_keys = sort_keys_of(album);
     }
     albums
+}
+
+/// What the grid's sort looks at: the files' sort tags when present (unless the user renamed
+/// the album), the earliest year, the latest added and played dates.
+fn sort_keys_of(album: &Album) -> crate::album_sort::AlbumSortKeys {
+    let tag = |pick: fn(&MusicFile) -> Option<&String>| album.tracks.iter().find_map(pick).cloned();
+    let is_title_edited = album.title != album.tag_title;
+    let is_artist_edited = album.artist != album.tag_artist;
+    crate::album_sort::AlbumSortKeys {
+        title: tag(|track| track.sort_album.as_ref())
+            .filter(|_| !is_title_edited)
+            .unwrap_or_else(|| album.title.clone()),
+        artist: tag(|track| track.sort_album_artist.as_ref())
+            .filter(|_| !is_artist_edited)
+            .unwrap_or_else(|| album.artist.clone()),
+        year: album.tracks.iter().filter_map(|track| track.year).min(),
+        added_seconds: album
+            .tracks
+            .iter()
+            .map(|track| track.added_seconds)
+            .max()
+            .unwrap_or(0),
+        last_played_seconds: album
+            .tracks
+            .iter()
+            .filter_map(|track| track.last_played_seconds)
+            .max(),
+    }
+}
+
+/// The album's year: the earliest year of its tracks.
+fn album_year(album: &Album) -> Option<u32> {
+    album.sort_keys.year
 }
 
 /// The first cover found in an album's files (embedded or beside them).

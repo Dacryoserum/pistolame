@@ -268,3 +268,27 @@ fn a_version_3_database_gains_the_playlist_cover_column() {
     assert_eq!(playlists[0].name, "Ancienne");
     assert!(playlists[0].artwork.is_none());
 }
+
+#[test]
+fn plays_are_counted_and_added_dates_recorded() {
+    let library = TestLibrary::new("plays", 1);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let before = store.snapshot().unwrap().tracks[0].clone();
+    assert!(before.added_seconds > 0);
+    assert_eq!((before.play_count, before.last_played_seconds), (0, None));
+    store.record_play(&library.track(1)).unwrap();
+    store.record_play(&library.track(1)).unwrap();
+    let after = &store.snapshot().unwrap().tracks[0];
+    assert_eq!(after.play_count, 2);
+    assert!(after.last_played_seconds.is_some());
+    // A rescan of a changed file keeps the statistics.
+    touch_with_extra_byte(&library.track(1));
+    store.synchronize().unwrap();
+    let rescanned = &store.snapshot().unwrap().tracks[0];
+    assert_eq!(rescanned.play_count, 2);
+    assert_eq!(rescanned.added_seconds, before.added_seconds);
+}

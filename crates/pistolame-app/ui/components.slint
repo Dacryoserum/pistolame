@@ -1044,6 +1044,60 @@ export component AlbumsGrid inherits Rectangle {
         text: "Albums";
     }
 
+    // "Trier par" menu, right-aligned with the grid, discreet like Apple Music's view options.
+    sort-button := Rectangle {
+        property <length> label-width: sort-label.preferred-width;
+        x: root.width - 32px - self.width;
+        y: 26px;
+        width: self.label-width + 34px;
+        height: 28px;
+        border-radius: 6px;
+        background: sort-touch.has-hover ? Tokens.fill-icon-hover : transparent;
+        accessible-role: button;
+        accessible-label: "Trier les albums par " + AppState.album-sort-labels[AppState.album-sort-index];
+        sort-label := Txt {
+            x: 10px;
+            role: TextRole.callout-medium;
+            height: parent.height;
+            vertical-alignment: center;
+            text: "Trier par : " + AppState.album-sort-labels[AppState.album-sort-index];
+            color: Tokens.accent;
+        }
+        Icon {
+            x: parent.width - 20px;
+            y: 9px;
+            width: 10px;
+            height: 10px;
+            source: Icons.caret-left;
+            colorize: Tokens.accent;
+            transform-rotation: -90deg;
+        }
+        sort-touch := TouchArea { mouse-cursor: pointer; clicked => { sort-menu.show(); } }
+    }
+
+    sort-menu := PopupWindow {
+        x: root.width - 32px - 220px;
+        y: 58px;
+        width: 220px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                for label[index] in AppState.album-sort-labels: MenuRow {
+                    icon: index == AppState.album-sort-index ? Icons.check : @image-url("");
+                    label: label;
+                    clicked => { AppState.set-album-sort(index); }
+                }
+            }
+        }
+    }
+
     ListView {
         y: 76px;
         height: root.height - 76px;
@@ -1252,21 +1306,32 @@ export component AlbumDetail inherits Rectangle {
             }
         }
 
-        for track[index] in AppState.detail-tracks: TrackRow {
+        for track[index] in AppState.detail-tracks: Rectangle {
             x: 32px;
             y: 328px + 36px * index;
             width: root.list-width;
-            number: track.number;
-            title: track.title;
-            format-label: track.format-label;
-            duration-label: track.duration-label;
-            is-odd: Math.mod(index, 2) == 1;
-            is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == index;
-            clicked => {
-                AppState.play-track(AppState.detail-album-index, index);
+            height: 36px;
+            if track.is-disc-header: Txt {
+                x: 12px;
+                y: 14px;
+                role: TextRole.headline;
+                text: track.title;
+                color: Tokens.text-secondary;
             }
-            action(kind) => {
-                AppState.track-action({ source: TrackSource.album-track, album: AppState.detail-album-index, track: index, position: 0 }, kind);
+            if !track.is-disc-header: TrackRow {
+                width: parent.width;
+                number: track.number;
+                title: track.title;
+                format-label: track.format-label;
+                duration-label: track.duration-label;
+                is-odd: Math.mod(track.track-index, 2) == 1;
+                is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == track.track-index;
+                clicked => {
+                    AppState.play-track(AppState.detail-album-index, track.track-index);
+                }
+                action(kind) => {
+                    AppState.track-action({ source: TrackSource.album-track, album: AppState.detail-album-index, track: track.track-index, position: 0 }, kind);
+                }
             }
         }
 

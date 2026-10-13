@@ -12,6 +12,10 @@ export struct TrackRowData {
     title: string,
     format-label: string,
     duration-label: string,
+    // A "Disque 2" heading row instead of a track (multi-disc albums).
+    is-disc-header: bool,
+    // Index of the track in the album (rows and tracks differ when there are headings).
+    track-index: int,
 }
 
 export struct PathStep {
@@ -182,6 +186,10 @@ export global AppState {
     in property <bool> is-updating;
     in-out property <bool> is-update-panel-open;
     callback start-update();
+    // Album grid order.
+    in property <[string]> album-sort-labels;
+    in property <int> album-sort-index;
+    callback set-album-sort(int);
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();

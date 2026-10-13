@@ -35,6 +35,20 @@ pub struct MusicFile {
     pub bits_per_sample: u32,
     /// Declared duration in seconds.
     pub duration_seconds: u64,
+    /// Release year (release date first, then recording date, then original date).
+    pub year: Option<u32>,
+    /// Album title to sort by (ALBUMSORT tag), when the files provide one.
+    pub sort_album: Option<String>,
+    /// Album artist to sort by (ALBUMARTISTSORT tag), when the files provide one.
+    pub sort_album_artist: Option<String>,
+    /// Genre tag.
+    pub genre: Option<String>,
+    /// When the track entered the library (seconds since the Unix epoch; 0 outside the library).
+    pub added_seconds: i64,
+    /// How many times playback of the track started.
+    pub play_count: u32,
+    /// When playback of the track last started (seconds since the Unix epoch).
+    pub last_played_seconds: Option<i64>,
     /// Encoded embedded artwork, decoded only when an album is displayed.
     pub artwork: Option<std::sync::Arc<[u8]>>,
 }
@@ -93,12 +107,39 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         sample_rate_hz: rate,
         bits_per_sample: parameters.bits_per_sample.unwrap_or(0),
         duration_seconds: track.num_frames.unwrap_or(0) / u64::from(rate.max(1)),
+        year: None,
+        sort_album: None,
+        sort_album_artist: None,
+        genre: None,
+        added_seconds: 0,
+        play_count: 0,
+        last_played_seconds: None,
         artwork: None,
     };
     if let Some(revision) = reader.metadata().current() {
         let mut album_artist = None;
+        let mut years = YearCandidates::default();
         for tag in &revision.media.tags {
             match &tag.std {
+                Some(StandardTag::ReleaseYear(year)) => years.release = Some(u32::from(*year)),
+                Some(StandardTag::ReleaseDate(date)) => {
+                    years.release = years.release.or(year_of(date))
+                }
+                Some(StandardTag::RecordingYear(year)) => years.recording = Some(u32::from(*year)),
+                Some(StandardTag::RecordingDate(date)) => {
+                    years.recording = years.recording.or(year_of(date))
+                }
+                Some(StandardTag::OriginalReleaseYear(year)) => {
+                    years.original = Some(u32::from(*year))
+                }
+                Some(StandardTag::OriginalReleaseDate(date)) => {
+                    years.original = years.original.or(year_of(date))
+                }
+                Some(StandardTag::SortAlbum(value)) => file.sort_album = non_empty(value),
+                Some(StandardTag::SortAlbumArtist(value)) => {
+                    file.sort_album_artist = non_empty(value)
+                }
+                Some(StandardTag::Genre(value)) => file.genre = non_empty(value),
                 Some(StandardTag::TrackTitle(value)) => file.title = value.to_string(),
                 Some(StandardTag::Album(value)) => file.album = value.to_string(),
                 Some(StandardTag::Artist(value)) => file.artist = value.to_string(),
@@ -111,6 +152,7 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         if let Some(artist) = album_artist {
             file.artist = artist;
         }
+        file.year = years.release.or(years.recording).or(years.original);
         // The FLAC metadata parser bounds individual blocks; only one cover is retained.
         file.artwork = revision
             .media
@@ -122,6 +164,26 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         file.artwork = directory_cover(path);
     }
     Ok(file)
+}
+
+/// Years found in the tags, by kind; the release year wins.
+#[derive(Default)]
+struct YearCandidates {
+    release: Option<u32>,
+    recording: Option<u32>,
+    original: Option<u32>,
+}
+
+/// The year of a date tag ("2011", "2011-04-17", "2011/04"): its first four digits, if plausible.
+fn year_of(date: &str) -> Option<u32> {
+    let digits: String = date.trim().chars().take(4).collect();
+    let year: u32 = digits.parse().ok()?;
+    (1000..=9999).contains(&year).then_some(year)
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Recursively collects FLAC paths, without following symbolic links.
@@ -247,6 +309,9 @@ mod tests {
             "ALBUMARTIST=Album artist",
             "TRACKNUMBER=12",
             "DISCNUMBER=2",
+            "DATE=2011-04-17",
+            "ALBUMSORT=Game of Thrones 01",
+            "GENRE=Soundtrack",
         ];
         let mut comments = 0u32.to_le_bytes().to_vec();
         comments.extend_from_slice(&(tags.len() as u32).to_le_bytes());
@@ -265,6 +330,9 @@ mod tests {
         assert_eq!(track.album, "Test album");
         assert_eq!(track.artist, "Album artist");
         assert_eq!((track.disc_number, track.track_number), (2, 12));
+        assert_eq!(track.year, Some(2011));
+        assert_eq!(track.sort_album.as_deref(), Some("Game of Thrones 01"));
+        assert_eq!(track.genre.as_deref(), Some("Soundtrack"));
     }
 
     #[test]
@@ -278,6 +346,15 @@ mod tests {
         assert!(errors.is_empty());
         assert_eq!(paths, vec![folder.join("01 Track.flac")]);
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn years_come_from_any_date_shape() {
+        assert_eq!(year_of("2011"), Some(2011));
+        assert_eq!(year_of("2011-04-17"), Some(2011));
+        assert_eq!(year_of(" 1999/12 "), Some(1999));
+        assert_eq!(year_of("unknown"), None);
+        assert_eq!(year_of("12"), None);
     }
 
     #[test]

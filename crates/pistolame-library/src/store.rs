@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -36,7 +36,14 @@ CREATE TABLE IF NOT EXISTS tracks (
     sample_rate_hz INTEGER NOT NULL,
     bits_per_sample INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
-    artwork_hash TEXT REFERENCES artworks(hash)
+    artwork_hash TEXT REFERENCES artworks(hash),
+    year INTEGER,
+    sort_album TEXT,
+    sort_album_artist TEXT,
+    genre TEXT,
+    added_seconds INTEGER NOT NULL DEFAULT 0,
+    play_count INTEGER NOT NULL DEFAULT 0,
+    last_played_seconds INTEGER
 );
 CREATE TABLE IF NOT EXISTS playlists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,7 +212,8 @@ impl LibraryStore {
         let cover = |hash: Option<String>| hash.and_then(|hash| artworks.get(&hash).cloned());
         let mut statement = self.connection.prepare(
             "SELECT path, title, album, artist, disc_number, track_number, sample_rate_hz,
-                    bits_per_sample, duration_seconds, artwork_hash
+                    bits_per_sample, duration_seconds, artwork_hash, year, sort_album,
+                    sort_album_artist, genre, added_seconds, play_count, last_played_seconds
              FROM tracks ORDER BY path",
         )?;
         let tracks = statement
@@ -221,6 +229,13 @@ impl LibraryStore {
                     bits_per_sample: row.get(7)?,
                     duration_seconds: stored_count(row.get(8)?),
                     artwork: cover(row.get(9)?),
+                    year: row.get(10)?,
+                    sort_album: row.get(11)?,
+                    sort_album_artist: row.get(12)?,
+                    genre: row.get(13)?,
+                    added_seconds: row.get(14)?,
+                    play_count: row.get(15)?,
+                    last_played_seconds: row.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -320,6 +335,19 @@ impl LibraryStore {
             params![path_text(&album.directory), album.title, hash],
         )?;
         self.delete_unused_artworks()
+    }
+
+    /// Counts one more play of `path` and remembers when it happened.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn record_play(&mut self, path: &Path) -> Result<(), LibraryError> {
+        self.connection.execute(
+            "UPDATE tracks SET play_count = play_count + 1, last_played_seconds = ?2
+             WHERE path = ?1",
+            params![path_text(path), now_seconds()],
+        )?;
+        Ok(())
     }
 
     /// Shows `text` instead of the tags for `album`. An override with neither field set removes
@@ -578,9 +606,12 @@ impl LibraryStore {
         self.connection.execute(
             "INSERT INTO tracks (path, root, file_size, modified_nanoseconds, title, album, artist,
                                  disc_number, track_number, sample_rate_hz, bits_per_sample,
-                                 duration_seconds, artwork_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                                 duration_seconds, artwork_hash, year, sort_album,
+                                 sort_album_artist, genre, added_seconds)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT (path) DO UPDATE SET
+                year = excluded.year, sort_album = excluded.sort_album,
+                sort_album_artist = excluded.sort_album_artist, genre = excluded.genre,
                 root = excluded.root, file_size = excluded.file_size,
                 modified_nanoseconds = excluded.modified_nanoseconds, title = excluded.title,
                 album = excluded.album, artist = excluded.artist,
@@ -603,6 +634,11 @@ impl LibraryStore {
                 track.bits_per_sample,
                 sql_integer(track.duration_seconds),
                 artwork_hash,
+                track.year,
+                track.sort_album,
+                track.sort_album_artist,
+                track.genre,
+                now_seconds(),
             ],
         )?;
         Ok(())
@@ -656,16 +692,44 @@ impl LibraryStore {
 /// Brings a database created by an older version up to the current schema. `CREATE TABLE IF
 /// NOT EXISTS` never adds columns to an existing table, so added columns are handled here.
 fn migrate(connection: &Connection) -> Result<(), LibraryError> {
-    let has_playlist_artwork = connection
-        .prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name = 'artwork_hash'")?
-        .exists([])?;
-    if !has_playlist_artwork {
+    // Version 5 reads the year, sort tags and genre: add the columns, then mark every known file
+    // as changed so the next synchronization reads its tags again.
+    if !has_column(connection, "tracks", "year")? {
+        for column in [
+            "year INTEGER",
+            "sort_album TEXT",
+            "sort_album_artist TEXT",
+            "genre TEXT",
+            "added_seconds INTEGER NOT NULL DEFAULT 0",
+            "play_count INTEGER NOT NULL DEFAULT 0",
+            "last_played_seconds INTEGER",
+        ] {
+            connection.execute(&format!("ALTER TABLE tracks ADD COLUMN {column}"), [])?;
+        }
+        connection.execute("UPDATE tracks SET file_size = -1", [])?;
+    }
+    if !has_column(connection, "playlists", "artwork_hash")? {
         connection.execute(
             "ALTER TABLE playlists ADD COLUMN artwork_hash TEXT REFERENCES artworks(hash)",
             [],
         )?;
     }
     Ok(())
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, LibraryError> {
+    Ok(connection
+        .prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?
+        .exists(params![table, column])?)
+}
+
+/// Seconds since the Unix epoch, for "added" and "last played" dates.
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Size and modification time: a file whose stamp is unchanged is not read again.
