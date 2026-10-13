@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 pistolame-core.workspace = true
 pistolame-library.workspace = true
+pistolame-analysis.workspace = true
+rayon.workspace = true
 pistolame-output.workspace = true
 slint.workspace = true
 rfd.workspace = true

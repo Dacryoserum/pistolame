@@ -127,6 +127,10 @@ pub(crate) struct UiBridge {
     last_folder_change: Cell<Option<std::time::Instant>>,
     /// Files and folders dropped on the window, imported together at the next tick.
     dropped_paths: crate::file_drop::DroppedPaths,
+    /// Nyquist's analysis of the current track, off the UI thread.
+    analysis_worker: Option<crate::analysis_worker::AnalysisWorker>,
+    /// The latest analyses, newest last, so going back to a track shows it at once.
+    analyses: RefCell<std::collections::VecDeque<crate::analysis_worker::AnalysisOutcome>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -203,6 +207,8 @@ impl UiBridge {
             folder_changes,
             last_folder_change: Cell::new(None),
             dropped_paths: Rc::default(),
+            analysis_worker: crate::analysis_worker::AnalysisWorker::start(),
+            analyses: RefCell::new(std::collections::VecDeque::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -290,6 +296,13 @@ impl UiBridge {
                 .set((column, current == column && !is_descending));
             handle.show_library_tracks();
         });
+        let handle = self.clone();
+        state.on_reveal_current_track(move || {
+            if let Some(path) = handle.current_path() {
+                reveal_in_file_manager(&path);
+            }
+        });
+        state.on_open_nyquist(|| open_in_browser(crate::authenticity::NYQUIST_URL));
         let handle = self.clone();
         state.on_toggle_favorites_only(move || {
             if let Some(window) = handle.window.upgrade() {
@@ -2365,8 +2378,187 @@ impl UiBridge {
         state.set_lcd_artwork(album.artwork.clone());
         state.set_playing_album_index(album_index as i32);
         state.set_playing_track_index(track_index as i32);
+        let path = track.path.clone();
+        let cells = crate::presentation::track_info_cells(
+            track,
+            std::fs::metadata(&path).ok().map(|metadata| metadata.len()),
+        );
         drop(albums);
+        state.set_current_path(path.to_string_lossy().as_ref().into());
+        self.show_track_info(state, cells, None);
+        self.show_authenticity_for(&path);
         self.publish_media_track();
+    }
+
+    /// Fills "Informations sur le fichier"; `analysis` adds what only the decode knows.
+    fn show_track_info(
+        &self,
+        state: &AppState<'_>,
+        cells: Vec<(String, String)>,
+        analysis: Option<&crate::authenticity::AuthenticityView>,
+    ) {
+        let mut cells: Vec<crate::DataCell> = cells
+            .into_iter()
+            .map(|(label, value)| crate::DataCell {
+                label: label.into(),
+                value: value.into(),
+            })
+            .collect();
+        if let Some(view) = analysis {
+            cells.extend(view.file_facts.iter().map(|fact| crate::DataCell {
+                label: fact.label.as_str().into(),
+                value: fact.text.as_str().into(),
+            }));
+        }
+        state.set_track_info_cells(ModelRc::new(VecModel::from(cells)));
+    }
+
+    /// Shows the stored analysis of `path`, or starts one.
+    fn show_authenticity_for(&self, path: &std::path::Path) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_nyquist_note(crate::authenticity::NYQUIST_NOTE.into());
+        state.set_authenticity_disclaimer(crate::authenticity::DISCLAIMER.into());
+        let known = self
+            .analyses
+            .borrow()
+            .iter()
+            .find(|(analyzed, _)| analyzed == path)
+            .map(|(_, outcome)| outcome.clone());
+        match (known, &self.analysis_worker) {
+            (Some(outcome), _) => self.show_authenticity(&state, &outcome),
+            (None, Some(worker)) => {
+                state.set_authenticity_state(1);
+                state.set_has_spectrogram(false);
+                worker.request(path.to_path_buf());
+            }
+            (None, None) => {
+                state.set_authenticity_state(3);
+                state.set_authenticity_error("le module d’analyse n’a pas pu démarrer.".into());
+                state.set_has_spectrogram(false);
+            }
+        }
+    }
+
+    /// Stores finished analyses and shows the one of the current track.
+    fn collect_analyses(&self) {
+        /// Analyses kept in memory (a spectrogram is about a megabyte).
+        const KEPT_ANALYSES: usize = 6;
+        let Some(worker) = &self.analysis_worker else {
+            return;
+        };
+        let outcomes = worker.take_results();
+        if outcomes.is_empty() {
+            return;
+        }
+        let current = self.current_path();
+        for (path, outcome) in outcomes {
+            if current.as_ref() == Some(&path)
+                && let Some(window) = self.window.upgrade()
+            {
+                let state = window.global::<AppState>();
+                self.show_authenticity(&state, &outcome);
+                if let Ok(view) = &outcome {
+                    let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+                    let cells = self
+                        .selected_track
+                        .get()
+                        .and_then(|(album, track)| {
+                            self.albums
+                                .borrow()
+                                .get(album)?
+                                .tracks
+                                .get(track)
+                                .map(|file| crate::presentation::track_info_cells(file, size))
+                        })
+                        .unwrap_or_default();
+                    self.show_track_info(&state, cells, Some(view));
+                }
+            }
+            let mut analyses = self.analyses.borrow_mut();
+            analyses.retain(|(analyzed, _)| *analyzed != path);
+            analyses.push_back((path, outcome));
+            while analyses.len() > KEPT_ANALYSES {
+                analyses.pop_front();
+            }
+        }
+    }
+
+    /// Puts one analysis on the current-track page.
+    fn show_authenticity(
+        &self,
+        state: &AppState<'_>,
+        outcome: &Result<crate::authenticity::AuthenticityView, String>,
+    ) {
+        use crate::authenticity::VerdictTone;
+        let view = match outcome {
+            Ok(view) => view,
+            Err(error) => {
+                state.set_authenticity_state(3);
+                state.set_authenticity_error(error.as_str().into());
+                state.set_has_spectrogram(false);
+                return;
+            }
+        };
+        let cells = |items: &[crate::authenticity::LabeledText]| {
+            ModelRc::new(VecModel::from(
+                items
+                    .iter()
+                    .map(|item| crate::DataCell {
+                        label: item.label.as_str().into(),
+                        value: item.text.as_str().into(),
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        state.set_authenticity_verdict(view.verdict.as_str().into());
+        state.set_authenticity_tone(match view.tone {
+            VerdictTone::Neutral => 0,
+            VerdictTone::Good => 1,
+            VerdictTone::Warning => 2,
+        });
+        state.set_authenticity_blurb(view.blurb.as_str().into());
+        state.set_authenticity_strength(view.strength.as_str().into());
+        state.set_authenticity_findings(cells(&view.findings));
+        state.set_authenticity_measures(cells(&view.measures));
+        state.set_authenticity_indicators(ModelRc::new(VecModel::from(
+            view.indicators
+                .iter()
+                .map(|indicator| SharedString::from(indicator.as_str()))
+                .collect::<Vec<_>>(),
+        )));
+        match &view.spectrogram {
+            Some(pixels) => {
+                let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &pixels.rgba,
+                    pixels.width,
+                    pixels.height,
+                );
+                state.set_spectrogram(slint::Image::from_rgba8(buffer));
+                state.set_spectrogram_top_label(
+                    format!(
+                        "{} kHz",
+                        crate::authenticity::number(view.spectrogram_max_hz / 1000.0, 0)
+                    )
+                    .into(),
+                );
+                state.set_spectrogram_middle_label(
+                    format!(
+                        "{} kHz",
+                        crate::authenticity::number(view.spectrogram_max_hz / 2000.0, 0)
+                    )
+                    .into(),
+                );
+                state.set_spectrogram_end_label(
+                    presentation::clock(view.duration_seconds.round() as u64).into(),
+                );
+                state.set_has_spectrogram(true);
+            }
+            None => state.set_has_spectrogram(false),
+        }
+        state.set_authenticity_state(2);
     }
 
     /// Shows the selected track in the system media panel.
@@ -2581,6 +2773,7 @@ impl UiBridge {
         }
         self.handle_media_commands();
         self.synchronize_after_folder_changes();
+        self.collect_analyses();
         // Dropped files wait for an import in progress to finish.
         if !self.is_importing.get() && !self.dropped_paths.borrow().is_empty() {
             let paths = std::mem::take(&mut *self.dropped_paths.borrow_mut());
@@ -2927,6 +3120,20 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         command
     };
     let _ = command.spawn();
+}
+
+/// Opens `url` in the default browser. Best effort, like revealing a file.
+fn open_in_browser(url: &str) {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let _ = command.arg(url).spawn();
 }
 
 /// Artist cards from the albums: one per album artist (as displayed), natural order, with the

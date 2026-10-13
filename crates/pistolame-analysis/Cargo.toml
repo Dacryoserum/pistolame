@@ -1,0 +1,20 @@
+[package]
+name = "pistolame-analysis"
+description = "File authenticity analysis (transcode, padded bit depth, dynamics, spectrogram), ported from Nyquist"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+symphonia.workspace = true
+serde.workspace = true
+base64.workspace = true
+rustfft.workspace = true
+ebur128.workspace = true
+rayon.workspace = true

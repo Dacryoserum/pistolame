@@ -306,6 +306,63 @@ pub(crate) fn signal_steps(
     ]
 }
 
+/// The facts shown under "Informations sur le fichier" before any analysis: what the library
+/// knows, plus the file size from the file system (`None` if it cannot be read).
+pub(crate) fn track_info_cells(
+    track: &pistolame_library::MusicFile,
+    file_size_bytes: Option<u64>,
+) -> Vec<(String, String)> {
+    /// Bits per byte, for the average bitrate.
+    const BITS_PER_BYTE: f64 = 8.0;
+    let mut cells = vec![
+        ("Format".to_owned(), "FLAC (sans perte)".to_owned()),
+        (
+            "Résolution".to_owned(),
+            format!("{} bits", track.bits_per_sample),
+        ),
+        (
+            "Fréquence".to_owned(),
+            format!("{} kHz", frequency(track.sample_rate_hz)),
+        ),
+        ("Durée".to_owned(), clock(track.duration_seconds)),
+    ];
+    if let Some(size) = file_size_bytes {
+        if track.duration_seconds > 0 {
+            let kilobits_per_second =
+                size as f64 * BITS_PER_BYTE / 1000.0 / track.duration_seconds as f64;
+            cells.push((
+                "Débit moyen".to_owned(),
+                format!("{} kb/s", kilobits_per_second.round() as u64),
+            ));
+        }
+        cells.push((
+            "Taille".to_owned(),
+            format!(
+                "{} Mo",
+                format!("{:.1}", size as f64 / 1_000_000.0).replace('.', ",")
+            ),
+        ));
+    }
+    if track.track_number > 0 {
+        cells.push((
+            "Piste".to_owned(),
+            if track.disc_number > 1 {
+                format!("{} (disque {})", track.track_number, track.disc_number)
+            } else {
+                track.track_number.to_string()
+            },
+        ));
+    }
+    if let Some(year) = track.year {
+        cells.push(("Année".to_owned(), year.to_string()));
+    }
+    if let Some(genre) = track.genre.as_ref().filter(|genre| !genre.is_empty()) {
+        cells.push(("Genre".to_owned(), genre.clone()));
+    }
+    cells.push(("Lectures".to_owned(), track.play_count.to_string()));
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

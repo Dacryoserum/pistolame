@@ -14,6 +14,7 @@ version = "0.2.0"
 pistolame-core    = { path = "crates/pistolame-core" }
 pistolame-output  = { path = "crates/pistolame-output" }
 pistolame-library = { path = "crates/pistolame-library" }
+pistolame-analysis = { path = "crates/pistolame-analysis" }
 
 symphonia         = { version = "0.6.1", default-features = false, features = ["flac"] }
 rtrb              = "0.4.0"
@@ -47,6 +48,11 @@ ed25519-dalek     = "3.0.0"
 rusqlite          = { version = "0.40.2", features = ["bundled"] }
 # Folder watching for the library (CC0-1.0): new or removed files show up without a restart.
 notify            = "8.2.0"
+# Authenticity analysis ported from Nyquist (crates/pistolame-analysis): FFT (MIT/Apache-2.0),
+# EBU R128 loudness and true peak (MIT), data parallelism (MIT/Apache-2.0). All pure Rust.
+rustfft           = "6.4.1"
+ebur128           = "0.1.10"
+rayon             = "1.10"
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
 # CoreAudio bindings (macOS). Zlib/Apache-2.0/MIT; same objc2 0.6 family Slint already pulls in.
