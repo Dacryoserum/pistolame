@@ -43,6 +43,8 @@ base64            = "0.23.1"
 ed25519-dalek     = "3.0.0"
 # SQLite for the library (MIT; `bundled` builds the public-domain SQLite, no system library).
 rusqlite          = { version = "0.40.2", features = ["bundled"] }
+# Folder watching for the library (CC0-1.0): new or removed files show up without a restart.
+notify            = "8.2.0"
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
 # CoreAudio bindings (macOS). Zlib/Apache-2.0/MIT; same objc2 0.6 family Slint already pulls in.

@@ -2,11 +2,13 @@
 #![forbid(unsafe_code)]
 
 mod store;
+mod watcher;
 
 pub use store::{
     AlbumKey, AlbumTextOverride, LibraryError, LibrarySnapshot, LibraryStore, Playlist,
     SynchronizationReport,
 };
+pub use watcher::FolderWatcher;
 
 use std::path::{Path, PathBuf};
 use symphonia::core::codecs::CodecParameters;

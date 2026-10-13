@@ -8,7 +8,7 @@ use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
 use pistolame_library::{
-    AlbumKey, AlbumTextOverride, LibrarySnapshot, LibraryStore, MusicFile, Playlist,
+    AlbumKey, AlbumTextOverride, FolderWatcher, LibrarySnapshot, LibraryStore, MusicFile, Playlist,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -119,6 +119,12 @@ pub(crate) struct UiBridge {
     media_controls: RefCell<crate::media_controls::SystemMediaControls>,
     /// Files marked as favorites (stored in the library by path).
     favorites: RefCell<std::collections::HashSet<PathBuf>>,
+    /// Watches the library folders; its signals arrive on `folder_changes`.
+    folder_watcher: RefCell<Option<(Vec<PathBuf>, FolderWatcher)>>,
+    folder_change_sender: crossbeam_channel::Sender<()>,
+    folder_changes: crossbeam_channel::Receiver<()>,
+    /// When the last change was seen; the library is synchronized once changes settle.
+    last_folder_change: Cell<Option<std::time::Instant>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -147,6 +153,7 @@ impl UiBridge {
         )?;
         let (sender, receiver) = unbounded();
         let (update_sender, update_messages) = unbounded();
+        let (folder_change_sender, folder_changes) = unbounded();
         let bridge = Rc::new(Self {
             window: window.as_weak(),
             engine,
@@ -189,6 +196,10 @@ impl UiBridge {
             track_sort: Cell::new((crate::track_sort::TrackColumn::default(), false)),
             media_controls: RefCell::new(crate::media_controls::SystemMediaControls::new()),
             favorites: RefCell::new(std::collections::HashSet::new()),
+            folder_watcher: RefCell::new(None),
+            folder_change_sender,
+            folder_changes,
+            last_folder_change: Cell::new(None),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -595,6 +606,49 @@ impl UiBridge {
         }
     }
 
+    /// Watches the library folders, restarting the watcher only when the folders changed.
+    fn watch_library_folders(&self) {
+        let Some(database) = &self.library_database else {
+            return;
+        };
+        let Ok(roots) = LibraryStore::open(database).and_then(|store| store.roots()) else {
+            return;
+        };
+        if self
+            .folder_watcher
+            .borrow()
+            .as_ref()
+            .is_some_and(|(watched, _)| *watched == roots)
+        {
+            return;
+        }
+        let sender = self.folder_change_sender.clone();
+        // Without a watcher the library still updates at start-up and on "Rescanner".
+        let watcher = FolderWatcher::watch(&roots, move || {
+            let _ = sender.send(());
+        })
+        .ok();
+        *self.folder_watcher.borrow_mut() = watcher.map(|watcher| (roots, watcher));
+    }
+
+    /// Synchronizes the library once folder changes have settled (a copy in progress sends
+    /// many events; one pass after the last one is enough).
+    fn synchronize_after_folder_changes(&self) {
+        /// Quiet time after the last change before synchronizing.
+        const FOLDER_SETTLE_DELAY: Duration = Duration::from_secs(2);
+        let now = std::time::Instant::now();
+        if self.folder_changes.try_iter().count() > 0 {
+            self.last_folder_change.set(Some(now));
+        }
+        if let Some(last_change) = self.last_folder_change.get()
+            && now.duration_since(last_change) >= FOLDER_SETTLE_DELAY
+            && !self.is_importing.get()
+        {
+            self.last_folder_change.set(None);
+            self.synchronize_library(Vec::new());
+        }
+    }
+
     /// Shows the remembered library folders on the settings page.
     fn show_library_folders(&self) {
         let (Some(window), Some(database)) = (self.window.upgrade(), &self.library_database) else {
@@ -637,6 +691,7 @@ impl UiBridge {
     fn apply_library_update(&self, update: LibraryUpdate) {
         if update.is_final {
             self.is_importing.set(false);
+            self.watch_library_folders();
         }
         if let Some(snapshot) = update.snapshot {
             self.replace_albums(snapshot);
@@ -2521,6 +2576,7 @@ impl UiBridge {
             self.handle_event(event);
         }
         self.handle_media_commands();
+        self.synchronize_after_folder_changes();
         if std::time::Instant::now() >= self.next_session_save.get() {
             self.next_session_save
                 .set(std::time::Instant::now() + SESSION_SAVE_INTERVAL);
