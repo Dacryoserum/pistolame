@@ -5,6 +5,7 @@ export struct AlbumCard {
     title: string,
     artist: string,
     artwork: image,
+    has-custom-artwork: bool,
 }
 
 export struct TrackRowData {
@@ -30,6 +31,7 @@ export struct DetailInfo {
     artist: string,
     meta-line: string,
     artwork: image,
+    has-custom-artwork: bool,
     footer-line: string,
     is-authentic: bool,
     verdict-label: string,
@@ -80,6 +82,9 @@ export global AppState {
     in property <string> current-filename;
     in-out property <ViewKind> previous-view: ViewKind.grid;
     callback open-current-album();
+    // Album cover chosen by the user, stored in the library (music files untouched).
+    callback choose-album-artwork(int);
+    callback reset-album-artwork(int);
 
     public function show-now-playing() {
         if has-current-track && view != ViewKind.now-playing {

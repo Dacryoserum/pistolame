@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 symphonia.workspace = true
 thiserror.workspace = true
+rusqlite.workspace = true
+md-5.workspace = true
 
 [dev-dependencies]
 pistolame-core = { workspace = true, features = ["test-support"] }

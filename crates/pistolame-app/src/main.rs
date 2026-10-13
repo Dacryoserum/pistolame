@@ -22,13 +22,13 @@ mod generated_ui {
 use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
+    settings::migrate_legacy_app_data();
     let window = AppWindow::new()?;
     let bridge = ui_bridge::UiBridge::new(&window)?;
     bridge.connect(&window);
+    // Shows the stored library, then rescans it; paths given on the command line are added.
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
-    if !paths.is_empty() {
-        bridge.import(paths);
-    }
+    bridge.synchronize_library(paths);
     let timer = slint::Timer::default();
     timer.start(
         slint::TimerMode::Repeated,

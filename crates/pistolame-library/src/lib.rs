@@ -1,5 +1,9 @@
-//! File metadata for the first desktop player. Scanning never modifies music files.
+//! File metadata and the persistent library. Scanning never modifies music files.
 #![forbid(unsafe_code)]
+
+mod store;
+
+pub use store::{AlbumKey, LibraryError, LibrarySnapshot, LibraryStore, SynchronizationReport};
 
 use std::path::{Path, PathBuf};
 use symphonia::core::codecs::CodecParameters;
@@ -150,6 +154,7 @@ pub fn collect_flac_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
         } else if path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+            && !is_apple_double(&path)
         {
             files.insert(path);
         }
@@ -157,9 +162,21 @@ pub fn collect_flac_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
     (files.into_iter().collect(), errors)
 }
 
+fn is_apple_double(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with(APPLE_DOUBLE_PREFIX))
+}
+
+/// Largest cover image accepted, from a folder or chosen by the user (16 MiB, far above any
+/// real album cover, small enough to keep the library light).
+pub const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Prefix of AppleDouble files, the metadata companions macOS writes on non-Apple file systems
+/// (`._name.flac`); they are not audio.
+const APPLE_DOUBLE_PREFIX: &str = "._";
+
 /// Prefer conventional cover names, then any JPEG or PNG beside the audio.
 fn directory_cover(path: &Path) -> Option<std::sync::Arc<[u8]>> {
-    const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
     let mut pictures: Vec<PathBuf> = std::fs::read_dir(path.parent()?)
         .ok()?
         .filter_map(Result::ok)
@@ -245,6 +262,19 @@ mod tests {
         assert_eq!(track.album, "Test album");
         assert_eq!(track.artist, "Album artist");
         assert_eq!((track.disc_number, track.track_number), (2, 12));
+    }
+
+    #[test]
+    fn apple_double_companions_are_skipped() {
+        let folder = std::env::temp_dir().join("pistolame-library-apple-double");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("test folder");
+        std::fs::write(folder.join("._01 Track.flac"), b"metadata").expect("companion");
+        std::fs::write(folder.join("01 Track.flac"), b"audio").expect("track");
+        let (paths, errors) = collect_flac_paths(std::slice::from_ref(&folder));
+        assert!(errors.is_empty());
+        assert_eq!(paths, vec![folder.join("01 Track.flac")]);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
