@@ -20,7 +20,10 @@ struct Album {
     key: AlbumKey,
     /// What the app shows: the user's edit, or the tags.
     title: String,
+    /// The album's artists as one line ("A, B & C").
     artist: String,
+    /// Each artist of the album: the album shows under every one of them in "Artistes".
+    artists: Vec<String>,
     /// What the tags say, to tell an edit from the original.
     tag_title: String,
     tag_artist: String,
@@ -43,6 +46,7 @@ enum PendingArtwork {
 struct AlbumEditDraft {
     index: usize,
     pending_artwork: PendingArtwork,
+    artists: Vec<String>,
 }
 
 /// What the update worker sends back to the UI thread.
@@ -127,6 +131,14 @@ pub(crate) struct UiBridge {
     last_folder_change: Cell<Option<std::time::Instant>>,
     /// Files and folders dropped on the window, imported together at the next tick.
     dropped_paths: crate::file_drop::DroppedPaths,
+    /// Nyquist's analysis of the current track, off the UI thread.
+    analysis_worker: Option<crate::analysis_worker::AnalysisWorker>,
+    /// The latest analyses, newest last, so going back to a track shows it at once.
+    analyses: RefCell<std::collections::VecDeque<crate::analysis_worker::AnalysisOutcome>>,
+    /// Looks artist photos up online; `None` without a library database.
+    artist_photo_worker: Option<crate::artist_photos::ArtistPhotoWorker>,
+    /// Decoded artist photos, by artist name.
+    artist_photos: RefCell<std::collections::HashMap<String, slint::Image>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -160,7 +172,7 @@ impl UiBridge {
             window: window.as_weak(),
             engine,
             settings: RefCell::new(settings),
-            library_database,
+            library_database: library_database.clone(),
             devices: RefCell::new(Vec::new()),
             albums: RefCell::new(Vec::new()),
             imports: receiver,
@@ -203,6 +215,12 @@ impl UiBridge {
             folder_changes,
             last_folder_change: Cell::new(None),
             dropped_paths: Rc::default(),
+            analysis_worker: crate::analysis_worker::AnalysisWorker::start(),
+            analyses: RefCell::new(std::collections::VecDeque::new()),
+            artist_photo_worker: library_database
+                .clone()
+                .and_then(crate::artist_photos::ArtistPhotoWorker::start),
+            artist_photos: RefCell::new(std::collections::HashMap::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -289,6 +307,26 @@ impl UiBridge {
                 .track_sort
                 .set((column, current == column && !is_descending));
             handle.show_library_tracks();
+        });
+        let handle = self.clone();
+        state.on_reveal_current_track(move || {
+            if let Some(path) = handle.current_path() {
+                reveal_in_file_manager(&path);
+            }
+        });
+        state.on_open_nyquist(|| open_in_browser(crate::authenticity::NYQUIST_URL));
+        state.set_are_artist_photos_on(!self.settings.borrow().are_artist_photos_off);
+        let handle = self.clone();
+        state.on_set_artist_photos(move |is_on| {
+            handle.settings.borrow_mut().are_artist_photos_off = !is_on;
+            // A failed save only loses the choice at the next launch.
+            let _ = handle.settings.borrow().save();
+            if let Some(window) = handle.window.upgrade() {
+                window.global::<AppState>().set_are_artist_photos_on(is_on);
+            }
+            if is_on {
+                handle.look_up_artist_photos();
+            }
         });
         let handle = self.clone();
         state.on_toggle_favorites_only(move || {
@@ -384,6 +422,35 @@ impl UiBridge {
         state.on_editor_reset_artwork(move || handle.editor_reset_artwork());
         let handle = self.clone();
         state.on_save_album_edit(move || handle.save_album_edit());
+        let handle = self.clone();
+        state.on_editor_add_artist(move || {
+            if let Some(window) = handle.window.upgrade() {
+                let state = window.global::<AppState>();
+                let name = state.get_editor_new_artist().to_string();
+                state.set_editor_new_artist("".into());
+                handle.editor_add_artist(&name);
+            }
+        });
+        let handle = self.clone();
+        state.on_editor_add_suggested_artist(move |index| {
+            let name = handle.window.upgrade().and_then(|window| {
+                usize::try_from(index).ok().and_then(|index| {
+                    slint::Model::row_data(
+                        &window.global::<AppState>().get_editor_suggested_artists(),
+                        index,
+                    )
+                })
+            });
+            if let Some(name) = name {
+                handle.editor_add_artist(&name);
+            }
+        });
+        let handle = self.clone();
+        state.on_editor_remove_artist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.editor_remove_artist(index);
+            }
+        });
         let handle = self.clone();
         state.on_cancel_album_edit(move || handle.close_album_editor());
         let handle = self.clone();
@@ -610,6 +677,48 @@ impl UiBridge {
         }
     }
 
+    /// Asks for the photos of the artists that have none yet (unless the user turned it off).
+    fn look_up_artist_photos(&self) {
+        let (Some(worker), Some(database)) = (&self.artist_photo_worker, &self.library_database)
+        else {
+            return;
+        };
+        if self.settings.borrow().are_artist_photos_off {
+            return;
+        }
+        let mut artists: Vec<String> = Vec::new();
+        for artist in self.albums.borrow().iter().flat_map(|album| &album.artists) {
+            if !artists.contains(artist) {
+                artists.push(artist.clone());
+            }
+        }
+        if let Ok(due) = LibraryStore::open(database).and_then(|store| {
+            store.artists_to_look_up(&artists, crate::artist_photos::RETRY_AFTER_SECONDS)
+        }) {
+            worker.request(due);
+        }
+    }
+
+    /// Shows the photos found since the last tick.
+    fn collect_artist_photos(&self) {
+        let Some(worker) = &self.artist_photo_worker else {
+            return;
+        };
+        let mut has_new_photo = false;
+        for photo in worker.take_results() {
+            if let Some(bytes) = photo.image {
+                let image = decode_artwork(Some(&std::sync::Arc::from(bytes)));
+                if image.size().width > 0 {
+                    self.artist_photos.borrow_mut().insert(photo.artist, image);
+                    has_new_photo = true;
+                }
+            }
+        }
+        if has_new_photo {
+            self.show_artists();
+        }
+    }
+
     /// Watches the library folders, restarting the watcher only when the folders changed.
     fn watch_library_folders(&self) {
         let Some(database) = &self.library_database else {
@@ -693,7 +802,8 @@ impl UiBridge {
     }
 
     fn apply_library_update(&self, update: LibraryUpdate) {
-        if update.is_final {
+        let is_final = update.is_final;
+        if is_final {
             self.is_importing.set(false);
             self.watch_library_folders();
         }
@@ -718,6 +828,9 @@ impl UiBridge {
                 .into(),
             );
         }
+        if is_final {
+            self.look_up_artist_photos();
+        }
         if let Some(first) = update.errors.first() {
             self.message(format!(
                 "{} problème(s) d’import. {first}",
@@ -728,7 +841,12 @@ impl UiBridge {
 
     /// Rebuilds the albums from a library snapshot, keeping the selected track and the open
     /// album when they still exist.
-    fn replace_albums(&self, snapshot: LibrarySnapshot) {
+    fn replace_albums(&self, mut snapshot: LibrarySnapshot) {
+        *self.artist_photos.borrow_mut() = std::mem::take(&mut snapshot.artist_images)
+            .into_iter()
+            .map(|(artist, bytes)| (artist, decode_artwork(Some(&bytes))))
+            .filter(|(_, image)| image.size().width > 0)
+            .collect();
         let selected_path = self.selected_track.get().and_then(|(album, track)| {
             self.albums
                 .borrow()
@@ -834,14 +952,75 @@ impl UiBridge {
         };
         let state = window.global::<AppState>();
         state.set_editor_title(album.title.as_str().into());
-        state.set_editor_artist(album.artist.as_str().into());
+        state.set_editor_new_artist("".into());
         state.set_editor_artwork(album.artwork.clone());
         state.set_editor_has_custom_artwork(album.has_custom_artwork);
         state.set_is_album_editor_open(true);
         *self.album_edit.borrow_mut() = Some(AlbumEditDraft {
             index,
             pending_artwork: PendingArtwork::Unchanged,
+            artists: album.artists.clone(),
         });
+        drop(albums);
+        self.show_editor_artists();
+    }
+
+    /// Shows the draft's artists, and the track artists not yet among them.
+    fn show_editor_artists(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let draft = self.album_edit.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return;
+        };
+        let albums = self.albums.borrow();
+        let suggestions = albums
+            .get(draft.index)
+            .map(|album| {
+                crate::album_artists::suggestions(
+                    album.tracks.iter().map(|track| track.artist.as_str()),
+                    &draft.artists,
+                )
+            })
+            .unwrap_or_default();
+        let model = |names: &[String]| {
+            ModelRc::new(VecModel::from(
+                names
+                    .iter()
+                    .map(|name| SharedString::from(name.as_str()))
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        let state = window.global::<AppState>();
+        state.set_editor_artists(model(&draft.artists));
+        state.set_editor_suggested_artists(model(&suggestions));
+    }
+
+    /// Adds the typed artist (or each one, when separated by `;`).
+    fn editor_add_artist(&self, name: &str) {
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            for artist in crate::album_artists::split(name) {
+                if !draft
+                    .artists
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&artist))
+                {
+                    draft.artists.push(artist);
+                }
+            }
+        }
+        self.show_editor_artists();
+    }
+
+    /// Removes artist `index` from the draft.
+    fn editor_remove_artist(&self, index: usize) {
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut()
+            && index < draft.artists.len()
+        {
+            draft.artists.remove(index);
+        }
+        self.show_editor_artists();
     }
 
     /// Lets the user pick a JPEG or PNG; applied only on "Enregistrer".
@@ -925,9 +1104,22 @@ impl UiBridge {
             self.close_album_editor();
             return;
         };
+        // A name still typed in the field counts, as if "Ajouter" had been pressed.
+        let mut artists = draft.artists.clone();
+        for typed in crate::album_artists::split(state.get_editor_new_artist().as_str()) {
+            if !artists
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&typed))
+            {
+                artists.push(typed);
+            }
+        }
         let text = AlbumTextOverride {
             title: edited_value(state.get_editor_title().as_str(), &tag_title),
-            artist: edited_value(state.get_editor_artist().as_str(), &tag_artist),
+            artist: edited_value(
+                &crate::album_artists::join_for_storage(&artists),
+                &crate::album_artists::join_for_storage(&crate::album_artists::split(&tag_artist)),
+            ),
         };
         let saved = self.with_library(|store| {
             store.set_album_text(&key, &text)?;
@@ -942,7 +1134,9 @@ impl UiBridge {
         }
         if let Some(album) = self.albums.borrow_mut().get_mut(draft.index) {
             album.title = text.title.clone().unwrap_or(tag_title);
-            album.artist = text.artist.clone().unwrap_or(tag_artist);
+            album.artists =
+                crate::album_artists::split(text.artist.as_deref().unwrap_or(&tag_artist));
+            album.artist = crate::album_artists::display(&album.artists);
             match draft.pending_artwork {
                 PendingArtwork::Unchanged => {}
                 PendingArtwork::Chosen { image, .. } => {
@@ -1020,7 +1214,7 @@ impl UiBridge {
         let cards: Vec<AlbumCard> = albums
             .iter()
             .enumerate()
-            .filter(|(_, album)| artist_filter.is_empty() || album.artist == artist_filter)
+            .filter(|(_, album)| artist_filter.is_empty() || album.artists.contains(&artist_filter))
             .filter(|(_, album)| {
                 let year = album_year(album)
                     .map(|year| year.to_string())
@@ -1084,7 +1278,7 @@ impl UiBridge {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        let cards = artist_cards(&self.albums.borrow());
+        let cards = artist_cards(&self.albums.borrow(), &self.artist_photos.borrow());
         window
             .global::<AppState>()
             .set_artists(ModelRc::new(VecModel::from(cards)));
@@ -1576,7 +1770,7 @@ impl UiBridge {
                         .albums
                         .borrow()
                         .get(album_index)
-                        .map(|album| album.artist.clone());
+                        .and_then(|album| album.artists.first().cloned());
                     if let Some(artist) = artist {
                         self.open_artist_named(&artist);
                     }
@@ -2365,8 +2559,187 @@ impl UiBridge {
         state.set_lcd_artwork(album.artwork.clone());
         state.set_playing_album_index(album_index as i32);
         state.set_playing_track_index(track_index as i32);
+        let path = track.path.clone();
+        let cells = crate::presentation::track_info_cells(
+            track,
+            std::fs::metadata(&path).ok().map(|metadata| metadata.len()),
+        );
         drop(albums);
+        state.set_current_path(path.to_string_lossy().as_ref().into());
+        self.show_track_info(state, cells, None);
+        self.show_authenticity_for(&path);
         self.publish_media_track();
+    }
+
+    /// Fills "Informations sur le fichier"; `analysis` adds what only the decode knows.
+    fn show_track_info(
+        &self,
+        state: &AppState<'_>,
+        cells: Vec<(String, String)>,
+        analysis: Option<&crate::authenticity::AuthenticityView>,
+    ) {
+        let mut cells: Vec<crate::DataCell> = cells
+            .into_iter()
+            .map(|(label, value)| crate::DataCell {
+                label: label.into(),
+                value: value.into(),
+            })
+            .collect();
+        if let Some(view) = analysis {
+            cells.extend(view.file_facts.iter().map(|fact| crate::DataCell {
+                label: fact.label.as_str().into(),
+                value: fact.text.as_str().into(),
+            }));
+        }
+        state.set_track_info_cells(ModelRc::new(VecModel::from(cells)));
+    }
+
+    /// Shows the stored analysis of `path`, or starts one.
+    fn show_authenticity_for(&self, path: &std::path::Path) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_nyquist_note(crate::authenticity::NYQUIST_NOTE.into());
+        state.set_authenticity_disclaimer(crate::authenticity::DISCLAIMER.into());
+        let known = self
+            .analyses
+            .borrow()
+            .iter()
+            .find(|(analyzed, _)| analyzed == path)
+            .map(|(_, outcome)| outcome.clone());
+        match (known, &self.analysis_worker) {
+            (Some(outcome), _) => self.show_authenticity(&state, &outcome),
+            (None, Some(worker)) => {
+                state.set_authenticity_state(1);
+                state.set_has_spectrogram(false);
+                worker.request(path.to_path_buf());
+            }
+            (None, None) => {
+                state.set_authenticity_state(3);
+                state.set_authenticity_error("le module d’analyse n’a pas pu démarrer.".into());
+                state.set_has_spectrogram(false);
+            }
+        }
+    }
+
+    /// Stores finished analyses and shows the one of the current track.
+    fn collect_analyses(&self) {
+        /// Analyses kept in memory (a spectrogram is about a megabyte).
+        const KEPT_ANALYSES: usize = 6;
+        let Some(worker) = &self.analysis_worker else {
+            return;
+        };
+        let outcomes = worker.take_results();
+        if outcomes.is_empty() {
+            return;
+        }
+        let current = self.current_path();
+        for (path, outcome) in outcomes {
+            if current.as_ref() == Some(&path)
+                && let Some(window) = self.window.upgrade()
+            {
+                let state = window.global::<AppState>();
+                self.show_authenticity(&state, &outcome);
+                if let Ok(view) = &outcome {
+                    let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+                    let cells = self
+                        .selected_track
+                        .get()
+                        .and_then(|(album, track)| {
+                            self.albums
+                                .borrow()
+                                .get(album)?
+                                .tracks
+                                .get(track)
+                                .map(|file| crate::presentation::track_info_cells(file, size))
+                        })
+                        .unwrap_or_default();
+                    self.show_track_info(&state, cells, Some(view));
+                }
+            }
+            let mut analyses = self.analyses.borrow_mut();
+            analyses.retain(|(analyzed, _)| *analyzed != path);
+            analyses.push_back((path, outcome));
+            while analyses.len() > KEPT_ANALYSES {
+                analyses.pop_front();
+            }
+        }
+    }
+
+    /// Puts one analysis on the current-track page.
+    fn show_authenticity(
+        &self,
+        state: &AppState<'_>,
+        outcome: &Result<crate::authenticity::AuthenticityView, String>,
+    ) {
+        use crate::authenticity::VerdictTone;
+        let view = match outcome {
+            Ok(view) => view,
+            Err(error) => {
+                state.set_authenticity_state(3);
+                state.set_authenticity_error(error.as_str().into());
+                state.set_has_spectrogram(false);
+                return;
+            }
+        };
+        let cells = |items: &[crate::authenticity::LabeledText]| {
+            ModelRc::new(VecModel::from(
+                items
+                    .iter()
+                    .map(|item| crate::DataCell {
+                        label: item.label.as_str().into(),
+                        value: item.text.as_str().into(),
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        state.set_authenticity_verdict(view.verdict.as_str().into());
+        state.set_authenticity_tone(match view.tone {
+            VerdictTone::Neutral => 0,
+            VerdictTone::Good => 1,
+            VerdictTone::Warning => 2,
+        });
+        state.set_authenticity_blurb(view.blurb.as_str().into());
+        state.set_authenticity_strength(view.strength.as_str().into());
+        state.set_authenticity_findings(cells(&view.findings));
+        state.set_authenticity_measures(cells(&view.measures));
+        state.set_authenticity_indicators(ModelRc::new(VecModel::from(
+            view.indicators
+                .iter()
+                .map(|indicator| SharedString::from(indicator.as_str()))
+                .collect::<Vec<_>>(),
+        )));
+        match &view.spectrogram {
+            Some(pixels) => {
+                let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &pixels.rgba,
+                    pixels.width,
+                    pixels.height,
+                );
+                state.set_spectrogram(slint::Image::from_rgba8(buffer));
+                state.set_spectrogram_top_label(
+                    format!(
+                        "{} kHz",
+                        crate::authenticity::number(view.spectrogram_max_hz / 1000.0, 0)
+                    )
+                    .into(),
+                );
+                state.set_spectrogram_middle_label(
+                    format!(
+                        "{} kHz",
+                        crate::authenticity::number(view.spectrogram_max_hz / 2000.0, 0)
+                    )
+                    .into(),
+                );
+                state.set_spectrogram_end_label(
+                    presentation::clock(view.duration_seconds.round() as u64).into(),
+                );
+                state.set_has_spectrogram(true);
+            }
+            None => state.set_has_spectrogram(false),
+        }
+        state.set_authenticity_state(2);
     }
 
     /// Shows the selected track in the system media panel.
@@ -2581,6 +2954,8 @@ impl UiBridge {
         }
         self.handle_media_commands();
         self.synchronize_after_folder_changes();
+        self.collect_analyses();
+        self.collect_artist_photos();
         // Dropped files wait for an import in progress to finish.
         if !self.is_importing.get() && !self.dropped_paths.borrow().is_empty() {
             let paths = std::mem::take(&mut *self.dropped_paths.borrow_mut());
@@ -2807,9 +3182,11 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
     for track in snapshot.tracks {
         let key = AlbumKey::of(&track);
         let index = *positions.entry(key.clone()).or_insert_with(|| {
+            let artists = crate::album_artists::split(&track.artist);
             albums.push(Album {
                 title: track.album.clone(),
-                artist: track.artist.clone(),
+                artist: crate::album_artists::display(&artists),
+                artists,
                 tag_title: track.album.clone(),
                 tag_artist: track.artist.clone(),
                 key,
@@ -2835,7 +3212,8 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
                 album.title = title.clone();
             }
             if let Some(artist) = &text.artist {
-                album.artist = artist.clone();
+                album.artists = crate::album_artists::split(artist);
+                album.artist = crate::album_artists::display(&album.artists);
             }
         }
         let custom = snapshot.artwork_overrides.get(&album.key);
@@ -2851,7 +3229,7 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
 fn sort_keys_of(album: &Album) -> crate::album_sort::AlbumSortKeys {
     let tag = |pick: fn(&MusicFile) -> Option<&String>| album.tracks.iter().find_map(pick).cloned();
     let is_title_edited = album.title != album.tag_title;
-    let is_artist_edited = album.artist != album.tag_artist;
+    let is_artist_edited = album.artists != crate::album_artists::split(&album.tag_artist);
     crate::album_sort::AlbumSortKeys {
         title: tag(|track| track.sort_album.as_ref())
             .filter(|_| !is_title_edited)
@@ -2929,9 +3307,26 @@ fn reveal_in_file_manager(path: &std::path::Path) {
     let _ = command.spawn();
 }
 
+/// Opens `url` in the default browser. Best effort, like revealing a file.
+fn open_in_browser(url: &str) {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let _ = command.arg(url).spawn();
+}
+
 /// Artist cards from the albums: one per album artist (as displayed), natural order, with the
 /// cover of their newest album that has one.
-fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
+fn artist_cards(
+    albums: &[Album],
+    photos: &std::collections::HashMap<String, slint::Image>,
+) -> Vec<ArtistCard> {
     struct ArtistEntry {
         album_count: usize,
         newest_year: Option<u32>,
@@ -2939,12 +3334,12 @@ fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
     }
     let mut by_artist: std::collections::HashMap<&str, ArtistEntry> =
         std::collections::HashMap::new();
-    for album in albums
+    for (album, artist) in albums
         .iter()
-        .filter(|album| !album.artist.trim().is_empty())
+        .flat_map(|album| album.artists.iter().map(move |artist| (album, artist)))
     {
         let entry = by_artist
-            .entry(album.artist.as_str())
+            .entry(artist.as_str())
             .or_insert_with(|| ArtistEntry {
                 album_count: 0,
                 newest_year: None,
@@ -2971,7 +3366,7 @@ fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
                 if entry.album_count == 1 { "" } else { "s" }
             )
             .into(),
-            artwork: entry.artwork,
+            artwork: photos.get(name).cloned().unwrap_or(entry.artwork),
         })
         .collect()
 }

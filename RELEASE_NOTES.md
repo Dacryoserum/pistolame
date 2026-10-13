@@ -1,31 +1,31 @@
-# Pistolame 0.2.0
+# Pistolame 0.3.0
 
-A complete library, and the player now fits into daily use.
+Is this file really what it claims to be? Pistolame now answers on the current-track page.
 
-- **Browse your music your way**: an Artists view (round covers, one click for an artist's
-  albums), a Tracks view (the whole library in a table sorted by any column), and *Ajouts
-  récents* with the albums added and played last.
-- **Sorted album grid**: by title, artist then year, year, recently added or recently played.
-  Titles sort naturally ("Season 2" before "Season 10"). Years and "Disque 1 / Disque 2"
-  headings on album pages.
-- **Search** finds tracks as well as albums (accents ignored).
-- **Favorites**: "Ajouter aux favoris" from any track menu, a heart on favorite tracks, and a
-  *Favoris* filter in the Tracks view. Track menus also offer "Aller à l'album" and "Aller à
-  l'artiste", and "Afficher dans le Finder / l'Explorateur".
-- **Media keys and Now Playing** on macOS, Windows and Linux (MPRIS).
-- **Picks up where you left off**: the app reopens on the last track and queue, paused at the
-  same position. It never starts playing on its own.
-- **Keyboard shortcuts**, listed on the new *Réglages* page (output, library folders, rescan,
-  shortcuts, updates).
-- **Drop files or folders** on the window to add them, and library folders are watched: new
-  music appears without restarting.
-- **Playlists**: export to M3U.
-- **Windows**: the shared-mode volume (dB slider, mute) now works.
+- **Authenticity**, with the analysis engine of Nyquist (same author): a four-state verdict on
+  lossy-to-lossless transcodes, always with its evidence, plus padded bit depth ("24-bit"
+  files holding 16-bit audio), limited bandwidth, clipping, DR, loudness (LUFS), true peak and
+  a spectrogram. "Indéterminé" is the honest default: nothing is claimed without evidence. For
+  the full report, open the file in Nyquist.
+- **A cleaner current-track page**: the track, then every fact about its file (format,
+  resolution, rate, bitrate, size, channels, samples, MD5, path), then the signal path,
+  authenticity and spectrogram as you scroll.
+- **Several artists per album**: a "Various Artists" compilation can list its real artists
+  (suggested from its tracks) and shows up under each of them.
+- **Artist photos** in the Artists view, found on Deezer (only artist names are sent) and kept
+  in the library. Can be turned off in Réglages.
 
-Known limits: no gapless playback, authenticity analysis or spectrograms yet; Linux has no
-audio backend. Windows builds are unsigned: SmartScreen may show "Unknown publisher".
+Known limits: no gapless playback yet; Linux has no audio backend. Windows builds are unsigned.
 
 # Changelog
+
+## 0.3.0
+
+### Features
+- authenticity analysis ported from Nyquist: transcode verdict with evidence, padded bit depth, limited bandwidth, dynamics, loudness and spectrogram
+- redesigned current-track page: file information, then signal path, authenticity and spectrogram
+- several artists per album, with track artists suggested
+- artist photos from Deezer, cached in the library (can be turned off)
 
 ## 0.2.0
 

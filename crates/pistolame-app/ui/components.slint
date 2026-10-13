@@ -1765,6 +1765,28 @@ export component OutputSettings inherits Rectangle {
                 text: "Retirer un dossier l’enlève de Pistolame ; vos fichiers ne sont jamais supprimés.";
                 color: Tokens.text-tertiary;
             }
+            SettingsCard {
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Txt { role: TextRole.headline; text: "Photos d’artistes"; }
+                        Txt {
+                            role: TextRole.callout;
+                            text: "Cherche la photo de chaque artiste sur Deezer. Seuls les noms d’artistes sont envoyés ; les photos sont gardées dans la bibliothèque.";
+                            color: Tokens.text-secondary;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
+                    }
+                    Switch {
+                        checked: AppState.are-artist-photos-on;
+                        accessible-label: "Photos d’artistes";
+                        toggled => { AppState.set-artist-photos(self.checked); }
+                    }
+                }
+            }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "Raccourcis clavier"; height: 32px; vertical-alignment: center; }
             SettingsCard {
@@ -1817,48 +1839,194 @@ export component OutputSettings inherits Rectangle {
     }
 }
 
-// The current track follows playback independently of the album being browsed.
+// Label/value cells in `columns` columns (file information, measurements).
+component InfoGrid inherits Rectangle {
+    in property <[DataCell]> cells;
+    in property <int> columns: 3;
+    property <length> cell-width: root.width / root.columns;
+    height: Math.ceil(root.cells.length / root.columns) * 52px;
+    for cell[index] in root.cells: Rectangle {
+        x: Math.mod(index, root.columns) * root.cell-width;
+        y: Math.floor(index / root.columns) * 52px;
+        width: root.cell-width;
+        height: 52px;
+        Txt { x: 14px; y: 8px; width: parent.width - 28px; role: TextRole.caption; text: cell.label; color: Tokens.text-secondary; overflow: elide; }
+        Txt { x: 14px; y: 24px; width: parent.width - 28px; role: TextRole.body-medium; text: cell.value; overflow: elide; }
+    }
+}
+
+// The verdict pill: neutral, good (green) or warning (amber).
+component VerdictPill inherits Rectangle {
+    in property <string> label;
+    in property <int> tone;
+    height: 28px;
+    width: verdict-label.preferred-width + 28px;
+    border-radius: 14px;
+    background: root.tone == 1 ? Tokens.status-ok-tint : root.tone == 2 ? Tokens.status-caution-tint : Tokens.fill-control;
+    verdict-label := Txt {
+        x: 14px;
+        height: parent.height;
+        vertical-alignment: center;
+        role: TextRole.body-medium;
+        text: root.label;
+        color: root.tone == 1 ? Tokens.status-ok : root.tone == 2 ? Tokens.status-caution : Tokens.text-primary;
+    }
+}
+
+// The current track follows playback independently of the album being browsed. Top: the
+// track and everything about its file; scrolling down: signal path, authenticity (Nyquist's
+// analysis) and spectrogram.
 export component NowPlaying inherits Rectangle {
     ScrollView {
-        content-width: root.width;
-        content-height: 800px;
-        IconButton {
-            x: 26px; y: 16px; width: 28px; height: 28px;
-            icon: Icons.caret-left; icon-color: Tokens.accent;
-            label: "Retour à la vue précédente";
-            clicked => { AppState.go-back(); }
+        VerticalLayout {
+            alignment: start;
+            padding-left: 32px;
+            padding-right: 52px;
+            padding-top: 16px;
+            padding-bottom: 32px;
+            spacing: 14px;
+            HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                alignment: start;
+                IconButton {
+                    width: 28px; height: 28px;
+                    icon: Icons.caret-left; icon-color: Tokens.accent;
+                    label: "Retour à la vue précédente";
+                    clicked => { AppState.go-back(); }
+                }
+                Txt { height: 28px; vertical-alignment: center; text: "À l'écoute"; color: Tokens.text-secondary; }
+            }
+            // Track header.
+            HorizontalLayout {
+                spacing: 28px;
+                height: 220px;
+                Artwork { width: 220px; height: 220px; source: AppState.lcd-artwork; }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Txt { role: TextRole.label; text: "MORCEAU EN COURS"; color: Tokens.text-secondary; }
+                    Txt { role: TextRole.display; text: AppState.lcd-title; overflow: elide; }
+                    Txt { role: TextRole.title-2; text: AppState.current-artist; color: Tokens.accent; overflow: elide; }
+                    Txt { text: AppState.current-album; color: Tokens.text-secondary; overflow: elide; }
+                    Rectangle { height: 8px; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        PillButton {
+                            label: AppState.is-playing ? "Pause" : "Lecture";
+                            icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill; is-primary: true;
+                            clicked => { AppState.toggle-play(); }
+                        }
+                        PillButton { label: "Voir l'album"; icon: Icons.vinyl-record; clicked => { AppState.open-current-album(); } }
+                    }
+                    Txt { role: TextRole.caption; text: AppState.elapsed-label + " / " + AppState.current-duration; color: Tokens.text-secondary; }
+                }
+            }
+            // File information.
+            Txt { role: TextRole.title-3; text: "Informations sur le fichier"; height: 32px; vertical-alignment: bottom; }
+            SettingsCard {
+                height: info-grid.height + path-row.height + 12px;
+                info-grid := InfoGrid { y: 6px; cells: AppState.track-info-cells; columns: 4; }
+                path-row := Rectangle {
+                    y: info-grid.height + 6px;
+                    height: 40px;
+                    Rectangle { x: 14px; y: 0px; width: parent.width - 28px; height: 1px; background: Tokens.separator; }
+                    Txt { x: 14px; width: parent.width - 28px - 200px; height: parent.height; vertical-alignment: center; role: TextRole.caption; text: AppState.current-path; color: Tokens.text-secondary; overflow: elide; }
+                    Txt {
+                        x: parent.width - 14px - self.width; height: parent.height; vertical-alignment: center;
+                        role: TextRole.callout-medium; text: AppState.reveal-label; color: Tokens.accent;
+                        TouchArea { mouse-cursor: pointer; clicked => { AppState.reveal-current-track(); } }
+                    }
+                }
+            }
+            // Signal path.
+            Txt { role: TextRole.title-3; text: "Chemin du signal"; height: 40px; vertical-alignment: bottom; }
+            SettingsCard {
+                height: 236px;
+                Badge {
+                    x: 14px; y: 14px; label: AppState.badge-label;
+                    kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
+                }
+                SignalPath { x: 14px; y: 54px; width: 360px; steps: AppState.path-steps; }
+                Txt { x: 410px; y: 14px; role: TextRole.headline; text: "Vérification"; }
+                Text { x: 410px; y: 40px; width: parent.width - 424px; height: 54px; text: AppState.transmission-text; wrap: word-wrap; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
+                Text { x: 410px; y: 98px; width: parent.width - 424px; height: 54px; text: AppState.integrity-text; wrap: word-wrap; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
+                Txt { x: 410px; y: 158px; width: parent.width - 424px; role: TextRole.caption; text: AppState.underrun-label; color: Tokens.text-secondary; }
+                PillButton { x: 410px; y: 186px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
+            }
+            // Authenticity (Nyquist).
+            Txt { role: TextRole.title-3; text: "Authenticité"; height: 40px; vertical-alignment: bottom; }
+            if AppState.authenticity-state != 2: SettingsCard {
+                height: 64px;
+                Txt {
+                    x: 14px; width: parent.width - 28px; y: (parent.height - self.height) / 2;
+                    text: AppState.authenticity-state == 1 ? "Analyse du fichier en cours…" : AppState.authenticity-state == 3 ? "Analyse impossible : " + AppState.authenticity-error : "Lancez un morceau pour analyser son fichier.";
+                    color: Tokens.text-secondary;
+                    wrap: word-wrap; height: self.preferred-height; overflow: clip;
+                }
+            }
+            if AppState.authenticity-state == 2: SettingsCard {
+                height: authenticity-layout.preferred-height;
+                authenticity-layout := VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        height: 28px;
+                        VerdictPill { label: AppState.authenticity-verdict; tone: AppState.authenticity-tone; }
+                        Txt { height: 28px; vertical-alignment: center; role: TextRole.callout; text: AppState.authenticity-strength; color: Tokens.text-secondary; }
+                    }
+                    Txt { text: AppState.authenticity-blurb; wrap: word-wrap; height: self.preferred-height; overflow: clip; color: Tokens.text-secondary; }
+                    for finding in AppState.authenticity-findings: VerticalLayout {
+                        spacing: 2px;
+                        Txt { role: TextRole.body-medium; text: finding.label; color: Tokens.status-caution; wrap: word-wrap; height: self.preferred-height; overflow: clip; }
+                        Txt { role: TextRole.callout; text: finding.value; color: Tokens.text-secondary; wrap: word-wrap; height: self.preferred-height; overflow: clip; }
+                    }
+                    Rectangle { height: 1px; background: Tokens.separator; }
+                    InfoGrid { cells: AppState.authenticity-measures; columns: 4; }
+                    Rectangle { height: 1px; background: Tokens.separator; }
+                    Txt { role: TextRole.headline; text: "Indices"; }
+                    for indicator in AppState.authenticity-indicators: HorizontalLayout {
+                        spacing: 8px;
+                        Txt { width: 10px; text: "•"; color: Tokens.text-tertiary; }
+                        Txt { role: TextRole.callout; text: indicator; wrap: word-wrap; height: self.preferred-height; overflow: clip; color: Tokens.text-secondary; }
+                    }
+                    Rectangle { height: 2px; }
+                    Txt { role: TextRole.caption; text: AppState.authenticity-disclaimer; wrap: word-wrap; height: self.preferred-height; overflow: clip; color: Tokens.text-tertiary; }
+                }
+            }
+            // Spectrogram.
+            if AppState.has-spectrogram: Txt { role: TextRole.title-3; text: "Spectrogramme"; height: 40px; vertical-alignment: bottom; }
+            if AppState.has-spectrogram: Rectangle {
+                height: 280px;
+                Txt { x: 0px; y: 0px; width: 52px; role: TextRole.caption; text: AppState.spectrogram-top-label; color: Tokens.text-secondary; }
+                Txt { x: 0px; y: (240px - 14px) / 2; width: 52px; role: TextRole.caption; text: AppState.spectrogram-middle-label; color: Tokens.text-secondary; }
+                Txt { x: 0px; y: 240px - 14px; width: 52px; role: TextRole.caption; text: "0 kHz"; color: Tokens.text-secondary; }
+                Rectangle {
+                    x: 56px; y: 0px; width: parent.width - 56px; height: 240px;
+                    border-radius: 6px;
+                    clip: true;
+                    background: #000004;
+                    Image { width: parent.width; height: parent.height; source: AppState.spectrogram; image-fit: fill; }
+                }
+                Txt { x: 56px; y: 248px; role: TextRole.caption; text: "0:00"; color: Tokens.text-secondary; }
+                Txt { x: parent.width - 120px; y: 248px; width: 120px; horizontal-alignment: right; role: TextRole.caption; text: AppState.spectrogram-end-label; color: Tokens.text-secondary; }
+            }
+            // Pointer to the full tool.
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                Txt { role: TextRole.caption; text: AppState.nyquist-note; wrap: word-wrap; height: self.preferred-height; overflow: clip; color: Tokens.text-tertiary; }
+            }
+            Txt {
+                role: TextRole.caption;
+                text: "Découvrir Nyquist →";
+                color: Tokens.accent;
+                TouchArea { mouse-cursor: pointer; clicked => { AppState.open-nyquist(); } }
+            }
         }
-        Txt { x: 60px; y: 22px; text: "À l'écoute"; color: Tokens.text-secondary; }
-        Artwork { x: 32px; y: 60px; width: 300px; height: 300px; source: AppState.lcd-artwork; }
-        Txt { x: 368px; y: 76px; width: root.width - 400px; role: TextRole.label; text: "MORCEAU EN COURS"; color: Tokens.text-secondary; }
-        Txt { x: 368px; y: 108px; width: root.width - 400px; role: TextRole.display; text: AppState.lcd-title; }
-        Txt { x: 368px; y: 154px; width: root.width - 400px; role: TextRole.title-2; text: AppState.current-artist; color: Tokens.accent; }
-        Txt { x: 368px; y: 194px; width: root.width - 400px; text: AppState.current-album; color: Tokens.text-secondary; }
-        Txt { x: 368px; y: 228px; width: root.width - 400px; role: TextRole.callout; text: AppState.current-format + " · " + AppState.current-duration; color: Tokens.text-secondary; }
-        PillButton {
-            x: 368px; y: 272px; label: AppState.is-playing ? "Pause" : "Lecture";
-            icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill; is-primary: true;
-            clicked => { AppState.toggle-play(); }
-        }
-        PillButton {
-            x: 492px; y: 272px; label: "Voir l'album"; icon: Icons.vinyl-record;
-            clicked => { AppState.open-current-album(); }
-        }
-        Txt { x: 368px; y: 328px; width: root.width - 400px; role: TextRole.caption; text: AppState.elapsed-label + " / " + AppState.current-duration; color: Tokens.text-secondary; }
-        Rectangle { x: 32px; y: 400px; width: root.width - 64px; height: 1px; background: Tokens.separator; }
-        Txt { x: 32px; y: 425px; role: TextRole.title-3; text: "Chemin du signal"; }
-        Badge {
-            x: 32px; y: 461px; label: AppState.badge-label;
-            kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
-        }
-        SignalPath { x: 32px; y: 504px; width: 360px; steps: AppState.path-steps; }
-        Txt { x: 440px; y: 425px; role: TextRole.title-3; text: "Vérification"; }
-        Text { x: 440px; y: 466px; width: root.width - 472px; height: 54px; text: AppState.transmission-text; wrap: word-wrap; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
-        Text { x: 440px; y: 526px; width: root.width - 472px; height: 54px; text: AppState.integrity-text; wrap: word-wrap; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
-        Txt { x: 440px; y: 592px; width: root.width - 472px; role: TextRole.caption; text: AppState.underrun-label; color: Tokens.text-secondary; }
-        PillButton { x: 440px; y: 628px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
-        Txt { x: 32px; y: 710px; role: TextRole.caption; text: "FICHIER SOURCE"; color: Tokens.text-secondary; }
-        Txt { x: 32px; y: 734px; width: root.width - 64px; text: AppState.current-filename; color: Tokens.text-secondary; }
     }
 }
 
@@ -1893,8 +2061,9 @@ export component LabeledField inherits VerticalLayout {
 
 // "Modifier l'album": what the app shows for an album. The music files are never modified.
 export component AlbumEditor inherits Rectangle {
-    width: 460px;
-    height: 360px;
+    width: 500px;
+    // Grows with the artists list; the cover column needs at least 360px.
+    height: max(360px, 64px + fields.preferred-height + 24px + 64px);
     border-radius: 12px;
     background: Tokens.surface-raised;
     border-width: 1px;
@@ -1926,15 +2095,68 @@ export component AlbumEditor inherits Rectangle {
             clicked => { AppState.editor-reset-artwork(); }
         }
     }
-    VerticalLayout {
+    fields := VerticalLayout {
         x: 180px; y: 64px; width: root.width - 204px;
-        spacing: 14px;
+        spacing: 10px;
         alignment: start;
         LabeledField { caption: "TITRE"; text <=> AppState.editor-title; }
-        LabeledField { caption: "ARTISTE"; text <=> AppState.editor-artist; }
+        Txt { role: TextRole.label; text: "ARTISTES"; color: Tokens.text-secondary; }
+        for artist[index] in AppState.editor-artists: Rectangle {
+            height: 28px;
+            border-radius: 7px;
+            background: Tokens.fill-control;
+            Txt { x: 10px; width: parent.width - 44px; height: parent.height; text: artist; overflow: elide; }
+            IconButton {
+                x: parent.width - 28px; y: 2px; width: 24px; height: 24px;
+                icon: Icons.x; icon-size: 12px; icon-color: Tokens.text-secondary;
+                label: "Retirer " + artist;
+                clicked => { AppState.editor-remove-artist(index); }
+            }
+        }
+        HorizontalLayout {
+            height: 30px;
+            spacing: 8px;
+            Rectangle {
+                border-radius: 7px;
+                background: Tokens.surface-field;
+                border-width: new-artist.has-focus ? 2px : 0px;
+                border-color: Tokens.focus-ring;
+                Txt {
+                    x: 10px; width: parent.width - 20px; height: parent.height;
+                    text: "Ajouter un artiste"; color: Tokens.text-tertiary;
+                    visible: new-artist.text == "";
+                }
+                new-artist := TextInput {
+                    x: 10px; width: parent.width - 20px; height: parent.height;
+                    single-line: true;
+                    vertical-alignment: center;
+                    font-family: "Inter";
+                    font-size: 13px;
+                    color: Tokens.text-primary;
+                    selection-background-color: Tokens.accent.with-alpha(0.35);
+                    selection-foreground-color: Tokens.text-primary;
+                    accessible-label: "Ajouter un artiste";
+                    text <=> AppState.editor-new-artist;
+                    accepted => { AppState.editor-add-artist(); }
+                }
+            }
+            PillButton { width: 96px; label: "Ajouter"; icon: Icons.plus; clicked => { AppState.editor-add-artist(); } }
+        }
+        if AppState.editor-suggested-artists.length > 0: Txt { role: TextRole.label; text: "DANS LES MORCEAUX"; color: Tokens.text-secondary; }
+        if AppState.editor-suggested-artists.length > 0: ListView {
+            height: min(AppState.editor-suggested-artists.length * 26px, 130px);
+            for suggestion[index] in AppState.editor-suggested-artists: Rectangle {
+                height: 26px;
+                border-radius: 6px;
+                background: suggestion-touch.has-hover ? Tokens.fill-row-hover : transparent;
+                Icon { x: 8px; y: 7px; width: 12px; height: 12px; source: Icons.plus; colorize: Tokens.accent; }
+                Txt { x: 28px; width: parent.width - 36px; height: parent.height; role: TextRole.callout; text: suggestion; overflow: elide; }
+                suggestion-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.editor-add-suggested-artist(index); } }
+            }
+        }
         Txt {
             role: TextRole.caption;
-            text: "Vos fichiers ne sont pas modifiés. Laissez un champ vide pour revenir aux informations des fichiers.";
+            text: "Vos fichiers ne sont pas modifiés. Un album à plusieurs artistes apparaît sous chacun d’eux. Sans titre ni artiste, l’album reprend les informations des fichiers.";
             color: Tokens.text-tertiary;
             wrap: word-wrap;
             height: self.preferred-height;

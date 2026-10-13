@@ -2,7 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use slint::ComponentHandle;
+mod album_artists;
 mod album_sort;
+mod analysis_worker;
+mod artist_photos;
+mod authenticity;
 mod file_drop;
 mod m3u;
 mod media_controls;
@@ -40,14 +44,30 @@ fn main() -> anyhow::Result<()> {
     // Shows the stored library, then rescans it; paths given on the command line are added.
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
-    // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…) to check a
+    // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…, -1 = the
+    // current track, -2 = the first album's editor) to check a
     // screen without clicking through the app.
     #[cfg(debug_assertions)]
     if let Some(item) = std::env::var("PISTOLAME_DEBUG_START_ITEM")
         .ok()
         .and_then(|item| item.parse::<i32>().ok())
     {
-        window.global::<AppState>().invoke_select_item(item);
+        if item < 0 {
+            // Once the library (and the restored session) is shown.
+            let weak = window.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(3), move || {
+                if let Some(window) = weak.upgrade() {
+                    let state = window.global::<AppState>();
+                    if item == -2 {
+                        state.invoke_begin_album_edit(0);
+                    } else {
+                        state.invoke_show_now_playing();
+                    }
+                }
+            });
+        } else {
+            window.global::<AppState>().invoke_select_item(item);
+        }
     }
     let timer = slint::Timer::default();
     let ticking_bridge = bridge.clone();

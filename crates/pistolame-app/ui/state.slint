@@ -167,7 +167,13 @@ export global AppState {
     // library; the music files are never modified.
     in-out property <bool> is-album-editor-open;
     in-out property <string> editor-title;
-    in-out property <string> editor-artist;
+    // The album's artists in the editor, and the track artists not yet among them.
+    in property <[string]> editor-artists;
+    in property <[string]> editor-suggested-artists;
+    in-out property <string> editor-new-artist;
+    callback editor-add-artist();
+    callback editor-add-suggested-artist(int);
+    callback editor-remove-artist(int);
     in property <image> editor-artwork;
     in property <bool> editor-has-custom-artwork;
     // Playlists (stored in the library).
@@ -236,12 +242,38 @@ export global AppState {
     in property <[AlbumCard]> recently-added-albums;
     in property <[AlbumCard]> recently-played-albums;
     callback open-artist(int);
+    // Artist photos looked up online (Réglages).
+    in property <bool> are-artist-photos-on: true;
+    callback set-artist-photos(bool);
     // "Morceaux" table: every track, sorted by one column (index in display order).
     in property <[LibraryTrackRow]> library-tracks;
     in property <string> current-track-path;
     in property <int> track-sort-column;
     in property <bool> is-track-sort-descending;
     callback sort-tracks(int);
+    // Current-track page: the file's facts, then Nyquist's authenticity analysis.
+    in property <[DataCell]> track-info-cells;
+    in property <string> current-path;
+    callback reveal-current-track();
+    // 0 nothing analyzed, 1 running, 2 ready, 3 failed (`authenticity-error` says why).
+    in property <int> authenticity-state;
+    in property <string> authenticity-error;
+    in property <string> authenticity-verdict;
+    // 0 neutral, 1 good, 2 warning.
+    in property <int> authenticity-tone;
+    in property <string> authenticity-blurb;
+    in property <string> authenticity-strength;
+    in property <[DataCell]> authenticity-findings;
+    in property <[DataCell]> authenticity-measures;
+    in property <[string]> authenticity-indicators;
+    in property <string> authenticity-disclaimer;
+    in property <bool> has-spectrogram;
+    in property <image> spectrogram;
+    in property <string> spectrogram-top-label;
+    in property <string> spectrogram-middle-label;
+    in property <string> spectrogram-end-label;
+    in property <string> nyquist-note;
+    callback open-nyquist();
     // Files are dragged over the window: show the "Déposez…" veil.
     in property <bool> is-drop-hovering;
     // "Favoris" filter of the table.

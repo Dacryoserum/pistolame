@@ -19,6 +19,7 @@ const EXCLUSIVE_MODE_NOTICE_SEEN_KEY: &str = "exclusive_mode_notice_seen";
 const SHARED_VOLUME_DECIBELS_KEY: &str = "shared_volume_db";
 const SHARED_VOLUME_MUTED_KEY: &str = "shared_volume_muted";
 const ALBUM_SORT_KEY: &str = "album_sort";
+const ARTIST_PHOTOS_KEY: &str = "artist_photos";
 /// Volume is stored in tenths of a decibel, so the settings stay exact integers.
 const TENTHS_PER_DECIBEL: f32 = 10.0;
 
@@ -62,6 +63,9 @@ pub struct AppSettings {
     pub is_shared_volume_muted: bool,
     /// Order of the album grid (`AlbumSort::key`), `None` for the default.
     pub album_sort: Option<String>,
+    /// Whether the user turned off artist photos (looked up online by artist name; on by
+    /// default).
+    pub are_artist_photos_off: bool,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
 }
@@ -192,6 +196,9 @@ impl AppSettings {
         if let Some(sort) = &self.album_sort {
             push_entry(&mut text, ALBUM_SORT_KEY, sort)?;
         }
+        if self.are_artist_photos_off {
+            push_entry(&mut text, ARTIST_PHOTOS_KEY, FALSE_VALUE)?;
+        }
         Ok(text)
     }
 
@@ -264,6 +271,9 @@ impl AppSettings {
             settings.album_sort = Some((*value).to_owned());
         }
 
+        if let Some(value) = entries.get(ARTIST_PHOTOS_KEY) {
+            settings.are_artist_photos_off = *value == FALSE_VALUE;
+        }
         settings.load_problem = first_problem;
         settings
     }
@@ -371,6 +381,7 @@ mod tests {
             shared_volume_tenths_of_decibel: -60,
             is_shared_volume_muted: false,
             album_sort: Some("year".to_owned()),
+            are_artist_photos_off: true,
             load_problem: None,
         };
         saved.save_to(&path).unwrap();

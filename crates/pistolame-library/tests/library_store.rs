@@ -328,3 +328,26 @@ fn favorites_survive_reopening_and_can_be_removed() {
     reopened.set_favorite(&library.track(2), false).unwrap();
     assert_eq!(reopened.favorites().unwrap(), vec![library.track(1)]);
 }
+
+#[test]
+fn artist_photos_are_kept_and_lookups_are_not_repeated() {
+    let library = TestLibrary::new("artist-images", 1);
+    let mut store = library.open();
+    let artists = vec!["Howard Shore".to_owned(), "Unknown".to_owned()];
+    assert_eq!(store.artists_to_look_up(&artists, 3600).unwrap(), artists);
+    store
+        .set_artist_image("Howard Shore", Some(&[1, 2, 3]))
+        .unwrap();
+    store.set_artist_image("Unknown", None).unwrap();
+    // Found: never again. Not found: only once the retry delay has passed.
+    assert!(store.artists_to_look_up(&artists, 3600).unwrap().is_empty());
+    assert_eq!(
+        store.artists_to_look_up(&artists, 0).unwrap(),
+        vec!["Unknown".to_owned()]
+    );
+    drop(store);
+    let reopened = library.open();
+    let images = reopened.snapshot().unwrap().artist_images;
+    assert_eq!(images.len(), 1);
+    assert_eq!(&*images["Howard Shore"], &[1, 2, 3]);
+}

@@ -34,6 +34,12 @@ download is verified against an ed25519 signature before anything is replaced.
 - **Output**: choose the device and the mode. Exclusive mode holds the device at the file's
   format; the volume is then set on your DAC. Shared mode offers a volume in decibels (0 to
   -60 dB) applied before the system mixer.
+- **Authenticity**: the current-track page analyzes the file with the engine of
+  [Nyquist](https://github.com/Dacryoserum/nyquist) (same author, MIT): a four-state transcode
+  verdict with its evidence, padded bit depth, limited bandwidth, DR, loudness, true peak and a
+  spectrogram. "Indeterminate" is the honest default; nothing is claimed without evidence.
+- **Artists**: albums can have several artists; artist photos come from Deezer's public API
+  (only artist names are sent; it can be turned off in Réglages).
 - **Proof**: the quality badge describes the real audio path (Bit-perfect, Exclusif, Mode
   partagé); hover it for details, click it for the signal path and two independent checks:
   decoded samples versus the device buffer, and decoded samples versus the FLAC's stored MD5.
@@ -53,8 +59,7 @@ page: Space toggles playback, Cmd/Ctrl+arrows change track or volume, Cmd/Ctrl+F
 Cmd/Ctrl+1 to 4 switch views, Escape goes back. Click the quality badge or output icon to see
 verification details. Seek by releasing the pointer on the position bar.
 
-Views whose backend is not implemented (authenticity, spectrograms) show an unavailable state;
-authenticity reports never use simulated results.
+Authenticity reports always come from a real analysis of the file, never simulated results.
 
 Click the title in the central display to open the current track page. It follows playback,
 shows artwork, metadata and the two real verification results, and returns to the previous view
@@ -62,7 +67,7 @@ with Back or Escape. The quality badge still opens the signal-path popover.
 
 ## Limits of 0.2.0
 
-No gapless playback, authenticity analysis or spectrograms yet; FLAC only, up to 24 significant
+No gapless playback yet; FLAC only, up to 24 significant
 bits. Hardware acceptance on the reference DAC and screen-reader testing are still pending.
 
 ## Development
