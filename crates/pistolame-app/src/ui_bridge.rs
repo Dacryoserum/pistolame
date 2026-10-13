@@ -1110,8 +1110,18 @@ impl UiBridge {
         else {
             return;
         };
+        self.open_artist_named(&artist.name);
+    }
+
+    /// Shows the albums of `artist` (an album artist, as displayed) in the grid.
+    fn open_artist_named(&self, artist: &str) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_is_popover_open(false);
         state.set_query("".into());
-        state.set_artist_filter(artist.name.clone());
+        state.set_artist_filter(artist.into());
         state.set_selected_item(2);
         state.set_grid_scroll_y(0.0);
         state.set_view(ViewKind::Grid);
@@ -1490,6 +1500,29 @@ impl UiBridge {
                 }
             }
             TrackAction::ToggleFavorite => self.toggle_favorite(&paths, &subject),
+            TrackAction::GoToAlbum | TrackAction::GoToArtist => {
+                let Some((album_index, _)) =
+                    paths.first().and_then(|path| self.track_location(path))
+                else {
+                    return;
+                };
+                if action == TrackAction::GoToAlbum {
+                    if let Some(window) = self.window.upgrade() {
+                        window
+                            .global::<AppState>()
+                            .invoke_show_album(album_index as i32);
+                    }
+                } else {
+                    let artist = self
+                        .albums
+                        .borrow()
+                        .get(album_index)
+                        .map(|album| album.artist.clone());
+                    if let Some(artist) = artist {
+                        self.open_artist_named(&artist);
+                    }
+                }
+            }
             TrackAction::RemoveFromPlaylist => {}
         }
     }

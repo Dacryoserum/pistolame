@@ -429,6 +429,8 @@ export component ActionMenuButton inherits Rectangle {
     // Track menus offer the favorite toggle; album and playlist menus do not.
     in property <bool> can-favorite;
     in property <bool> is-favorite;
+    // "Aller à l’album" makes no sense inside that album's own page.
+    in property <bool> can-go-to-album;
     in property <color> icon-color: Tokens.text-secondary;
     callback action(TrackAction);
     width: 28px;
@@ -464,6 +466,14 @@ export component ActionMenuButton inherits Rectangle {
                     label: root.is-favorite ? "Retirer des favoris" : "Ajouter aux favoris";
                     clicked => { root.action(TrackAction.toggle-favorite); }
                 }
+                if root.can-go-to-album: MenuRow {
+                    icon: Icons.vinyl-record; label: "Aller à l’album";
+                    clicked => { root.action(TrackAction.go-to-album); }
+                }
+                if root.can-favorite: MenuRow {
+                    icon: Icons.microphone-stage; label: "Aller à l’artiste";
+                    clicked => { root.action(TrackAction.go-to-artist); }
+                }
                 MenuRow { icon: Icons.magnifying-glass; label: AppState.reveal-label; clicked => { root.action(TrackAction.reveal-in-file-manager); } }
                 if root.can-remove: MenuRow {
                     icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
@@ -486,6 +496,7 @@ export component TrackRow inherits Rectangle {
     in property <bool> has-menu: true;
     in property <bool> can-remove;
     in property <bool> is-favorite;
+    in property <bool> can-go-to-album: true;
     in property <string> subtitle;
     callback clicked();
     callback action(TrackAction);
@@ -586,6 +597,7 @@ export component TrackRow inherits Rectangle {
         can-remove: root.can-remove;
         can-favorite: true;
         is-favorite: root.is-favorite;
+        can-go-to-album: root.can-go-to-album;
         opacity: root.has-menu && root.is-hovered ? 1 : 0;
         action(kind) => { root.action(kind); }
     }
@@ -1386,6 +1398,7 @@ export component AlbumDetail inherits Rectangle {
                 is-odd: Math.mod(track.track-index, 2) == 1;
                 is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == track.track-index;
                 is-favorite: track.is-favorite;
+                can-go-to-album: false;
                 clicked => {
                     AppState.play-track(AppState.detail-album-index, track.track-index);
                 }
@@ -2469,6 +2482,7 @@ component LibraryTrackLine inherits Rectangle {
         label: "Actions pour " + root.track.title;
         can-favorite: true;
         is-favorite: root.track.is-favorite;
+        can-go-to-album: true;
         opacity: root.is-hovered ? 1 : 0;
         action(kind) => { root.action(kind); }
     }
