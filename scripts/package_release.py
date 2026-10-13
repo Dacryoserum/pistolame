@@ -21,7 +21,10 @@ def main():
         raise SystemExit("Release tag must equal the Cargo workspace version")
     name = f"Pistolame-{version}-{args.platform}"
     folder = root / "target" / "packaging" / name
-    folder.mkdir(parents=True, exist_ok=False)
+    # A restored CI cache of `target/` can hold the previous run's folder: start clean.
+    if folder.exists():
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True)
     for source, destination in [
         ("LICENSE", "LICENSE"), ("README.md", "README.md"),
         ("RELEASE_NOTES.md", "RELEASE_NOTES.md"), ("CHANGELOG.md", "CHANGELOG.md"),
