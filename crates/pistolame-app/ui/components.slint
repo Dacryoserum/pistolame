@@ -1,6 +1,6 @@
 import { Switch, ScrollView, ListView } from "std-widgets.slint";
 import { Tokens } from "tokens.slint";
-import { AlbumCard, AppState, ArtistCard, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
+import { AlbumCard, AppState, ArtistCard, LibraryTrackRow, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
 
 export global Icons {
     out property <image> queue: @image-url("../assets/icons/queue.svg");
@@ -2277,6 +2277,8 @@ component ArtistTile inherits Rectangle {
     accessible-action-default => { root.open(); }
     // Round portrait (the newest album cover), as in Apple Music's artist list.
     Rectangle {
+        x: 0px;
+        y: 0px;
         width: root.tile;
         height: root.tile;
         border-radius: root.tile / 2;
@@ -2288,8 +2290,8 @@ component ArtistTile inherits Rectangle {
         Image { width: parent.width; height: parent.height; source: root.artist.artwork; image-fit: cover; }
         if touch.has-hover: Rectangle { background: Tokens.overlay-artwork-hover; }
     }
-    Txt { y: root.tile + 10px; width: root.tile; role: TextRole.body-medium; text: root.artist.name; horizontal-alignment: center; overflow: elide; }
-    Txt { y: root.tile + 28px; width: root.tile; role: TextRole.callout; text: root.artist.detail; color: Tokens.text-secondary; horizontal-alignment: center; }
+    Txt { x: 0px; y: root.tile + 10px; width: root.tile; role: TextRole.body-medium; text: root.artist.name; horizontal-alignment: center; overflow: elide; }
+    Txt { x: 0px; y: root.tile + 28px; width: root.tile; role: TextRole.callout; text: root.artist.detail; color: Tokens.text-secondary; horizontal-alignment: center; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
 }
 
@@ -2307,6 +2309,7 @@ export component ArtistsView inherits Rectangle {
             for column in root.columns: Rectangle {
                 if row-index * root.columns + column < AppState.artists.length: ArtistTile {
                     x: 32px + column * (root.tile + 24px);
+                    y: 0px;
                     tile: root.tile;
                     artist: AppState.artists[row-index * root.columns + column];
                     open => { AppState.open-artist(row-index * root.columns + column); }
@@ -2317,6 +2320,137 @@ export component ArtistsView inherits Rectangle {
     if AppState.artists.length == 0: Txt {
         y: 200px; width: root.width;
         text: "Aucun artiste : importez de la musique pour remplir cette vue.";
+        color: Tokens.text-secondary;
+        horizontal-alignment: center;
+    }
+}
+
+// Column geometry shared by the "Morceaux" header and rows. Title and album/artist share the
+// width left by the fixed columns.
+component TrackColumns {
+    in property <length> total-width;
+    out property <length> fixed-width: 56px + 128px + 56px + 32px + 3 * 16px;
+    out property <length> flexible-width: Math.max(0px, root.total-width - 12px - root.fixed-width - 3 * 16px);
+    out property <length> title-x: 12px;
+    out property <length> title-width: root.flexible-width * 0.4;
+    out property <length> artist-x: root.title-x + root.title-width + 16px;
+    out property <length> artist-width: root.flexible-width * 0.3;
+    out property <length> album-x: root.artist-x + root.artist-width + 16px;
+    out property <length> album-width: root.flexible-width * 0.3;
+    out property <length> year-x: root.album-x + root.album-width + 16px;
+    out property <length> format-x: root.year-x + 56px + 16px;
+    out property <length> duration-x: root.format-x + 128px + 16px;
+}
+
+component ColumnHeader inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-sorted;
+    in property <bool> is-descending;
+    in property <bool> is-right-aligned;
+    callback clicked();
+    height: 28px;
+    accessible-role: button;
+    accessible-label: "Trier par " + root.label;
+    Txt {
+        role: TextRole.label;
+        x: 0px;
+        width: root.width - (root.is-sorted ? 14px : 0px);
+        height: root.height;
+        vertical-alignment: center;
+        horizontal-alignment: root.is-right-aligned ? right : left;
+        text: root.label;
+        color: root.is-sorted ? Tokens.text-primary : Tokens.text-secondary;
+        overflow: elide;
+    }
+    if root.is-sorted: Image {
+        x: root.width - 10px;
+        y: (root.height - 10px) / 2;
+        width: 10px; height: 10px;
+        source: Icons.caret-left;
+        colorize: Tokens.accent;
+        transform-rotation: root.is-descending ? 270deg : 90deg;
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component LibraryTrackLine inherits Rectangle {
+    in property <LibraryTrackRow> track;
+    in property <length> title-x; in property <length> title-width;
+    in property <length> artist-x; in property <length> artist-width;
+    in property <length> album-x; in property <length> album-width;
+    in property <length> year-x; in property <length> format-x; in property <length> duration-x;
+    in property <bool> is-odd;
+    property <bool> is-current: root.track.path != "" && root.track.path == AppState.current-track-path;
+    property <bool> is-hovered: touch.has-hover || menu-button.has-hover;
+    callback clicked();
+    callback action(TrackAction);
+    height: 32px;
+    border-radius: 6px;
+    background: touch.pressed ? Tokens.fill-row-pressed : root.is-hovered ? Tokens.fill-row-hover : root.is-odd ? Tokens.fill-row-zebra : transparent;
+    accessible-role: button;
+    accessible-label: root.track.title + ", " + root.track.artist;
+    accessible-action-default => { root.clicked(); }
+    Txt {
+        role: root.is-current ? TextRole.body-medium : TextRole.body;
+        x: root.title-x; width: root.title-width; height: root.height; vertical-alignment: center;
+        text: root.track.title; overflow: elide;
+        color: root.is-current ? Tokens.accent : Tokens.text-primary;
+    }
+    Txt { x: root.artist-x; width: root.artist-width; height: root.height; vertical-alignment: center; text: root.track.artist; overflow: elide; color: Tokens.text-secondary; }
+    Txt { x: root.album-x; width: root.album-width; height: root.height; vertical-alignment: center; text: root.track.album; overflow: elide; color: Tokens.text-secondary; }
+    Txt { x: root.year-x; width: 56px; height: root.height; vertical-alignment: center; text: root.track.year; horizontal-alignment: right; color: Tokens.text-secondary; }
+    Txt { role: TextRole.caption; x: root.format-x; width: 128px; height: root.height; vertical-alignment: center; text: root.track.format-label; horizontal-alignment: right; color: Tokens.text-secondary; }
+    Txt { x: root.duration-x; width: 56px; height: root.height; vertical-alignment: center; text: root.track.duration-label; horizontal-alignment: right; color: Tokens.text-secondary; }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    menu-button := ActionMenuButton {
+        x: root.width - 8px - 28px;
+        y: 2px;
+        label: "Actions pour " + root.track.title;
+        opacity: root.is-hovered ? 1 : 0;
+        action(kind) => { root.action(kind); }
+    }
+}
+
+// "Morceaux": every track of the library in a table sorted by the clicked column.
+export component TracksView inherits Rectangle {
+    property <[string]> column-labels: ["Titre", "Artiste", "Album", "Année", "Format", "Durée"];
+    columns := TrackColumns { total-width: root.width - 64px; }
+    Txt { role: TextRole.display; x: 32px; y: 24px; width: root.width - 64px; text: "Morceaux"; }
+    Txt {
+        x: 32px; y: 58px; role: TextRole.callout; color: Tokens.text-secondary;
+        text: AppState.library-tracks.length + (AppState.library-tracks.length == 1 ? " morceau" : " morceaux");
+    }
+    Rectangle {
+        x: 32px; y: 84px; width: root.width - 64px; height: 28px;
+        ColumnHeader { x: columns.title-x; width: columns.title-width; label: root.column-labels[0]; is-sorted: AppState.track-sort-column == 0; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(0); } }
+        ColumnHeader { x: columns.artist-x; width: columns.artist-width; label: root.column-labels[1]; is-sorted: AppState.track-sort-column == 1; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(1); } }
+        ColumnHeader { x: columns.album-x; width: columns.album-width; label: root.column-labels[2]; is-sorted: AppState.track-sort-column == 2; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(2); } }
+        ColumnHeader { x: columns.year-x; width: 56px; is-right-aligned: true; label: root.column-labels[3]; is-sorted: AppState.track-sort-column == 3; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(3); } }
+        ColumnHeader { x: columns.format-x; width: 128px; is-right-aligned: true; label: root.column-labels[4]; is-sorted: AppState.track-sort-column == 4; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(4); } }
+        ColumnHeader { x: columns.duration-x; width: 56px; is-right-aligned: true; label: root.column-labels[5]; is-sorted: AppState.track-sort-column == 5; is-descending: AppState.is-track-sort-descending; clicked => { AppState.sort-tracks(5); } }
+        Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.separator; }
+    }
+    ListView {
+        x: 32px;
+        y: 116px;
+        width: root.width - 64px;
+        height: root.height - 116px;
+        for track[index] in AppState.library-tracks: LibraryTrackLine {
+            track: track;
+            is-odd: Math.mod(index, 2) == 1;
+            title-x: columns.title-x; title-width: columns.title-width;
+            artist-x: columns.artist-x; artist-width: columns.artist-width;
+            album-x: columns.album-x; album-width: columns.album-width;
+            year-x: columns.year-x; format-x: columns.format-x; duration-x: columns.duration-x;
+            clicked => { AppState.play-library-track(index); }
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.library-track, album: 0, track: 0, position: index }, kind);
+            }
+        }
+    }
+    if AppState.library-tracks.length == 0: Txt {
+        y: 200px; width: root.width;
+        text: "Aucun morceau : importez de la musique pour remplir cette vue.";
         color: Tokens.text-secondary;
         horizontal-alignment: center;
     }

@@ -47,6 +47,13 @@ mod tests {
                 }
             });
         }
+        // Sidebar item to show (1 = Artistes, 3 = Morceaux, 6 = Réglages…).
+        if let Some(item) = std::env::var("PISTOLAME_PREVIEW_ITEM")
+            .ok()
+            .and_then(|item| item.parse::<i32>().ok())
+        {
+            window.global::<AppState>().invoke_select_item(item);
+        }
         if std::env::var_os("PISTOLAME_PREVIEW_POPOVER").is_some() {
             window.global::<AppState>().set_is_popover_open(true);
         }

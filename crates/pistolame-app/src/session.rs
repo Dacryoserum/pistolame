@@ -2,7 +2,7 @@
 //! current track, so the app reopens where the user left. Restored *paused*: the app never
 //! plays sound on its own.
 //!
-//! Stored as JSON beside the settings, written atomically. A missing or unreadable file means
+//! Stored as JSON beside the library database, written atomically. A missing or unreadable file means
 //! "no session", never an error shown to the user.
 
 use std::fs;
@@ -27,23 +27,19 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// The session file that goes with the library database `database`.
+    pub(crate) fn path_beside(database: &Path) -> PathBuf {
+        database.with_file_name(SESSION_FILE_NAME)
+    }
+
     /// The stored session, if there is a usable one.
-    pub(crate) fn load() -> Option<Session> {
-        Session::load_from(&session_file_path()?)
-    }
-
-    /// Stores the session (atomic: temporary file, then rename).
-    pub(crate) fn save(&self) -> anyhow::Result<()> {
-        let path = session_file_path().context("no app data directory could be determined")?;
-        self.save_to(&path)
-    }
-
-    fn load_from(path: &Path) -> Option<Session> {
+    pub(crate) fn load_from(path: &Path) -> Option<Session> {
         let bytes = fs::read(path).ok()?;
         serde_json::from_slice(&bytes).ok()
     }
 
-    fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+    /// Stores the session (atomic: temporary file, then rename).
+    pub(crate) fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         let directory = path.parent().context("session path has no parent")?;
         fs::create_dir_all(directory)
             .with_context(|| format!("cannot create {}", directory.display()))?;
@@ -57,10 +53,6 @@ impl Session {
         fs::rename(&temporary_path, path)
             .with_context(|| format!("cannot move session file to {}", path.display()))
     }
-}
-
-fn session_file_path() -> Option<PathBuf> {
-    Some(crate::settings::app_data_directory()?.join(SESSION_FILE_NAME))
 }
 
 #[cfg(test)]

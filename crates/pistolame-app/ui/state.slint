@@ -64,6 +64,8 @@ export enum TrackSource {
     playlist,
     // A track in the search results (position = its index there).
     search-result,
+    // A row of the "Morceaux" table (position = its index there).
+    library-track,
 }
 
 export struct TrackTarget {
@@ -87,6 +89,18 @@ export struct QueueRow {
     subtitle: string,
     duration-label: string,
     artwork: image,
+}
+
+// One row of the "Morceaux" table.
+export struct LibraryTrackRow {
+    title: string,
+    artist: string,
+    album: string,
+    year: string,
+    format-label: string,
+    duration-label: string,
+    // File path, compared with `AppState.current-track-path` to mark the playing row.
+    path: string,
 }
 
 export struct ArtistCard {
@@ -212,6 +226,13 @@ export global AppState {
     in property <[ArtistCard]> artists;
     in-out property <string> artist-filter;
     callback open-artist(int);
+    // "Morceaux" table: every track, sorted by one column (index in display order).
+    in property <[LibraryTrackRow]> library-tracks;
+    in property <string> current-track-path;
+    in property <int> track-sort-column;
+    in property <bool> is-track-sort-descending;
+    callback sort-tracks(int);
+    callback play-library-track(int);
     callback show-all-albums();
     // Tracks matching the search, listed under the matching albums.
     in property <[PlaylistTrackRow]> search-tracks;

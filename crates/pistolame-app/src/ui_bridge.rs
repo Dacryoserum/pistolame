@@ -1,7 +1,8 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
 use crate::{
-    AlbumCard, AppState, AppWindow, ArtistCard, DetailInfo, PathStep, PlaylistItem,
-    PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind,
+    AlbumCard, AppState, AppWindow, ArtistCard, DetailInfo, LibraryTrackRow, PathStep,
+    PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget,
+    ViewKind,
 };
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -112,6 +113,9 @@ pub(crate) struct UiBridge {
     shuffle_seed: Cell<u64>,
     /// Position (seconds) of a restored track not opened yet: Play opens it there.
     resume_position_seconds: Cell<Option<u64>>,
+    /// Files of the "Morceaux" table, in its current order.
+    library_tracks: RefCell<Vec<PathBuf>>,
+    track_sort: Cell<(crate::track_sort::TrackColumn, bool)>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -178,6 +182,8 @@ impl UiBridge {
                     .map_or(1, |duration| duration.as_nanos() as u64),
             ),
             resume_position_seconds: Cell::new(None),
+            library_tracks: RefCell::new(Vec::new()),
+            track_sort: Cell::new((crate::track_sort::TrackColumn::default(), false)),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -249,6 +255,28 @@ impl UiBridge {
                 .position(|sort| *sort == self.album_sort())
                 .unwrap_or(0) as i32,
         );
+        let handle = self.clone();
+        state.on_sort_tracks(move |index| {
+            let Some(column) = usize::try_from(index)
+                .ok()
+                .and_then(|index| crate::track_sort::TrackColumn::ALL.get(index).copied())
+            else {
+                return;
+            };
+            // A second click on the sorted column flips the direction.
+            let (current, is_descending) = handle.track_sort.get();
+            handle
+                .track_sort
+                .set((column, current == column && !is_descending));
+            handle.show_library_tracks();
+        });
+        let handle = self.clone();
+        state.on_play_library_track(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                let paths = handle.library_tracks.borrow().clone();
+                handle.play_context(paths, index, "Morceaux".into());
+            }
+        });
         let handle = self.clone();
         state.on_open_artist(move |index| handle.open_artist(index));
         let handle = self.clone();
@@ -670,6 +698,7 @@ impl UiBridge {
         }
         self.show_playlists();
         self.show_artists();
+        self.show_library_tracks();
     }
 
     /// Opens the "Modifier l'album" sheet for album `index`.
@@ -936,6 +965,69 @@ impl UiBridge {
         window
             .global::<AppState>()
             .set_artists(ModelRc::new(VecModel::from(cards)));
+    }
+
+    /// Fills the "Morceaux" table with every track, in the chosen column order.
+    fn show_library_tracks(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let (column, is_descending) = self.track_sort.get();
+        let albums = self.albums.borrow();
+        let mut tracks: Vec<(crate::track_sort::TrackSortKeys, &Album, &MusicFile)> = albums
+            .iter()
+            .flat_map(|album| album.tracks.iter().map(move |track| (album, track)))
+            .map(|(album, track)| {
+                let keys = crate::track_sort::TrackSortKeys {
+                    title: track.title.clone(),
+                    artist: track.artist.clone(),
+                    album: album.title.clone(),
+                    year: track.year,
+                    sample_rate_hz: track.sample_rate_hz,
+                    bits_per_sample: track.bits_per_sample,
+                    duration_seconds: track.duration_seconds,
+                    disc_number: track.disc_number,
+                    track_number: track.track_number,
+                };
+                (keys, album, track)
+            })
+            .collect();
+        tracks.sort_by(|left, right| {
+            crate::track_sort::compare_tracks(column, is_descending, &left.0, &right.0)
+        });
+        let rows: Vec<LibraryTrackRow> = tracks
+            .iter()
+            .map(|(keys, _, track)| LibraryTrackRow {
+                title: keys.title.as_str().into(),
+                artist: keys.artist.as_str().into(),
+                album: keys.album.as_str().into(),
+                year: track
+                    .year
+                    .map(|year| year.to_string())
+                    .unwrap_or_default()
+                    .into(),
+                format_label: presentation::audio_format(
+                    track.bits_per_sample,
+                    track.sample_rate_hz,
+                )
+                .into(),
+                duration_label: presentation::clock(track.duration_seconds).into(),
+                path: track.path.to_string_lossy().as_ref().into(),
+            })
+            .collect();
+        *self.library_tracks.borrow_mut() = tracks
+            .iter()
+            .map(|(_, _, track)| track.path.clone())
+            .collect();
+        let state = window.global::<AppState>();
+        state.set_track_sort_column(
+            crate::track_sort::TrackColumn::ALL
+                .iter()
+                .position(|candidate| *candidate == column)
+                .unwrap_or(0) as i32,
+        );
+        state.set_is_track_sort_descending(is_descending);
+        state.set_library_tracks(ModelRc::new(VecModel::from(rows)));
     }
 
     /// Shows the albums of artist `index` (in the artists list) in the grid.
@@ -1370,9 +1462,13 @@ impl UiBridge {
                     .unwrap_or_default();
                 Some((vec![path], format!("« {title} »")))
             }
-            TrackSource::SearchResult => {
-                let path = self
-                    .search_results
+            TrackSource::LibraryTrack | TrackSource::SearchResult => {
+                let list = if target.source == TrackSource::LibraryTrack {
+                    &self.library_tracks
+                } else {
+                    &self.search_results
+                };
+                let path = list
                     .borrow()
                     .get(usize::try_from(target.position).ok()?)?
                     .clone();
@@ -2022,6 +2118,7 @@ impl UiBridge {
             return;
         };
         state.set_has_current_track(true);
+        state.set_current_track_path(track.path.to_string_lossy().as_ref().into());
         state.set_current_artist(track.artist.as_str().into());
         state.set_current_album(album.title.as_str().into());
         state.set_current_format(
@@ -2051,7 +2148,10 @@ impl UiBridge {
     /// Reopens the last session: the queue, and its current track shown paused at the stored
     /// position. Nothing plays until the user presses Play.
     fn restore_session(&self) {
-        let Some(session) = crate::session::Session::load() else {
+        let Some(session) = self
+            .session_path()
+            .and_then(|path| crate::session::Session::load_from(&path))
+        else {
             return;
         };
         let queue = crate::play_queue::PlayQueue::from_snapshot(session.queue.clone());
@@ -2083,6 +2183,13 @@ impl UiBridge {
         self.refresh_queue_view();
     }
 
+    /// The session file, beside the library database (so a preview never touches the user's).
+    fn session_path(&self) -> Option<PathBuf> {
+        self.library_database
+            .as_deref()
+            .map(crate::session::Session::path_beside)
+    }
+
     /// Writes the session when it changed. Never before the stored one was read.
     pub(crate) fn save_session(&self) {
         if !self.is_session_restored.get() {
@@ -2101,8 +2208,11 @@ impl UiBridge {
         if self.last_saved_session.borrow().as_ref() == Some(&session) {
             return;
         }
+        let Some(path) = self.session_path() else {
+            return;
+        };
         // A failed write only loses the resume point, so it stays silent.
-        if session.save().is_ok() {
+        if session.save_to(&path).is_ok() {
             *self.last_saved_session.borrow_mut() = Some(session);
         }
     }
