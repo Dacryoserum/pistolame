@@ -2,7 +2,7 @@
 //! requested run state, the stream status, and the diagnostic counters. Lock-free atomics
 //! only; the render thread never blocks on them.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use super::hresult_mapping::WasapiCallError;
 use super::win32_event::AutoResetEvent;
@@ -17,6 +17,8 @@ pub(crate) struct StreamControl {
     requested_state: AtomicU8,
     encoded_status: AtomicU64,
     control_event: AutoResetEvent,
+    /// Shared-mode volume as `f32` bits, read by the render thread (unity by default).
+    shared_mode_gain_bits: AtomicU32,
 }
 
 impl StreamControl {
@@ -26,6 +28,7 @@ impl StreamControl {
             requested_state: AtomicU8::new(RequestedStreamState::Idle as u8),
             encoded_status: AtomicU64::new(encode_stream_status(OutputStreamStatus::NotStarted)),
             control_event: AutoResetEvent::new()?,
+            shared_mode_gain_bits: AtomicU32::new(1.0_f32.to_bits()),
         })
     }
 
@@ -50,6 +53,17 @@ impl StreamControl {
     /// Any side: the current status.
     pub(crate) fn status(&self) -> OutputStreamStatus {
         decode_stream_status(self.encoded_status.load(Ordering::Acquire))
+    }
+
+    /// Engine side: the shared-mode volume (`0.0..=1.0`).
+    pub(crate) fn set_shared_mode_gain(&self, gain: f32) {
+        self.shared_mode_gain_bits
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+    }
+
+    /// Render side: the shared-mode volume.
+    pub(crate) fn shared_mode_gain(&self) -> f32 {
+        f32::from_bits(self.shared_mode_gain_bits.load(Ordering::Acquire))
     }
 
     /// The event the render thread waits on together with the buffer event.

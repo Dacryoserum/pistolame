@@ -25,6 +25,8 @@ export component AppWindow inherits Window {
     property <length> toolbar-width: root.width - 240px;
     // Right toolbar group: update dot (slot always reserved), volume, queue and output buttons.
     property <length> update-slot-width: 36px;
+    // Same rule as the volume slider: adjustable unless the output is held exclusively.
+    property <bool> is-volume-adjustable: !AppState.exclusive || AppState.is-shared;
     property <length> right-group-width: 200px + root.update-slot-width;
     property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - root.right-group-width - 20px - 48px, 360px, 560px);
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
@@ -231,13 +233,28 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Click: mute / unmute (shared mode; greyed in exclusive mode like the slider).
                 Image {
                     x: root.update-slot-width + 0px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
-                    source: Icons.speaker-low;
-                    colorize: Tokens.text-secondary;
+                    source: AppState.is-volume-muted ? Icons.speaker-x : Icons.speaker-low;
+                    colorize: mute-touch.has-hover && root.is-volume-adjustable ? Tokens.text-primary : Tokens.text-secondary;
+                    opacity: root.is-volume-adjustable ? 1 : 0.4;
+                    mute-touch := TouchArea {
+                        x: -6px;
+                        y: -6px;
+                        width: parent.width + 12px;
+                        height: parent.height + 12px;
+                        accessible-role: button;
+                        accessible-label: AppState.is-volume-muted ? "Rétablir le son" : "Couper le son";
+                        clicked => {
+                            if root.is-volume-adjustable {
+                                AppState.volume-changed(AppState.volume-decibels, !AppState.is-volume-muted);
+                            }
+                        }
+                    }
                 }
 
                 VolumeSlider {
@@ -245,13 +262,28 @@ export component AppWindow inherits Window {
                     y: 16px;
                 }
 
+                // Click: back to full level (0 dB).
                 Image {
                     x: root.update-slot-width + 114px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
                     source: Icons.speaker-high;
-                    colorize: Tokens.text-secondary;
+                    colorize: full-touch.has-hover && root.is-volume-adjustable ? Tokens.text-primary : Tokens.text-secondary;
+                    opacity: root.is-volume-adjustable ? 1 : 0.4;
+                    full-touch := TouchArea {
+                        x: -6px;
+                        y: -6px;
+                        width: parent.width + 12px;
+                        height: parent.height + 12px;
+                        accessible-role: button;
+                        accessible-label: "Volume maximal (0 dB)";
+                        clicked => {
+                            if root.is-volume-adjustable {
+                                AppState.volume-changed(0, false);
+                            }
+                        }
+                    }
                 }
 
                 IconButton {

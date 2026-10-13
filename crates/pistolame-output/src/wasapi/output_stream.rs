@@ -132,6 +132,11 @@ impl WasapiOutputStream {
 }
 
 impl OutputStream for WasapiOutputStream {
+    /// Applied by the render thread to shared streams only; exclusive streams stay bit-perfect.
+    fn set_shared_mode_volume(&mut self, linear_gain: f32) {
+        self.control.set_shared_mode_gain(linear_gain);
+    }
+
     fn negotiated(&self) -> &NegotiatedOutput {
         &self.negotiated
     }

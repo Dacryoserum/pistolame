@@ -159,6 +159,7 @@ enum StreamRequest {
 /// State shared by the fake output, its streams and the test's controller.
 struct FakeState {
     config: FakeOutputConfig,
+    shared_mode_volume_calls: Vec<f32>,
     played_bytes: Vec<u8>,
     dropped_bytes: Vec<u8>,
     render_call_count: u64,
@@ -205,6 +206,7 @@ impl FakeOutput {
         let shared = Arc::new(FakeShared {
             state: Mutex::new(FakeState {
                 config,
+                shared_mode_volume_calls: Vec::new(),
                 played_bytes: Vec::new(),
                 dropped_bytes: Vec::new(),
                 render_call_count: 0,
@@ -292,6 +294,11 @@ impl FakeOutputController {
     /// What each successful open negotiated, in order.
     pub fn negotiated_streams(&self) -> Vec<NegotiatedOutput> {
         self.shared.lock().negotiated_streams.clone()
+    }
+
+    /// Every shared-mode volume the engine applied to a stream, in order.
+    pub fn shared_mode_volume_calls(&self) -> Vec<f32> {
+        self.shared.lock().shared_mode_volume_calls.clone()
     }
 
     /// `render` calls so far, prefills included.
@@ -682,6 +689,11 @@ impl FakeStream {
 impl OutputStream for FakeStream {
     fn negotiated(&self) -> &NegotiatedOutput {
         &self.negotiated
+    }
+
+    fn set_shared_mode_volume(&mut self, linear_gain: f32) {
+        self.shared
+            .update(|state| state.shared_mode_volume_calls.push(linear_gain));
     }
 
     fn play(&mut self) -> Result<(), OutputError> {
