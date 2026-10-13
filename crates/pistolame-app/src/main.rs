@@ -6,6 +6,7 @@ mod album_sort;
 mod m3u;
 mod play_queue;
 mod presentation;
+mod search;
 mod settings;
 mod transport;
 mod ui_bridge;

@@ -52,6 +52,9 @@ enum UpdateMessage {
     InstallFailed(String),
 }
 
+/// Most tracks listed under a search; enough to find anything without a huge list.
+const MAXIMUM_SEARCH_TRACKS: usize = 200;
+
 /// First update check after start-up, then once a day.
 const FIRST_UPDATE_CHECK_DELAY: Duration = Duration::from_secs(5);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -84,6 +87,8 @@ pub(crate) struct UiBridge {
     play_queue: RefCell<crate::play_queue::PlayQueue>,
     /// Cover change waiting for "Enregistrer" in the playlist editor.
     pending_playlist_artwork: RefCell<PendingArtwork>,
+    /// The tracks found by the current search, in display order.
+    search_results: RefCell<Vec<PathBuf>>,
     /// Tracks waiting in the "Ajouter à une playlist" sheet.
     pending_playlist_tracks: RefCell<Vec<PathBuf>>,
     /// Self-update: messages from the worker, the update found, and when to check next.
@@ -145,6 +150,7 @@ impl UiBridge {
             playlists: RefCell::new(Vec::new()),
             play_queue: RefCell::new(crate::play_queue::PlayQueue::default()),
             pending_playlist_tracks: RefCell::new(Vec::new()),
+            search_results: RefCell::new(Vec::new()),
             pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
@@ -229,6 +235,20 @@ impl UiBridge {
                 .position(|sort| *sort == self.album_sort())
                 .unwrap_or(0) as i32,
         );
+        let handle = self.clone();
+        state.on_play_search_result(move |index| {
+            let paths = handle.search_results.borrow().clone();
+            if let Ok(index) = usize::try_from(index) {
+                let name = handle
+                    .window
+                    .upgrade()
+                    .map(|window| {
+                        format!("Recherche « {} »", window.global::<AppState>().get_query())
+                    })
+                    .unwrap_or_default();
+                handle.play_context(paths, index, name);
+            }
+        });
         let handle = self.clone();
         state.on_set_album_sort(move |index| {
             if let Some(sort) = usize::try_from(index)
@@ -805,20 +825,28 @@ impl UiBridge {
         }
     }
 
+    /// Shows the albums matching `query` (all of them when it is empty) and, while searching,
+    /// the matching tracks under them.
     fn update_grid(&self, query: &str) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        let query = query.to_lowercase();
-        let cards: Vec<AlbumCard> = self
-            .albums
-            .borrow()
+        let state = window.global::<AppState>();
+        let words = crate::search::query_words(query);
+        let albums = self.albums.borrow();
+        let cards: Vec<AlbumCard> = albums
             .iter()
             .enumerate()
             .filter(|(_, album)| {
-                format!("{} {}", album.title, album.artist)
-                    .to_lowercase()
-                    .contains(&query)
+                let year = album_year(album)
+                    .map(|year| year.to_string())
+                    .unwrap_or_default();
+                let genre = album
+                    .tracks
+                    .iter()
+                    .find_map(|track| track.genre.clone())
+                    .unwrap_or_default();
+                crate::search::matches(&words, &[&album.title, &album.artist, &year, &genre])
             })
             .map(|(index, album)| AlbumCard {
                 catalog_index: index as i32,
@@ -827,16 +855,54 @@ impl UiBridge {
                 artwork: album.artwork.clone(),
             })
             .collect();
-        window
-            .global::<AppState>()
-            .set_no_results_text(if query.is_empty() {
-                "Ajoutez un dossier ou des fichiers FLAC pour retrouver vos albums.".into()
-            } else {
-                format!("Aucun album trouvé pour « {query} ».").into()
-            });
-        window
-            .global::<AppState>()
-            .set_albums(ModelRc::new(VecModel::from(cards)));
+        let current_path = self.current_path();
+        let mut results = Vec::new();
+        let mut rows = Vec::new();
+        if !words.is_empty() {
+            for album in albums.iter() {
+                for file in &album.tracks {
+                    if rows.len() >= MAXIMUM_SEARCH_TRACKS {
+                        break;
+                    }
+                    if crate::search::matches(&words, &[&file.title, &album.artist, &album.title]) {
+                        rows.push(PlaylistTrackRow {
+                            position: rows.len() as i32,
+                            number: rows.len() as i32 + 1,
+                            title: file.title.as_str().into(),
+                            subtitle: format!("{} — {}", album.artist, album.title).into(),
+                            format_label: presentation::audio_format(
+                                file.bits_per_sample,
+                                file.sample_rate_hz,
+                            )
+                            .into(),
+                            duration_label: presentation::clock(file.duration_seconds).into(),
+                            is_current: current_path.as_ref() == Some(&file.path),
+                        });
+                        results.push(file.path.clone());
+                    }
+                }
+            }
+        }
+        drop(albums);
+        *self.search_results.borrow_mut() = results;
+        state.set_no_results_text(if words.is_empty() {
+            "Ajoutez un dossier ou des fichiers FLAC pour retrouver vos albums.".into()
+        } else {
+            format!("Rien trouvé pour « {query} ».").into()
+        });
+        state.set_search_tracks(ModelRc::new(VecModel::from(rows)));
+        state.set_albums(ModelRc::new(VecModel::from(cards)));
+    }
+
+    /// The file playing now, if any.
+    fn current_path(&self) -> Option<PathBuf> {
+        self.selected_track.get().and_then(|(album, track)| {
+            self.albums
+                .borrow()
+                .get(album)
+                .and_then(|album| album.tracks.get(track))
+                .map(|track| track.path.clone())
+        })
     }
 
     /// The grid order chosen in the settings.
@@ -1229,6 +1295,20 @@ impl UiBridge {
                     .borrow()
                     .get(index)?
                     .track_paths
+                    .get(usize::try_from(target.position).ok()?)?
+                    .clone();
+                let title = albums
+                    .iter()
+                    .flat_map(|album| &album.tracks)
+                    .find(|track| track.path == path)
+                    .map(|track| track.title.clone())
+                    .unwrap_or_default();
+                Some((vec![path], format!("« {title} »")))
+            }
+            TrackSource::SearchResult => {
+                let path = self
+                    .search_results
+                    .borrow()
                     .get(usize::try_from(target.position).ok()?)?
                     .clone();
                 let title = albums

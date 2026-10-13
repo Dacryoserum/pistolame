@@ -62,6 +62,8 @@ export enum TrackSource {
     album,
     playlist-entry,
     playlist,
+    // A track in the search results (position = its index there).
+    search-result,
 }
 
 export struct TrackTarget {
@@ -200,6 +202,9 @@ export global AppState {
     in property <[string]> album-sort-labels;
     in property <int> album-sort-index;
     callback set-album-sort(int);
+    // Tracks matching the search, listed under the matching albums.
+    in property <[PlaylistTrackRow]> search-tracks;
+    callback play-search-result(int);
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();

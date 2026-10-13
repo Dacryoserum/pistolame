@@ -1037,6 +1037,8 @@ export component AlbumsGrid inherits Rectangle {
     property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
     property <length> pitch: root.tile + 64px;
     property <int> row-count: Math.ceil(AppState.albums.length / root.columns);
+    // While searching: the "Morceaux" heading plus one row per matching track.
+    property <int> search-row-count: AppState.query != "" && AppState.search-tracks.length > 0 ? AppState.search-tracks.length + 1 : 0;
     Txt {
         role: TextRole.display;
         x: 32px;
@@ -1103,19 +1105,40 @@ export component AlbumsGrid inherits Rectangle {
         y: 76px;
         height: root.height - 76px;
         content-y <=> AppState.grid-scroll-y;
-        for row-index in root.row-count: Rectangle {
-            height: root.pitch;
-            for column in root.columns: Rectangle {
-                if row-index * root.columns + column < AppState.albums.length: AlbumTile {
-                    x: 32px + column * (root.tile + 24px);
-                    tile: root.tile;
-                    album: AppState.albums[row-index * root.columns + column];
-                    open => {
-                        AppState.show-album(self.album.catalog-index);
+        // One repeater (a ListView allows only one): album grid rows, then, while searching, a
+        // "Morceaux" heading and the matching tracks.
+        for item-index in root.row-count + root.search-row-count: Rectangle {
+            property <int> track-row: item-index - root.row-count - 1;
+            height: item-index < root.row-count ? root.pitch : item-index == root.row-count ? 48px : 36px;
+            if item-index < root.row-count: Rectangle {
+                for column in root.columns: Rectangle {
+                    if item-index * root.columns + column < AppState.albums.length: AlbumTile {
+                        x: 32px + column * (root.tile + 24px);
+                        tile: root.tile;
+                        album: AppState.albums[item-index * root.columns + column];
+                        open => {
+                            AppState.show-album(self.album.catalog-index);
+                        }
+                        play => {
+                            AppState.play-track(self.album.catalog-index, 0);
+                        }
                     }
-                    play => {
-                        AppState.play-track(self.album.catalog-index, 0);
-                    }
+                }
+            }
+            if item-index == root.row-count: Txt { x: 32px; y: 14px; role: TextRole.title-3; text: "Morceaux"; }
+            if item-index > root.row-count: TrackRow {
+                x: 32px;
+                width: root.width - 64px;
+                number: AppState.search-tracks[parent.track-row].number;
+                title: AppState.search-tracks[parent.track-row].title;
+                subtitle: AppState.search-tracks[parent.track-row].subtitle;
+                format-label: AppState.search-tracks[parent.track-row].format-label;
+                duration-label: AppState.search-tracks[parent.track-row].duration-label;
+                is-odd: Math.mod(parent.track-row, 2) == 1;
+                is-current: AppState.search-tracks[parent.track-row].is-current;
+                clicked => { AppState.play-search-result(parent.track-row); }
+                action(kind) => {
+                    AppState.track-action({ source: TrackSource.search-result, album: 0, track: 0, position: parent.track-row }, kind);
                 }
             }
         }
@@ -1126,7 +1149,7 @@ export component AlbumsGrid inherits Rectangle {
         PillButton { is-primary: true; icon: Icons.music-note; label: "Fichiers"; clicked => { AppState.import-files(); } }
         PillButton { icon: Icons.vinyl-record; label: "Dossier"; clicked => { AppState.import-folder(); } }
     }
-    if AppState.albums.length == 0: VerticalLayout {
+    if AppState.albums.length == 0 && AppState.search-tracks.length == 0: VerticalLayout {
         y: 76px + 96px;
         height: 80px;
         spacing: 12px;
