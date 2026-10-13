@@ -160,6 +160,7 @@ export global AppState {
     callback begin-playlist-edit();
     callback save-playlist-edit();
     callback delete-current-playlist();
+    callback export-current-playlist();
     // "Ajouter à une playlist" sheet, for an album or one of its tracks.
     in-out property <bool> is-add-to-playlist-open;
     in property <string> add-to-playlist-subject;

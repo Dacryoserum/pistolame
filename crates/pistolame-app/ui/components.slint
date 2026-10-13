@@ -1969,6 +1969,16 @@ export component PlaylistEditor inherits Sheet {
     }
     LabeledField { x: 144px; y: 64px; width: root.width - 168px; caption: "NOM"; text <=> AppState.playlist-editor-name; }
     Rectangle {
+        x: 144px; y: 164px; width: 220px; height: 20px;
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            Icon { width: 14px; source: Icons.queue; colorize: Tokens.accent; }
+            Txt { role: TextRole.callout; text: "Exporter en M3U…"; color: Tokens.accent; vertical-alignment: center; }
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { AppState.export-current-playlist(); } }
+    }
+    Rectangle {
         x: 144px; y: 132px; width: 180px; height: 20px;
         HorizontalLayout {
             alignment: start;

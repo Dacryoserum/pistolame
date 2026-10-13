@@ -1483,6 +1483,8 @@ impl UiBridge {
         let handle = self.clone();
         state.on_delete_current_playlist(move || handle.delete_current_playlist());
         let handle = self.clone();
+        state.on_export_current_playlist(move || handle.export_current_playlist());
+        let handle = self.clone();
         state.on_add_pending_to_playlist(move |index| {
             if let Ok(index) = usize::try_from(index) {
                 handle.add_pending_to_playlist(index);
@@ -1744,6 +1746,48 @@ impl UiBridge {
             self.show_playlists();
         }
         state.set_is_playlist_editor_open(false);
+    }
+
+    /// Saves the open playlist as an extended M3U (UTF-8), readable by other players.
+    fn export_current_playlist(&self) {
+        let Some(index) = self.current_playlist_index() else {
+            return;
+        };
+        let Some(name) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.name.clone())
+        else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{name}.m3u8"))
+            .add_filter("Playlist M3U", &["m3u8", "m3u"])
+            .save_file()
+        else {
+            return;
+        };
+        let albums = self.albums.borrow();
+        let entries: Vec<crate::m3u::M3uEntry> = self
+            .playable_entries(index)
+            .into_iter()
+            .filter_map(|(_, path, (album, track))| {
+                let album = albums.get(album)?;
+                let file = album.tracks.get(track)?;
+                Some(crate::m3u::M3uEntry {
+                    path,
+                    duration_seconds: file.duration_seconds,
+                    artist: album.artist.clone(),
+                    title: file.title.clone(),
+                })
+            })
+            .collect();
+        drop(albums);
+        match std::fs::write(&path, crate::m3u::write_m3u(&entries)) {
+            Ok(()) => self.status(format!("Playlist exportée : {}", path.display())),
+            Err(error) => self.message(format!("Export impossible : {error}")),
+        }
     }
 
     fn delete_current_playlist(&self) {
