@@ -312,6 +312,8 @@ export global AppState {
     callback seek(float);
     callback volume-changed(float, bool);
     callback toggle-theme();
+    // "⌘" on macOS, "Ctrl+" elsewhere, for the shortcut list.
+    in property <string> shortcut-modifier: "Ctrl+";
 
     public function select-item(item: int) {
         selected-item = item;

@@ -186,6 +186,11 @@ export component SearchField inherits Rectangle {
     background: Tokens.surface-field;
     border-width: input.has-focus ? 2px : 0px;
     border-color: Tokens.focus-ring;
+    // Cmd/Ctrl+F: focus the field with its text selected, ready to type over.
+    public function focus-search() {
+        input.focus();
+        input.select-all();
+    }
     Icon {
         x: 9px;
         y: 7px;
@@ -1722,6 +1727,29 @@ export component OutputSettings inherits Rectangle {
                 role: TextRole.callout;
                 text: "Retirer un dossier l’enlève de Pistolame ; vos fichiers ne sont jamais supprimés.";
                 color: Tokens.text-tertiary;
+            }
+            Rectangle { height: 12px; }
+            Txt { role: TextRole.title-3; text: "Raccourcis clavier"; height: 32px; vertical-alignment: center; }
+            SettingsCard {
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 6px;
+                    for shortcut in [
+                        { keys: "Espace", action: "Lecture / pause" },
+                        { keys: AppState.shortcut-modifier + "→  /  " + AppState.shortcut-modifier + "←", action: "Morceau suivant / précédent" },
+                        { keys: AppState.shortcut-modifier + "↑  /  " + AppState.shortcut-modifier + "↓", action: "Volume +1 dB / −1 dB (mode partagé)" },
+                        { keys: AppState.shortcut-modifier + "F", action: "Rechercher" },
+                        { keys: AppState.shortcut-modifier + "L", action: "Morceau en cours" },
+                        { keys: AppState.shortcut-modifier + "1 à " + AppState.shortcut-modifier + "4", action: "Ajouts récents, Artistes, Albums, Morceaux" },
+                        { keys: AppState.shortcut-modifier + ",", action: "Réglages" },
+                        { keys: AppState.shortcut-modifier + "O  /  " + AppState.shortcut-modifier + "⇧O", action: "Ajouter des fichiers / un dossier" },
+                        { keys: "Échap", action: "Revenir en arrière" },
+                    ]: HorizontalLayout {
+                        spacing: 16px;
+                        Txt { width: 160px; text: shortcut.keys; color: Tokens.text-primary; }
+                        Txt { text: shortcut.action; color: Tokens.text-secondary; }
+                    }
+                }
             }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "À propos"; height: 32px; vertical-alignment: center; }

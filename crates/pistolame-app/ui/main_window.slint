@@ -44,6 +44,14 @@ export component AppWindow inherits Window {
         key-scope.focus();
     }
 
+    // Cmd/Ctrl+Up/Down: one decibel at a time, shared mode only (exclusive mode leaves the
+    // level to the DAC).
+    function step-volume(decibels: float) {
+        if root.is-volume-adjustable {
+            AppState.volume-changed(Math.clamp(AppState.volume-decibels + decibels, -60, 0), false);
+        }
+    }
+
     function close-popover-or-go-back() {
         if AppState.is-popover-open {
             AppState.is-popover-open = false;
@@ -71,6 +79,18 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if event.modifiers.control && (event.text == "." ) { AppState.stop(); return accept; }
+            // Slint reports the Command key as `control` on macOS.
+            if event.modifiers.control && (event.text == "f" || event.text == "F") { search.focus-search(); return accept; }
+            if event.modifiers.control && event.text == Key.RightArrow { AppState.next-track(); return accept; }
+            if event.modifiers.control && event.text == Key.LeftArrow { AppState.previous-track(); return accept; }
+            if event.modifiers.control && event.text == Key.UpArrow { root.step-volume(1); return accept; }
+            if event.modifiers.control && event.text == Key.DownArrow { root.step-volume(-1); return accept; }
+            if event.modifiers.control && (event.text == "l" || event.text == "L") { AppState.show-now-playing(); return accept; }
+            if event.modifiers.control && event.text == "," { AppState.select-item(6); return accept; }
+            if event.modifiers.control && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4") {
+                AppState.select-item(event.text.to-float() - 1);
+                return accept;
+            }
             return reject;
         }
 
@@ -335,7 +355,7 @@ export component AppWindow inherits Window {
                 background: Tokens.separator-chrome;
             }
 
-            SearchField {
+            search := SearchField {
                 x: 12px;
                 y: 16px;
             }

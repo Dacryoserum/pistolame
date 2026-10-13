@@ -312,6 +312,14 @@ impl UiBridge {
         });
         state.set_current_version(crate::updater::CURRENT_VERSION.into());
         state.set_reveal_label(reveal_label().into());
+        state.set_shortcut_modifier(
+            if std::env::consts::OS == "macos" {
+                "⌘"
+            } else {
+                "Ctrl+"
+            }
+            .into(),
+        );
         let handle = self.clone();
         state.on_start_update(move || handle.start_update());
         let handle = self.clone();
