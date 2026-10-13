@@ -39,6 +39,12 @@ pub enum EngineCommand {
         /// Position from the start of the track, converted to a frame index by the engine.
         position_in_track: std::time::Duration,
     },
+    /// The shared-mode volume. Applied at once to a shared stream and to every stream opened
+    /// later; exclusive streams ignore it (bit-perfect, the DAC sets the level).
+    SetSharedModeVolume {
+        /// The volume to apply.
+        volume: crate::volume::SharedModeVolume,
+    },
     /// Stop the engine thread.
     Shutdown,
 }
@@ -51,6 +57,8 @@ pub struct EngineStartOptions {
     /// Last device the user chose. If absent at start-up the engine selects the system default
     /// and emits `PreferredDeviceUnavailable`.
     pub preferred_device_id: Option<OutputDeviceId>,
+    /// Shared-mode volume to start with.
+    pub shared_mode_volume: crate::volume::SharedModeVolume,
 }
 
 /// Notifications from the engine to the UI.

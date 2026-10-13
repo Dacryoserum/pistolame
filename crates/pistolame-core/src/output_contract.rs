@@ -256,6 +256,11 @@ pub trait OutputStream: Send {
     /// Health of the real-time side, readable at any time without locking. This is the only
     /// way a real-time failure reaches the engine, which polls it.
     fn status(&self) -> OutputStreamStatus;
+    /// Sets the shared-mode volume as an amplitude factor in `0.0..=1.0`, applied after
+    /// Pistolame's own bytes (by the system mixer, or by the backend's float stage). Only
+    /// shared streams apply it; exclusive streams ignore it so the device receives the samples
+    /// unchanged. The default does nothing, for backends without a mixer stage.
+    fn set_shared_mode_volume(&mut self, _linear_gain: f32) {}
     /// Stops, releases the device and returns the render source so the ring and the feeder's
     /// position survive a reopen (pause/resume, mode switch, gapless format change later).
     /// Blocks the caller (the engine thread) for at most `QUEUED_AUDIO_PLAY_OUT_TIMEOUT` with

@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -37,6 +37,24 @@ CREATE TABLE IF NOT EXISTS tracks (
     bits_per_sample INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
     artwork_hash TEXT REFERENCES artworks(hash)
+);
+CREATE TABLE IF NOT EXISTS playlists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    artwork_hash TEXT REFERENCES artworks(hash)
+);
+CREATE TABLE IF NOT EXISTS playlist_entries (
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_path TEXT NOT NULL,
+    PRIMARY KEY (playlist_id, position)
+);
+CREATE TABLE IF NOT EXISTS album_text_overrides (
+    directory TEXT NOT NULL,
+    album TEXT NOT NULL,
+    title TEXT,
+    artist TEXT,
+    PRIMARY KEY (directory, album)
 );
 CREATE TABLE IF NOT EXISTS album_artwork_overrides (
     directory TEXT NOT NULL,
@@ -72,6 +90,33 @@ pub struct LibrarySnapshot {
     pub tracks: Vec<MusicFile>,
     /// Covers the user chose, which replace the files' own covers for these albums.
     pub artwork_overrides: HashMap<AlbumKey, Arc<[u8]>>,
+    /// Album titles and artists the user edited, shown instead of the tags.
+    pub text_overrides: HashMap<AlbumKey, AlbumTextOverride>,
+    /// The user's playlists, in creation order.
+    pub playlists: Vec<Playlist>,
+}
+
+/// A user playlist: an ordered list of track paths. A track may appear twice; an entry whose
+/// file left the library stays in the list and is simply not shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Playlist {
+    /// Stable identifier in the database.
+    pub id: i64,
+    /// Name shown in the sidebar.
+    pub name: String,
+    /// Tracks in playing order.
+    pub track_paths: Vec<PathBuf>,
+    /// Cover the user chose for the playlist, if any.
+    pub artwork: Option<Arc<[u8]>>,
+}
+
+/// Album title and artist chosen by the user; `None` keeps what the tags say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlbumTextOverride {
+    /// Title shown instead of the album tag.
+    pub title: Option<String>,
+    /// Artist shown instead of the album artist tag.
+    pub artist: Option<String>,
 }
 
 /// What a synchronization did.
@@ -115,6 +160,7 @@ impl LibraryStore {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute_batch(SCHEMA)?;
+        migrate(&connection)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(LibraryStore { connection })
     }
@@ -199,6 +245,8 @@ impl LibraryStore {
         Ok(LibrarySnapshot {
             tracks,
             artwork_overrides,
+            text_overrides: self.text_overrides()?,
+            playlists: self.playlists()?,
         })
     }
 
@@ -272,6 +320,206 @@ impl LibraryStore {
             params![path_text(&album.directory), album.title, hash],
         )?;
         self.delete_unused_artworks()
+    }
+
+    /// Shows `text` instead of the tags for `album`. An override with neither field set removes
+    /// it. Music files are never modified.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn set_album_text(
+        &mut self,
+        album: &AlbumKey,
+        text: &AlbumTextOverride,
+    ) -> Result<(), LibraryError> {
+        if text.title.is_none() && text.artist.is_none() {
+            self.connection.execute(
+                "DELETE FROM album_text_overrides WHERE directory = ?1 AND album = ?2",
+                params![path_text(&album.directory), album.title],
+            )?;
+            return Ok(());
+        }
+        self.connection.execute(
+            "INSERT INTO album_text_overrides (directory, album, title, artist)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (directory, album) DO UPDATE SET
+                title = excluded.title, artist = excluded.artist",
+            params![
+                path_text(&album.directory),
+                album.title,
+                text.title,
+                text.artist
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Creates an empty playlist and returns its identifier.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn create_playlist(&mut self, name: &str) -> Result<i64, LibraryError> {
+        self.connection
+            .execute("INSERT INTO playlists (name) VALUES (?1)", params![name])?;
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    /// Renames playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn rename_playlist(&mut self, id: i64, name: &str) -> Result<(), LibraryError> {
+        self.connection.execute(
+            "UPDATE playlists SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes playlist `id` and its entries (the tracks stay in the library).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn delete_playlist(&mut self, id: i64) -> Result<(), LibraryError> {
+        self.connection
+            .execute("DELETE FROM playlists WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Adds `paths` at the end of playlist `id`, in order.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn append_to_playlist(&mut self, id: i64, paths: &[PathBuf]) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        let next_position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_entries WHERE playlist_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        for (offset, path) in paths.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO playlist_entries (playlist_id, position, track_path)
+                 VALUES (?1, ?2, ?3)",
+                params![id, next_position + offset as i64, path_text(path)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Removes the entry at `position` (0-based, among every entry) from playlist `id`; the
+    /// following entries move up by one.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn remove_from_playlist(&mut self, id: i64, position: usize) -> Result<(), LibraryError> {
+        let remaining: Vec<PathBuf> = self
+            .playlist_paths(id)?
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| *index != position)
+            .map(|(_, path)| path)
+            .collect();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM playlist_entries WHERE playlist_id = ?1",
+            params![id],
+        )?;
+        for (index, path) in remaining.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO playlist_entries (playlist_id, position, track_path)
+                 VALUES (?1, ?2, ?3)",
+                params![id, index as i64, path_text(path)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Shows `image_bytes` as the cover of playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the image is too large or the database cannot be written.
+    pub fn set_playlist_artwork(
+        &mut self,
+        id: i64,
+        image_bytes: &[u8],
+    ) -> Result<(), LibraryError> {
+        if image_bytes.len() as u64 > MAX_COVER_BYTES {
+            return Err(LibraryError::CoverTooLarge);
+        }
+        let hash = self.store_artwork(image_bytes)?;
+        self.connection.execute(
+            "UPDATE playlists SET artwork_hash = ?2 WHERE id = ?1",
+            params![id, hash],
+        )?;
+        self.delete_unused_artworks()
+    }
+
+    /// Removes the cover of playlist `id`.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn clear_playlist_artwork(&mut self, id: i64) -> Result<(), LibraryError> {
+        self.connection.execute(
+            "UPDATE playlists SET artwork_hash = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        self.delete_unused_artworks()
+    }
+
+    fn playlists(&self) -> Result<Vec<Playlist>, LibraryError> {
+        let artworks = self.artworks()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, name, artwork_hash FROM playlists ORDER BY id")?;
+        let headers: Vec<(i64, String, Option<String>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        headers
+            .into_iter()
+            .map(|(id, name, artwork_hash)| {
+                Ok(Playlist {
+                    id,
+                    name,
+                    track_paths: self.playlist_paths(id)?,
+                    artwork: artwork_hash.and_then(|hash| artworks.get(&hash).cloned()),
+                })
+            })
+            .collect()
+    }
+
+    fn playlist_paths(&self, id: i64) -> Result<Vec<PathBuf>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT track_path FROM playlist_entries WHERE playlist_id = ?1 ORDER BY position",
+        )?;
+        let paths = statement
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .map(|path| path.map(PathBuf::from))
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
+    }
+
+    fn text_overrides(&self) -> Result<HashMap<AlbumKey, AlbumTextOverride>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT directory, album, title, artist FROM album_text_overrides")?;
+        let overrides = statement
+            .query_map([], |row| {
+                Ok((
+                    AlbumKey {
+                        directory: PathBuf::from(row.get::<_, String>(0)?),
+                        title: row.get(1)?,
+                    },
+                    AlbumTextOverride {
+                        title: row.get(2)?,
+                        artist: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(overrides)
     }
 
     /// Goes back to the files' own cover for `album`.
@@ -377,7 +625,8 @@ impl LibraryStore {
         self.connection.execute(
             "DELETE FROM artworks WHERE hash NOT IN (
                 SELECT artwork_hash FROM tracks WHERE artwork_hash IS NOT NULL
-                UNION SELECT artwork_hash FROM album_artwork_overrides)",
+                UNION SELECT artwork_hash FROM album_artwork_overrides
+                UNION SELECT artwork_hash FROM playlists WHERE artwork_hash IS NOT NULL)",
             [],
         )?;
         Ok(())
@@ -402,6 +651,21 @@ impl LibraryStore {
             )
             .optional()?)
     }
+}
+
+/// Brings a database created by an older version up to the current schema. `CREATE TABLE IF
+/// NOT EXISTS` never adds columns to an existing table, so added columns are handled here.
+fn migrate(connection: &Connection) -> Result<(), LibraryError> {
+    let has_playlist_artwork = connection
+        .prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name = 'artwork_hash'")?
+        .exists([])?;
+    if !has_playlist_artwork {
+        connection.execute(
+            "ALTER TABLE playlists ADD COLUMN artwork_hash TEXT REFERENCES artworks(hash)",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Size and modification time: a file whose stamp is unchanged is not read again.

@@ -82,6 +82,9 @@ struct CallbackContext {
     callback_count: AtomicU64,
     /// Silent frames written since the engine requested a close.
     silent_frames_since_close_request: AtomicU64,
+    /// Shared mode only: the user's volume as `f32` bits (unity in exclusive mode, never read).
+    shared_mode_gain_bits: AtomicU32,
+    is_shared_mode: bool,
 }
 
 // SAFETY: the `UnsafeCell` fields are accessed by one thread at a time: by the engine thread
@@ -90,6 +93,15 @@ struct CallbackContext {
 unsafe impl Sync for CallbackContext {}
 
 impl CallbackContext {
+    /// The gain to apply, or `None` for unity (exclusive mode, or shared at 0 dB).
+    fn shared_mode_gain(&self) -> Option<f32> {
+        if !self.is_shared_mode {
+            return None;
+        }
+        let gain = f32::from_bits(self.shared_mode_gain_bits.load(Ordering::Acquire));
+        (gain != 1.0).then_some(gain)
+    }
+
     fn store_failure(&self, failure: OutputFailure) {
         self.state.store_status(OutputStreamStatus::Failed(failure));
     }
@@ -125,10 +137,14 @@ impl CallbackContext {
                     // Chunks of the scratch capacity: an upsampling converter may pull more
                     // frames than the slice maximum, so no request size is too large.
                     let chunk_bytes = scratch.len() - scratch.len() % self.bytes_per_frame;
+                    let gain = self.shared_mode_gain();
                     for destination_chunk in destination.chunks_mut(chunk_bytes.max(1)) {
                         let integer_bytes = &mut scratch[..destination_chunk.len()];
                         render_source.render(integer_bytes);
                         convert_integer_samples_to_float32(integer_bytes, destination_chunk);
+                        if let Some(gain) = gain {
+                            apply_gain_to_float32_samples(destination_chunk, gain);
+                        }
                     }
                 } else {
                     destination.fill(0);
@@ -142,6 +158,14 @@ impl CallbackContext {
                     .fetch_add(u64::from(frame_count), Ordering::AcqRel);
             }
         }
+    }
+}
+
+/// Scales little-endian float32 samples in place. Shared mode only: the system mixer would
+/// convert and mix them anyway, so nothing bit-perfect is lost. Real-time safe.
+fn apply_gain_to_float32_samples(float_bytes: &mut [u8], gain: f32) {
+    for sample in float_bytes.as_chunks_mut::<4>().0 {
+        *sample = (f32::from_le_bytes(*sample) * gain).to_le_bytes();
     }
 }
 
@@ -347,6 +371,8 @@ pub(crate) fn open_coreaudio_stream(
         callbacks_in_progress: AtomicU32::new(0),
         callback_count: AtomicU64::new(0),
         silent_frames_since_close_request: AtomicU64::new(0),
+        shared_mode_gain_bits: AtomicU32::new(1.0_f32.to_bits()),
+        is_shared_mode: plan.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer,
     });
     let context = NonNull::from(Box::leak(context));
     let unit = match configure_unit(&plan, context) {
@@ -526,6 +552,12 @@ impl OutputStream for CoreAudioStream {
         Ok(())
     }
 
+    fn set_shared_mode_volume(&mut self, linear_gain: f32) {
+        self.context()
+            .shared_mode_gain_bits
+            .store(linear_gain.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+    }
+
     fn status(&self) -> OutputStreamStatus {
         let context = self.context();
         let status = context.state.status();
@@ -589,6 +621,22 @@ mod tests {
         };
         assert!(watchdog.has_timed_out(5));
         assert!(!watchdog.has_timed_out(6));
+    }
+
+    #[test]
+    fn gain_scales_every_float_sample() {
+        let mut bytes: Vec<u8> = [1.0_f32, -0.5]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        apply_gain_to_float32_samples(&mut bytes, 0.5);
+        let values: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        assert_eq!(values, vec![0.5, -0.25]);
     }
 
     #[test]

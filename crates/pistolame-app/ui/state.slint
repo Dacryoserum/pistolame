@@ -5,7 +5,6 @@ export struct AlbumCard {
     title: string,
     artist: string,
     artwork: image,
-    has-custom-artwork: bool,
 }
 
 export struct TrackRowData {
@@ -31,7 +30,6 @@ export struct DetailInfo {
     artist: string,
     meta-line: string,
     artwork: image,
-    has-custom-artwork: bool,
     footer-line: string,
     is-authentic: bool,
     verdict-label: string,
@@ -50,6 +48,55 @@ export enum ViewKind {
     detail,
     placeholder,
     now-playing,
+    playlist,
+}
+
+// Where a track action applies: one track of an album, a whole album, one playlist entry or a
+// whole playlist.
+export enum TrackSource {
+    album-track,
+    album,
+    playlist-entry,
+    playlist,
+}
+
+export struct TrackTarget {
+    source: TrackSource,
+    album: int,
+    track: int,
+    // Position among every entry of the open playlist.
+    position: int,
+}
+
+export enum TrackAction {
+    play-next,
+    add-to-queue,
+    add-to-playlist,
+    remove-from-playlist,
+}
+
+export struct QueueRow {
+    title: string,
+    subtitle: string,
+    duration-label: string,
+    artwork: image,
+}
+
+export struct PlaylistItem {
+    name: string,
+    track-count: int,
+    artwork: image,
+}
+
+export struct PlaylistTrackRow {
+    // Position among every entry of the playlist (stable for removal).
+    position: int,
+    number: int,
+    title: string,
+    subtitle: string,
+    format-label: string,
+    duration-label: string,
+    is-current: bool,
 }
 
 export global AppState {
@@ -82,9 +129,64 @@ export global AppState {
     in property <string> current-filename;
     in-out property <ViewKind> previous-view: ViewKind.grid;
     callback open-current-album();
-    // Album cover chosen by the user, stored in the library (music files untouched).
-    callback choose-album-artwork(int);
-    callback reset-album-artwork(int);
+    // "Modifier l'album" sheet: title, artist and cover shown in the app, stored in the
+    // library; the music files are never modified.
+    in-out property <bool> is-album-editor-open;
+    in-out property <string> editor-title;
+    in-out property <string> editor-artist;
+    in property <image> editor-artwork;
+    in property <bool> editor-has-custom-artwork;
+    // Playlists (stored in the library).
+    in property <[PlaylistItem]> playlists;
+    in-out property <int> selected-playlist: -1;
+    in property <string> playlist-title;
+    in property <string> playlist-meta;
+    in property <image> playlist-artwork;
+    in property <[PlaylistTrackRow]> playlist-tracks;
+    callback create-playlist();
+    callback open-playlist(int);
+    callback play-playlist-row(int);
+    callback remove-playlist-entry(int);
+    in-out property <bool> is-playlist-editor-open;
+    in-out property <string> playlist-editor-name;
+    in property <image> playlist-editor-artwork;
+    callback playlist-editor-choose-artwork();
+    callback playlist-editor-remove-artwork();
+    callback begin-playlist-edit();
+    callback save-playlist-edit();
+    callback delete-current-playlist();
+    // "Ajouter à une playlist" sheet, for an album or one of its tracks.
+    in-out property <bool> is-add-to-playlist-open;
+    in property <string> add-to-playlist-subject;
+    callback add-pending-to-playlist(int);
+    callback add-pending-to-new-playlist();
+    // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
+    // playlist being played.
+    callback track-action(TrackTarget, TrackAction);
+    in-out property <bool> is-queue-open;
+    in property <bool> has-queue-current;
+    in property <QueueRow> queue-current;
+    in property <[QueueRow]> queue-up-next;
+    in property <[QueueRow]> queue-upcoming;
+    in property <string> queue-context-name;
+    callback queue-remove(int);
+    callback queue-clear();
+    callback queue-play-up-next(int);
+    callback queue-play-upcoming(int);
+    // Self-update: a newer release was found on GitHub.
+    in property <bool> is-update-available;
+    in property <string> current-version;
+    in property <string> update-version;
+    in property <string> update-notes;
+    in property <string> update-status;
+    in property <bool> is-updating;
+    in-out property <bool> is-update-panel-open;
+    callback start-update();
+    callback begin-album-edit(int);
+    callback editor-choose-artwork();
+    callback editor-reset-artwork();
+    callback save-album-edit();
+    callback cancel-album-edit();
 
     public function show-now-playing() {
         if has-current-track && view != ViewKind.now-playing {
@@ -106,6 +208,8 @@ export global AppState {
     in property <bool> is-playing: false;
     in property <string> badge-label;
     in property <bool> is-shared;
+    // A stream is open (playing or paused with the device held); false = output released.
+    in property <bool> is-output-active;
     in property <bool> is-bit-perfect: false;
     in property <string> signal-title;
     in property <string> signal-description;
@@ -123,7 +227,12 @@ export global AppState {
 
     // UI state owned by Slint (Rust may read or reset it).
     in-out property <bool> is-dark: true;
-    in-out property <int> volume: 100;
+    // Shared-mode volume: 0 dB (full level) to -60 dB, or muted. Greyed in exclusive mode,
+    // where the DAC sets the level and Pistolame applies no gain.
+    in property <float> volume-decibels: 0;
+    in property <bool> is-volume-muted;
+    in property <string> volume-label: "0 dB";
+    in property <string> volume-description;
     in-out property <int> selected-item: 2;
     in-out property <ViewKind> view: ViewKind.grid;
     in-out property <bool> is-popover-open;
@@ -143,7 +252,7 @@ export global AppState {
     callback previous-track();
     callback next-track();
     callback seek(float);
-    callback volume-changed(int);
+    callback volume-changed(float, bool);
     callback toggle-theme();
 
     public function select-item(item: int) {

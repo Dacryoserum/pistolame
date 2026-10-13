@@ -67,6 +67,7 @@ pub(crate) struct EngineThread {
     devices: Vec<OutputDeviceInfo>,
     selected_device_id: Option<OutputDeviceId>,
     preference: OutputModePreference,
+    shared_mode_volume: crate::volume::SharedModeVolume,
     state: PlaybackState,
     last_track_number: u64,
     last_opened_path: Option<PathBuf>,
@@ -108,6 +109,7 @@ impl EngineThread {
             devices: Vec::new(),
             selected_device_id: None,
             preference: setup.options.output_mode_preference,
+            shared_mode_volume: setup.options.shared_mode_volume,
             state: PlaybackState::Stopped,
             last_track_number: 0,
             last_opened_path: None,
@@ -182,6 +184,12 @@ impl EngineThread {
             EngineCommand::Pause => self.pause(),
             EngineCommand::Stop => self.stop(),
             EngineCommand::SeekTo { position_in_track } => self.seek_to(position_in_track),
+            EngineCommand::SetSharedModeVolume { volume } => {
+                self.shared_mode_volume = volume;
+                if let Some(stream) = self.stream.as_mut() {
+                    stream.set_shared_mode_volume(volume.linear_gain());
+                }
+            }
             EngineCommand::Shutdown => {
                 self.stop();
                 self.is_shutting_down = true;
@@ -389,7 +397,10 @@ impl EngineThread {
             policy: OpenPolicy::for_preference(self.preference),
         };
         let mut stream = match self.output.open_stream(request, render_source) {
-            Ok(stream) => stream,
+            Ok(mut stream) => {
+                stream.set_shared_mode_volume(self.shared_mode_volume.linear_gain());
+                stream
+            }
             Err(open_error) => {
                 pipeline.render_source = Some(open_error.render_source);
                 let failure = OpenFailure::from_output_error(&open_error.error);
@@ -696,6 +707,7 @@ mod tests {
             options: EngineStartOptions {
                 output_mode_preference: OutputModePreference::Exclusive,
                 preferred_device_id: None,
+                shared_mode_volume: Default::default(),
             },
             tuning,
             counters: Arc::clone(&counters),

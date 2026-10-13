@@ -294,12 +294,12 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
   remaining times appear at both ends of line 2 and a 9 px thumb on the rail (drag to seek).
   Right: the quality badge.
 - **Quality badge** — pill, 20 high, padding 8, gap 4, icon 12 + label role text.
-  *Bit-perfect · 24/96*: `status-ok-tint` / `status-ok` / seal-check-fill.
-  *Traité · 24/96*: `fill-control` / `text-primary` / sliders-horizontal.
-  *Mode partagé · 24/96*: `fill-control` / `text-primary` / intersect. The default output mode;
+  *Bit-perfect · 24 bits / 96 kHz*: `status-ok-tint` / `status-ok` / seal-check-fill.
+  *Traité · 24 bits / 96 kHz*: `fill-control` / `text-primary` / sliders-horizontal.
+  *Mode partagé · 24 bits / 96 kHz*: `fill-control` / `text-primary` / intersect. The default output mode;
   the popover says why ("Le système peut convertir, rééchantillonner ou mixer le signal ; le
   bit-perfect n'est pas garanti") and shows the system mix format (e.g. 176,4 kHz, flottant).
-  *Exclusif · 24/96*: `fill-control` / `text-primary` / waveform. The device is held
+  *Exclusif · 24 bits / 96 kHz*: `fill-control` / `text-primary` / waveform. The device is held
   exclusively at the source rate but only accepts float samples (macOS built-in outputs): the
   samples are converted to 32-bit float exactly, and what the system does next cannot be
   verified, so it is never "Bit-perfect".

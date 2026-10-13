@@ -1,9 +1,14 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
-use crate::{AlbumCard, AppState, AppWindow, DetailInfo, PathStep, TrackRowData};
+use crate::{
+    AlbumCard, AppState, AppWindow, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow,
+    TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind,
+};
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
-use pistolame_library::{AlbumKey, LibrarySnapshot, LibraryStore, MusicFile};
+use pistolame_library::{
+    AlbumKey, AlbumTextOverride, LibrarySnapshot, LibraryStore, MusicFile, Playlist,
+};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -12,13 +17,42 @@ use std::time::Duration;
 
 struct Album {
     key: AlbumKey,
+    /// What the app shows: the user's edit, or the tags.
     title: String,
     artist: String,
+    /// What the tags say, to tell an edit from the original.
+    tag_title: String,
+    tag_artist: String,
     tracks: Vec<MusicFile>,
     artwork: slint::Image,
     /// Whether the user chose this cover (stored in the library, files untouched).
     has_custom_artwork: bool,
 }
+
+/// A cover change waiting for "Enregistrer" in the album editor.
+enum PendingArtwork {
+    Unchanged,
+    Chosen { bytes: Vec<u8>, image: slint::Image },
+    Restored,
+}
+
+/// The album being edited in the "Modifier l'album" sheet.
+struct AlbumEditDraft {
+    index: usize,
+    pending_artwork: PendingArtwork,
+}
+
+/// What the update worker sends back to the UI thread.
+enum UpdateMessage {
+    Checked(Option<crate::updater::AvailableUpdate>),
+    CheckFailed,
+    Installed(crate::updater::InstalledUpdate),
+    InstallFailed(String),
+}
+
+/// First update check after start-up, then once a day.
+const FIRST_UPDATE_CHECK_DELAY: Duration = Duration::from_secs(5);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// What the library worker sends back to the UI thread.
 struct LibraryUpdate {
@@ -41,6 +75,23 @@ pub(crate) struct UiBridge {
     imports: Receiver<LibraryUpdate>,
     import_sender: Sender<LibraryUpdate>,
     is_importing: Cell<bool>,
+    album_edit: RefCell<Option<AlbumEditDraft>>,
+    /// The user's playlists, as stored in the library.
+    playlists: RefCell<Vec<Playlist>>,
+    /// What plays now and next (album or playlist, plus the tracks queued by hand).
+    play_queue: RefCell<crate::play_queue::PlayQueue>,
+    /// Cover change waiting for "Enregistrer" in the playlist editor.
+    pending_playlist_artwork: RefCell<PendingArtwork>,
+    /// Tracks waiting in the "Ajouter à une playlist" sheet.
+    pending_playlist_tracks: RefCell<Vec<PathBuf>>,
+    /// Self-update: messages from the worker, the update found, and when to check next.
+    update_messages: Receiver<UpdateMessage>,
+    update_sender: Sender<UpdateMessage>,
+    available_update: RefCell<Option<crate::updater::AvailableUpdate>>,
+    next_update_check: Cell<std::time::Instant>,
+    is_update_worker_busy: Cell<bool>,
+    /// The latest signal-path assessment, to redraw the path when the volume changes.
+    last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
     sample_rate_hz: Cell<u32>,
@@ -71,6 +122,7 @@ impl UiBridge {
             settings.engine_start_options(),
         )?;
         let (sender, receiver) = unbounded();
+        let (update_sender, update_messages) = unbounded();
         let bridge = Rc::new(Self {
             window: window.as_weak(),
             engine,
@@ -81,6 +133,17 @@ impl UiBridge {
             imports: receiver,
             import_sender: sender,
             is_importing: Cell::new(false),
+            album_edit: RefCell::new(None),
+            last_assessment: RefCell::new(None),
+            update_messages,
+            update_sender,
+            available_update: RefCell::new(None),
+            next_update_check: Cell::new(std::time::Instant::now() + FIRST_UPDATE_CHECK_DELAY),
+            is_update_worker_busy: Cell::new(false),
+            playlists: RefCell::new(Vec::new()),
+            play_queue: RefCell::new(crate::play_queue::PlayQueue::default()),
+            pending_playlist_tracks: RefCell::new(Vec::new()),
+            pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
             sample_rate_hz: Cell::new(0),
@@ -122,6 +185,7 @@ impl UiBridge {
     }
 
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {
+        self.show_volume();
         let state = window.global::<AppState>();
         let handle = self.clone();
         state.on_import_files(move || {
@@ -144,17 +208,31 @@ impl UiBridge {
         let handle = self.clone();
         state.on_search_changed(move |query| handle.update_grid(query.as_str()));
         let handle = self.clone();
-        state.on_choose_album_artwork(move |index| {
+        state.on_volume_changed(move |decibels, is_muted| {
+            handle.set_shared_mode_volume(SharedModeVolume {
+                is_muted,
+                ..SharedModeVolume::at_decibels(decibels)
+            });
+        });
+        self.connect_playlists(&state);
+        state.set_current_version(crate::updater::CURRENT_VERSION.into());
+        let handle = self.clone();
+        state.on_start_update(move || handle.start_update());
+        self.connect_queue(&state);
+        let handle = self.clone();
+        state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
-                handle.choose_album_artwork(index);
+                handle.begin_album_edit(index);
             }
         });
         let handle = self.clone();
-        state.on_reset_album_artwork(move |index| {
-            if let Ok(index) = usize::try_from(index) {
-                handle.reset_album_artwork(index);
-            }
-        });
+        state.on_editor_choose_artwork(move || handle.editor_choose_artwork());
+        let handle = self.clone();
+        state.on_editor_reset_artwork(move || handle.editor_reset_artwork());
+        let handle = self.clone();
+        state.on_save_album_edit(move || handle.save_album_edit());
+        let handle = self.clone();
+        state.on_cancel_album_edit(move || handle.close_album_editor());
         let handle = self.clone();
         state.on_open_current_album(move || {
             if let Some((album, _)) = handle.selected_track.get() {
@@ -245,6 +323,57 @@ impl UiBridge {
         if let Err(error) = self.settings.borrow().save() {
             self.message(format!("Impossible d’enregistrer les réglages : {error}"));
         }
+    }
+
+    /// Applies, remembers and shows the shared-mode volume.
+    fn set_shared_mode_volume(&self, volume: SharedModeVolume) {
+        self.engine
+            .send(EngineCommand::SetSharedModeVolume { volume });
+        self.settings.borrow_mut().set_shared_mode_volume(volume);
+        self.save_settings();
+        self.show_volume();
+    }
+
+    /// Shows the remembered volume on the slider, the output page and the signal path.
+    fn show_volume(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let volume = self.settings.borrow().shared_mode_volume();
+        state.set_volume_decibels(volume.decibels);
+        state.set_is_volume_muted(volume.is_muted);
+        state.set_volume_label(presentation::volume_label(volume).into());
+        let is_exclusive_output = self
+            .last_assessment
+            .borrow()
+            .as_ref()
+            .map_or(state.get_exclusive(), |assessment| {
+                assessment.negotiated.access_mode == DeviceAccessMode::Exclusive
+            });
+        state.set_volume_description(
+            presentation::volume_description(volume, is_exclusive_output).into(),
+        );
+        if let Some(assessment) = self.last_assessment.borrow().as_ref() {
+            state.set_path_steps(Self::path_steps(assessment, volume));
+            self.update_detail_signal();
+        }
+    }
+
+    fn path_steps(
+        assessment: &SignalPathAssessment,
+        volume: SharedModeVolume,
+    ) -> ModelRc<PathStep> {
+        ModelRc::new(VecModel::from(
+            presentation::signal_steps(assessment, volume)
+                .into_iter()
+                .map(|(label, value, is_transparent)| PathStep {
+                    label: label.into(),
+                    value: value.into(),
+                    is_transparent,
+                })
+                .collect::<Vec<_>>(),
+        ))
     }
 
     fn set_exclusive(&self, enabled: bool) {
@@ -369,6 +498,8 @@ impl UiBridge {
             .borrow()
             .get(self.detail_album.get())
             .map(|album| album.key.clone());
+        let mut snapshot = snapshot;
+        *self.playlists.borrow_mut() = std::mem::take(&mut snapshot.playlists);
         let albums = albums_from_snapshot(snapshot);
         self.selected_track.set(selected_path.and_then(|path| {
             albums.iter().enumerate().find_map(|(album, entry)| {
@@ -396,64 +527,157 @@ impl UiBridge {
             state.set_playing_album_index(album);
             state.set_playing_track_index(track);
         }
+        self.show_playlists();
     }
 
-    /// Lets the user pick a JPEG or PNG for album `index`; the music files stay untouched.
-    fn choose_album_artwork(&self, index: usize) {
-        let Some(key) = self.album_key(index) else {
+    /// Opens the "Modifier l'album" sheet for album `index`.
+    fn begin_album_edit(&self, index: usize) {
+        let Some(window) = self.window.upgrade() else {
             return;
         };
-        let Some(path) = rfd::FileDialog::new()
+        let albums = self.albums.borrow();
+        let Some(album) = albums.get(index) else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_editor_title(album.title.as_str().into());
+        state.set_editor_artist(album.artist.as_str().into());
+        state.set_editor_artwork(album.artwork.clone());
+        state.set_editor_has_custom_artwork(album.has_custom_artwork);
+        state.set_is_album_editor_open(true);
+        *self.album_edit.borrow_mut() = Some(AlbumEditDraft {
+            index,
+            pending_artwork: PendingArtwork::Unchanged,
+        });
+    }
+
+    /// Lets the user pick a JPEG or PNG; applied only on "Enregistrer".
+    fn editor_choose_artwork(&self) {
+        let Some((bytes, image)) = self.pick_cover_image() else {
+            return;
+        };
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_editor_artwork(image.clone());
+            state.set_editor_has_custom_artwork(true);
+        }
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            draft.pending_artwork = PendingArtwork::Chosen { bytes, image };
+        }
+    }
+
+    /// Asks for a JPEG or PNG cover and checks it decodes and is not too large.
+    fn pick_cover_image(&self) -> Option<(Vec<u8>, slint::Image)> {
+        let path = rfd::FileDialog::new()
             .add_filter("Image", &["jpg", "jpeg", "png"])
-            .pick_file()
-        else {
-            return;
-        };
+            .pick_file()?;
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.message(format!("Impossible de lire l’image : {error}"));
-                return;
+                return None;
             }
         };
+        if bytes.len() as u64 > pistolame_library::MAX_COVER_BYTES {
+            self.message("Cette image dépasse 16 Mo.".into());
+            return None;
+        }
         let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
             self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
-            return;
+            return None;
         };
-        let stored = self.with_library(|store| store.set_album_artwork(&key, &bytes));
-        if stored {
-            self.set_album_artwork(index, image, true);
-        }
+        Some((bytes, image))
     }
 
-    /// Goes back to the cover found in the files for album `index`.
-    fn reset_album_artwork(&self, index: usize) {
-        let Some(key) = self.album_key(index) else {
+    /// Shows the files' own cover again; applied only on "Enregistrer".
+    fn editor_reset_artwork(&self) {
+        let Some(index) = self.album_edit.borrow().as_ref().map(|draft| draft.index) else {
             return;
         };
-        if self.with_library(|store| store.clear_album_artwork(&key)) {
-            let original = self
-                .albums
-                .borrow()
-                .get(index)
-                .map(|album| decode_artwork(original_artwork(&album.tracks)))
-                .unwrap_or_default();
-            self.set_album_artwork(index, original, false);
-        }
-    }
-
-    fn album_key(&self, index: usize) -> Option<AlbumKey> {
-        self.albums
+        let original = self
+            .albums
             .borrow()
             .get(index)
-            .map(|album| album.key.clone())
+            .map(|album| decode_artwork(original_artwork(&album.tracks)))
+            .unwrap_or_default();
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_editor_artwork(original);
+            state.set_editor_has_custom_artwork(false);
+        }
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            draft.pending_artwork = PendingArtwork::Restored;
+        }
     }
 
-    /// Runs one quick library change on the UI thread; `false` (and a message) on failure.
-    fn with_library(
+    /// Stores the edits in the library, then shows them everywhere.
+    fn save_album_edit(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(draft) = self.album_edit.borrow_mut().take() else {
+            self.close_album_editor();
+            return;
+        };
+        let state = window.global::<AppState>();
+        let Some((key, tag_title, tag_artist)) =
+            self.albums.borrow().get(draft.index).map(|album| {
+                (
+                    album.key.clone(),
+                    album.tag_title.clone(),
+                    album.tag_artist.clone(),
+                )
+            })
+        else {
+            self.close_album_editor();
+            return;
+        };
+        let text = AlbumTextOverride {
+            title: edited_value(state.get_editor_title().as_str(), &tag_title),
+            artist: edited_value(state.get_editor_artist().as_str(), &tag_artist),
+        };
+        let saved = self.with_library(|store| {
+            store.set_album_text(&key, &text)?;
+            match &draft.pending_artwork {
+                PendingArtwork::Unchanged => Ok(()),
+                PendingArtwork::Chosen { bytes, .. } => store.set_album_artwork(&key, bytes),
+                PendingArtwork::Restored => store.clear_album_artwork(&key),
+            }
+        });
+        if saved.is_none() {
+            return;
+        }
+        if let Some(album) = self.albums.borrow_mut().get_mut(draft.index) {
+            album.title = text.title.clone().unwrap_or(tag_title);
+            album.artist = text.artist.clone().unwrap_or(tag_artist);
+            match draft.pending_artwork {
+                PendingArtwork::Unchanged => {}
+                PendingArtwork::Chosen { image, .. } => {
+                    album.artwork = image;
+                    album.has_custom_artwork = true;
+                }
+                PendingArtwork::Restored => {
+                    album.artwork = decode_artwork(original_artwork(&album.tracks));
+                    album.has_custom_artwork = false;
+                }
+            }
+        }
+        self.close_album_editor();
+        self.refresh_album(draft.index);
+    }
+
+    fn close_album_editor(&self) {
+        self.album_edit.borrow_mut().take();
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_is_album_editor_open(false);
+        }
+    }
+
+    /// Runs one quick library change on the UI thread; `None` (and a message) on failure.
+    fn with_library<T>(
         &self,
-        change: impl FnOnce(&mut LibraryStore) -> Result<(), pistolame_library::LibraryError>,
-    ) -> bool {
+        change: impl FnOnce(&mut LibraryStore) -> Result<T, pistolame_library::LibraryError>,
+    ) -> Option<T> {
         let result = self
             .library_database
             .clone()
@@ -461,19 +685,16 @@ impl UiBridge {
             .and_then(|database| LibraryStore::open(&database).map_err(|error| error.to_string()))
             .and_then(|mut store| change(&mut store).map_err(|error| error.to_string()));
         match result {
-            Ok(()) => true,
+            Ok(value) => Some(value),
             Err(error) => {
-                self.message(format!("Pochette non enregistrée : {error}"));
-                false
+                self.message(format!("Bibliothèque non enregistrée : {error}"));
+                None
             }
         }
     }
 
-    fn set_album_artwork(&self, index: usize, artwork: slint::Image, is_custom: bool) {
-        if let Some(album) = self.albums.borrow_mut().get_mut(index) {
-            album.artwork = artwork.clone();
-            album.has_custom_artwork = is_custom;
-        }
+    /// Redraws everything that shows album `index`: grid, album page, LCD and current track.
+    fn refresh_album(&self, index: usize) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -482,12 +703,14 @@ impl UiBridge {
         if self.detail_album.get() == index {
             self.show_album(index);
         }
-        if self
-            .selected_track
-            .get()
-            .is_some_and(|(album, _)| album == index)
+        let albums = self.albums.borrow();
+        if let (Some((album_index, _)), Some(album)) =
+            (self.selected_track.get(), albums.get(index))
+            && album_index == index
         {
-            state.set_lcd_artwork(artwork);
+            state.set_lcd_artwork(album.artwork.clone());
+            state.set_current_album(album.title.as_str().into());
+            state.set_current_artist(album.artist.as_str().into());
         }
     }
 
@@ -511,7 +734,6 @@ impl UiBridge {
                 title: album.title.as_str().into(),
                 artist: album.artist.as_str().into(),
                 artwork: album.artwork.clone(),
-                has_custom_artwork: album.has_custom_artwork,
             })
             .collect();
         window
@@ -541,7 +763,6 @@ impl UiBridge {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
             artwork: album.artwork.clone(),
-            has_custom_artwork: album.has_custom_artwork,
             meta_line: format!("{} morceaux · FLAC", album.tracks.len()).into(),
             footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
             verdict_label: "Non analysé".into(),
@@ -560,10 +781,9 @@ impl UiBridge {
                     index as i32 + 1
                 },
                 title: track.title.as_str().into(),
-                format_label: format!(
-                    "{}/{}",
+                format_label: presentation::audio_format(
                     track.bits_per_sample,
-                    presentation::frequency(track.sample_rate_hz)
+                    track.sample_rate_hz,
                 )
                 .into(),
                 duration_label: presentation::clock(track.duration_seconds).into(),
@@ -608,19 +828,62 @@ impl UiBridge {
         });
     }
 
+    /// Plays track `track` of album `album`; the album becomes the playing context.
     fn play_track(&self, album: usize, track: usize) {
-        let albums = self.albums.borrow();
-        let Some(file) = albums.get(album).and_then(|album| album.tracks.get(track)) else {
+        let (paths, name) = match self.albums.borrow().get(album) {
+            Some(album) => (
+                album
+                    .tracks
+                    .iter()
+                    .map(|track| track.path.clone())
+                    .collect(),
+                album.title.clone(),
+            ),
+            None => return,
+        };
+        self.play_context(paths, track, name);
+    }
+
+    /// Plays `paths` (an album or a playlist called `name`) from `position`.
+    fn play_context(&self, paths: Vec<PathBuf>, position: usize, name: String) {
+        let path = self
+            .play_queue
+            .borrow_mut()
+            .play_context(paths, position, name);
+        if let Some(path) = path {
+            self.start_playback(path);
+        }
+    }
+
+    /// Opens and plays `path`, a track the queue just made current.
+    fn start_playback(&self, path: PathBuf) {
+        let Some(location) = self.track_location(&path) else {
+            self.message(format!("Morceau introuvable : {}", path.display()));
             return;
         };
-        self.selected_track.set(Some((album, track)));
+        self.selected_track.set(Some(location));
         self.should_advance.set(true);
         self.stream_end_baseline
             .set(self.engine.counters().stream_ends_reached);
         self.message(String::new());
-        self.engine.send(EngineCommand::OpenFileAndPlay {
-            path: file.path.clone(),
-        });
+        self.engine.send(EngineCommand::OpenFileAndPlay { path });
+        self.refresh_playlist_view();
+        self.refresh_queue_view();
+    }
+
+    /// The (album, track) indices of a file in the current album list.
+    fn track_location(&self, path: &std::path::Path) -> Option<(usize, usize)> {
+        self.albums
+            .borrow()
+            .iter()
+            .enumerate()
+            .find_map(|(album_index, album)| {
+                album
+                    .tracks
+                    .iter()
+                    .position(|track| track.path == path)
+                    .map(|track_index| (album_index, track_index))
+            })
     }
 
     fn random_track(&self, count: usize) -> usize {
@@ -633,39 +896,53 @@ impl UiBridge {
         (seed >> 32) as usize % count.max(1)
     }
 
+    /// The previous/next buttons. "Previous" restarts the track after 3 s, like every player.
     fn adjacent_track(&self, next: bool) {
-        let Some((album, track)) = self.selected_track.get() else {
-            return;
-        };
-        let count = self
-            .albums
-            .borrow()
-            .get(album)
-            .map_or(0, |entry| entry.tracks.len());
-        if count == 0 {
+        if self.selected_track.get().is_none() {
             return;
         }
-        if !next
-            && self.engine.counters().frames_rendered_in_track
-                > u64::from(self.sample_rate_hz.get()) * 3
+        if next {
+            self.play_next_in_queue(true);
+            return;
+        }
+        if self.engine.counters().frames_rendered_in_track
+            > u64::from(self.sample_rate_hz.get()) * 3
         {
             self.engine.send(EngineCommand::SeekTo {
                 position_in_track: Duration::ZERO,
             });
             return;
         }
-        let shuffle = self
+        let path = self.play_queue.borrow_mut().previous();
+        if let Some(path) = path {
+            self.start_playback(path);
+        }
+    }
+
+    /// Plays what comes next. The "next" button wraps around the album or playlist; the end of
+    /// a track wraps only when repeat is on.
+    fn play_next_in_queue(&self, is_manual: bool) {
+        let (is_shuffle_on, is_repeat_on) = self
             .window
             .upgrade()
-            .is_some_and(|window| window.global::<AppState>().get_is_shuffle_on());
-        let target = if next && shuffle && count > 1 {
-            (track + 1 + self.random_track(count - 1)) % count
-        } else if next {
-            (track + 1) % count
-        } else {
-            (track + count - 1) % count
+            .map(|window| {
+                let state = window.global::<AppState>();
+                (state.get_is_shuffle_on(), state.get_is_repeat_on())
+            })
+            .unwrap_or_default();
+        let (count, position) = {
+            let queue = self.play_queue.borrow();
+            (queue.context_len(), queue.context_position())
         };
-        self.play_track(album, target);
+        let shuffled_position = (is_shuffle_on && count > 1)
+            .then(|| (position + 1 + self.random_track(count - 1)) % count);
+        let path = self
+            .play_queue
+            .borrow_mut()
+            .advance(shuffled_position, is_manual || is_repeat_on);
+        if let Some(path) = path {
+            self.start_playback(path);
+        }
     }
 
     fn advance_after_end(&self) {
@@ -673,21 +950,667 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
-        let Some((album, track)) = self.selected_track.get() else {
+        if self
+            .play_queue
+            .borrow()
+            .has_next(state.get_is_repeat_on(), state.get_is_shuffle_on())
+        {
+            self.play_next_in_queue(false);
+        }
+    }
+
+    /// Runs a "…" menu action on a track, an album or a playlist.
+    fn run_track_action(&self, target: TrackTarget, action: TrackAction) {
+        if action == TrackAction::RemoveFromPlaylist {
+            if target.source == TrackSource::PlaylistEntry
+                && let Ok(position) = usize::try_from(target.position)
+            {
+                self.remove_playlist_entry(position);
+            }
+            return;
+        }
+        let Some((paths, subject)) = self.target_tracks(&target) else {
             return;
         };
-        let count = self
-            .albums
+        match action {
+            TrackAction::PlayNext | TrackAction::AddToQueue => {
+                {
+                    let mut queue = self.play_queue.borrow_mut();
+                    if action == TrackAction::PlayNext {
+                        queue.play_next(paths);
+                    } else {
+                        queue.add_to_queue(paths);
+                    }
+                }
+                if self.selected_track.get().is_none() {
+                    // Nothing was playing: start with the first queued track.
+                    self.play_next_in_queue(false);
+                } else {
+                    self.refresh_queue_view();
+                }
+                self.status(format!(
+                    "{subject} : {}",
+                    if action == TrackAction::PlayNext {
+                        "lu ensuite"
+                    } else {
+                        "ajouté à la file d’attente"
+                    }
+                ));
+            }
+            TrackAction::AddToPlaylist => {
+                *self.pending_playlist_tracks.borrow_mut() = paths;
+                self.open_add_to_playlist(subject);
+            }
+            TrackAction::RemoveFromPlaylist => {}
+        }
+    }
+
+    /// The tracks a menu action applies to, and how to name them.
+    fn target_tracks(&self, target: &TrackTarget) -> Option<(Vec<PathBuf>, String)> {
+        let albums = self.albums.borrow();
+        match target.source {
+            TrackSource::AlbumTrack => {
+                let track = albums
+                    .get(usize::try_from(target.album).ok()?)?
+                    .tracks
+                    .get(usize::try_from(target.track).ok()?)?;
+                Some((vec![track.path.clone()], format!("« {} »", track.title)))
+            }
+            TrackSource::Album => {
+                let album = albums.get(usize::try_from(target.album).ok()?)?;
+                Some((
+                    album
+                        .tracks
+                        .iter()
+                        .map(|track| track.path.clone())
+                        .collect(),
+                    format!("L’album « {} »", album.title),
+                ))
+            }
+            TrackSource::PlaylistEntry => {
+                let index = self.current_playlist_index()?;
+                let path = self
+                    .playlists
+                    .borrow()
+                    .get(index)?
+                    .track_paths
+                    .get(usize::try_from(target.position).ok()?)?
+                    .clone();
+                let title = albums
+                    .iter()
+                    .flat_map(|album| &album.tracks)
+                    .find(|track| track.path == path)
+                    .map(|track| track.title.clone())
+                    .unwrap_or_default();
+                Some((vec![path], format!("« {title} »")))
+            }
+            TrackSource::Playlist => {
+                let index = self.current_playlist_index()?;
+                drop(albums);
+                let paths: Vec<PathBuf> = self
+                    .playable_entries(index)
+                    .into_iter()
+                    .map(|(_, path, _)| path)
+                    .collect();
+                let name = self.playlists.borrow().get(index)?.name.clone();
+                Some((paths, format!("La playlist « {name} »")))
+            }
+        }
+    }
+
+    /// Asks GitHub for a newer release, in the background.
+    fn check_for_update(&self) {
+        self.next_update_check
+            .set(std::time::Instant::now() + UPDATE_CHECK_INTERVAL);
+        self.is_update_worker_busy.set(true);
+        let sender = self.update_sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pistolame-update-check".into())
+            .spawn(move || {
+                let _ = sender.send(match crate::updater::check_for_update() {
+                    Ok(update) => UpdateMessage::Checked(update),
+                    Err(_) => UpdateMessage::CheckFailed,
+                });
+            });
+        if spawned.is_err() {
+            self.is_update_worker_busy.set(false);
+        }
+    }
+
+    /// "Mettre à jour": download, verify and install in the background, then relaunch.
+    fn start_update(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        if let Some(reason) = crate::updater::installation_blocker() {
+            state.set_update_status(reason.into());
+            return;
+        }
+        let Some(update) = self.available_update.borrow().clone() else {
+            return;
+        };
+        state.set_is_updating(true);
+        state.set_update_status("Téléchargement et vérification de la signature…".into());
+        self.is_update_worker_busy.set(true);
+        let sender = self.update_sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pistolame-update-install".into())
+            .spawn(move || {
+                let work_folder = std::env::temp_dir().join("pistolame-update");
+                let result = crate::updater::download_and_verify(&update, &work_folder)
+                    .and_then(|archive| crate::updater::install(&archive, &work_folder));
+                let _ = sender.send(match result {
+                    Ok(installed) => UpdateMessage::Installed(installed),
+                    Err(error) => UpdateMessage::InstallFailed(format!("{error:#}")),
+                });
+            });
+        if spawned.is_err() {
+            self.is_update_worker_busy.set(false);
+            state.set_is_updating(false);
+        }
+    }
+
+    fn apply_update_message(&self, message: UpdateMessage) {
+        self.is_update_worker_busy.set(false);
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        match message {
+            UpdateMessage::Checked(Some(update)) => {
+                state.set_update_version(update.version.as_str().into());
+                state.set_update_notes(update.notes.as_str().into());
+                state.set_update_status("".into());
+                state.set_is_update_available(true);
+                *self.available_update.borrow_mut() = Some(update);
+            }
+            // No newer release, or no network: try again at the next interval, silently.
+            UpdateMessage::Checked(None) | UpdateMessage::CheckFailed => {}
+            UpdateMessage::Installed(installed) => {
+                state.set_update_status("Redémarrage…".into());
+                self.engine.send(EngineCommand::Stop);
+                match crate::updater::relaunch(&installed) {
+                    Ok(()) => {
+                        let _ = slint::quit_event_loop();
+                    }
+                    Err(error) => {
+                        state.set_is_updating(false);
+                        state.set_update_status(
+                            format!("Mise à jour installée, mais {error:#}. Relancez Pistolame.")
+                                .into(),
+                        );
+                    }
+                }
+            }
+            UpdateMessage::InstallFailed(error) => {
+                state.set_is_updating(false);
+                state.set_update_status(format!("Échec de la mise à jour : {error}").into());
+            }
+        }
+    }
+
+    /// A short confirmation in the status line under the sidebar.
+    fn status(&self, text: String) {
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_import_status(text.into());
+        }
+    }
+
+    /// Redraws the "À suivre" panel.
+    fn refresh_queue_view(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let queue = self.play_queue.borrow();
+        let row = |path: &PathBuf| self.queue_row(path);
+        let current = queue.current().and_then(row);
+        state.set_has_queue_current(current.is_some());
+        state.set_queue_current(current.unwrap_or_default());
+        state.set_queue_up_next(ModelRc::new(VecModel::from(
+            queue.up_next().filter_map(row).collect::<Vec<_>>(),
+        )));
+        state.set_queue_upcoming(ModelRc::new(VecModel::from(
+            queue.upcoming().iter().filter_map(row).collect::<Vec<_>>(),
+        )));
+        state.set_queue_context_name(queue.context_name().into());
+    }
+
+    fn queue_row(&self, path: &std::path::Path) -> Option<QueueRow> {
+        let (album, track) = self.track_location(path)?;
+        let albums = self.albums.borrow();
+        let album = albums.get(album)?;
+        let track = album.tracks.get(track)?;
+        Some(QueueRow {
+            title: track.title.as_str().into(),
+            subtitle: format!("{} — {}", album.artist, album.title).into(),
+            duration_label: presentation::clock(track.duration_seconds).into(),
+            artwork: album.artwork.clone(),
+        })
+    }
+
+    fn connect_queue(self: &Rc<Self>, state: &AppState<'_>) {
+        let handle = self.clone();
+        state.on_track_action(move |target, action| handle.run_track_action(target, action));
+        let handle = self.clone();
+        state.on_queue_remove(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.play_queue.borrow_mut().remove_up_next(index);
+                handle.refresh_queue_view();
+            }
+        });
+        let handle = self.clone();
+        state.on_queue_clear(move || {
+            handle.play_queue.borrow_mut().clear_up_next();
+            handle.refresh_queue_view();
+        });
+        let handle = self.clone();
+        state.on_queue_play_up_next(move |index| {
+            let path = usize::try_from(index)
+                .ok()
+                .and_then(|index| handle.play_queue.borrow_mut().jump_to_up_next(index));
+            if let Some(path) = path {
+                handle.start_playback(path);
+            }
+        });
+        let handle = self.clone();
+        state.on_queue_play_upcoming(move |index| {
+            let path = usize::try_from(index)
+                .ok()
+                .and_then(|index| handle.play_queue.borrow_mut().jump_to_upcoming(index));
+            if let Some(path) = path {
+                handle.start_playback(path);
+            }
+        });
+    }
+
+    fn connect_playlists(self: &Rc<Self>, state: &AppState<'_>) {
+        let handle = self.clone();
+        state.on_create_playlist(move || handle.create_playlist(Vec::new(), true));
+        let handle = self.clone();
+        state.on_open_playlist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.open_playlist(index);
+            }
+        });
+        let handle = self.clone();
+        state.on_play_playlist_row(move |row| {
+            if let Ok(row) = usize::try_from(row) {
+                handle.play_playlist_row(row);
+            }
+        });
+        let handle = self.clone();
+        state.on_remove_playlist_entry(move |position| {
+            if let Ok(position) = usize::try_from(position) {
+                handle.remove_playlist_entry(position);
+            }
+        });
+        let handle = self.clone();
+        state.on_begin_playlist_edit(move || handle.begin_playlist_edit());
+        let handle = self.clone();
+        state.on_save_playlist_edit(move || handle.save_playlist_edit());
+        let handle = self.clone();
+        state.on_playlist_editor_choose_artwork(move || {
+            if let Some((bytes, image)) = handle.pick_cover_image() {
+                if let Some(window) = handle.window.upgrade() {
+                    window
+                        .global::<AppState>()
+                        .set_playlist_editor_artwork(image.clone());
+                }
+                *handle.pending_playlist_artwork.borrow_mut() =
+                    PendingArtwork::Chosen { bytes, image };
+            }
+        });
+        let handle = self.clone();
+        state.on_playlist_editor_remove_artwork(move || {
+            if let Some(window) = handle.window.upgrade() {
+                window
+                    .global::<AppState>()
+                    .set_playlist_editor_artwork(slint::Image::default());
+            }
+            *handle.pending_playlist_artwork.borrow_mut() = PendingArtwork::Restored;
+        });
+        let handle = self.clone();
+        state.on_delete_current_playlist(move || handle.delete_current_playlist());
+        let handle = self.clone();
+        state.on_add_pending_to_playlist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.add_pending_to_playlist(index);
+            }
+        });
+        let handle = self.clone();
+        state.on_add_pending_to_new_playlist(move || {
+            let tracks = std::mem::take(&mut *handle.pending_playlist_tracks.borrow_mut());
+            handle.close_add_to_playlist();
+            handle.create_playlist(tracks, false);
+        });
+    }
+
+    fn show_playlists(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let items: Vec<PlaylistItem> = self
+            .playlists
             .borrow()
-            .get(album)
-            .map_or(0, |entry| entry.tracks.len());
-        if crate::transport::can_advance(
-            track,
-            count,
-            state.get_is_repeat_on(),
-            state.get_is_shuffle_on(),
-        ) {
-            self.adjacent_track(true);
+            .iter()
+            .map(|playlist| PlaylistItem {
+                name: playlist.name.as_str().into(),
+                track_count: playlist.track_paths.len() as i32,
+                artwork: decode_artwork(playlist.artwork.as_ref()),
+            })
+            .collect();
+        window
+            .global::<AppState>()
+            .set_playlists(ModelRc::new(VecModel::from(items)));
+        self.refresh_playlist_view();
+    }
+
+    /// The playlist open in the playlist view, if any.
+    fn current_playlist_index(&self) -> Option<usize> {
+        let window = self.window.upgrade()?;
+        let index = usize::try_from(window.global::<AppState>().get_selected_playlist()).ok()?;
+        (index < self.playlists.borrow().len()).then_some(index)
+    }
+
+    fn open_playlist(&self, index: usize) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_selected_playlist(index as i32);
+        state.set_is_popover_open(false);
+        state.set_view(ViewKind::Playlist);
+        self.refresh_playlist_view();
+    }
+
+    /// The entries of playlist `index` still in the library, with their position among all
+    /// entries (for removal) and their file.
+    fn playable_entries(&self, index: usize) -> Vec<(usize, PathBuf, (usize, usize))> {
+        let Some(paths) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.track_paths.clone())
+        else {
+            return Vec::new();
+        };
+        paths
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, path)| {
+                self.track_location(&path)
+                    .map(|location| (position, path, location))
+            })
+            .collect()
+    }
+
+    fn refresh_playlist_view(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let current_path = self.selected_track.get().and_then(|(album, track)| {
+            self.albums
+                .borrow()
+                .get(album)
+                .and_then(|album| album.tracks.get(track))
+                .map(|track| track.path.clone())
+        });
+        let albums = self.albums.borrow();
+        let mut total_seconds = 0;
+        let rows: Vec<PlaylistTrackRow> = self
+            .playable_entries(index)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(row, (position, path, (album, track)))| {
+                let album = albums.get(album)?;
+                let file = album.tracks.get(track)?;
+                total_seconds += file.duration_seconds;
+                Some(PlaylistTrackRow {
+                    position: position as i32,
+                    number: row as i32 + 1,
+                    title: file.title.as_str().into(),
+                    subtitle: format!("{} — {}", album.artist, album.title).into(),
+                    format_label: presentation::audio_format(
+                        file.bits_per_sample,
+                        file.sample_rate_hz,
+                    )
+                    .into(),
+                    duration_label: presentation::clock(file.duration_seconds).into(),
+                    is_current: current_path.as_ref() == Some(&path),
+                })
+            })
+            .collect();
+        let count = rows.len();
+        if let Some(playlist) = self.playlists.borrow().get(index) {
+            state.set_playlist_title(playlist.name.as_str().into());
+            state.set_playlist_artwork(decode_artwork(playlist.artwork.as_ref()));
+        }
+        state.set_playlist_meta(
+            format!(
+                "{count} morceau{} · {}",
+                if count == 1 { "" } else { "x" },
+                presentation::clock(total_seconds)
+            )
+            .into(),
+        );
+        state.set_playlist_tracks(ModelRc::new(VecModel::from(rows)));
+    }
+
+    fn play_playlist_row(&self, row: usize) {
+        let Some(index) = self.current_playlist_index() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = self
+            .playable_entries(index)
+            .into_iter()
+            .map(|(_, path, _)| path)
+            .collect();
+        let name = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.name.clone())
+            .unwrap_or_default();
+        self.play_context(paths, row, name);
+    }
+
+    /// Creates a playlist named "Nouvelle playlist" (numbered if taken) holding `tracks`. When
+    /// `should_open` is set, it opens it with the rename sheet, as Apple Music does.
+    fn create_playlist(&self, tracks: Vec<PathBuf>, should_open: bool) {
+        let name = {
+            let playlists = self.playlists.borrow();
+            let is_taken = |name: &str| playlists.iter().any(|playlist| playlist.name == name);
+            let mut name = "Nouvelle playlist".to_owned();
+            let mut number = 2;
+            while is_taken(&name) {
+                name = format!("Nouvelle playlist {number}");
+                number += 1;
+            }
+            name
+        };
+        let Some(id) = self.with_library(|store| {
+            let id = store.create_playlist(&name)?;
+            store.append_to_playlist(id, &tracks)?;
+            Ok(id)
+        }) else {
+            return;
+        };
+        self.playlists.borrow_mut().push(Playlist {
+            id,
+            name,
+            track_paths: tracks,
+            artwork: None,
+        });
+        self.show_playlists();
+        if should_open {
+            self.open_playlist(self.playlists.borrow().len() - 1);
+            self.begin_playlist_edit();
+        }
+    }
+
+    fn remove_playlist_entry(&self, position: usize) {
+        let Some(index) = self.current_playlist_index() else {
+            return;
+        };
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.remove_from_playlist(id, position))
+            .is_none()
+        {
+            return;
+        }
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index)
+            && position < playlist.track_paths.len()
+        {
+            playlist.track_paths.remove(position);
+        }
+        self.show_playlists();
+    }
+
+    fn begin_playlist_edit(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        if let Some(playlist) = self.playlists.borrow().get(index) {
+            state.set_playlist_editor_name(playlist.name.as_str().into());
+            state.set_playlist_editor_artwork(decode_artwork(playlist.artwork.as_ref()));
+        }
+        *self.pending_playlist_artwork.borrow_mut() = PendingArtwork::Unchanged;
+        state.set_is_playlist_editor_open(true);
+    }
+
+    fn save_playlist_edit(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let name = state.get_playlist_editor_name().trim().to_owned();
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        let artwork = std::mem::replace(
+            &mut *self.pending_playlist_artwork.borrow_mut(),
+            PendingArtwork::Unchanged,
+        );
+        let saved = self.with_library(|store| {
+            if !name.is_empty() {
+                store.rename_playlist(id, &name)?;
+            }
+            match &artwork {
+                PendingArtwork::Unchanged => Ok(()),
+                PendingArtwork::Chosen { bytes, .. } => store.set_playlist_artwork(id, bytes),
+                PendingArtwork::Restored => store.clear_playlist_artwork(id),
+            }
+        });
+        if saved.is_some() {
+            if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
+                if !name.is_empty() {
+                    playlist.name = name;
+                }
+                match artwork {
+                    PendingArtwork::Unchanged => {}
+                    PendingArtwork::Chosen { bytes, .. } => playlist.artwork = Some(bytes.into()),
+                    PendingArtwork::Restored => playlist.artwork = None,
+                }
+            }
+            self.show_playlists();
+        }
+        state.set_is_playlist_editor_open(false);
+    }
+
+    fn delete_current_playlist(&self) {
+        let (Some(window), Some(index)) = (self.window.upgrade(), self.current_playlist_index())
+        else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let Some(id) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| playlist.id)
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.delete_playlist(id))
+            .is_none()
+        {
+            return;
+        }
+        self.playlists.borrow_mut().remove(index);
+        state.set_is_playlist_editor_open(false);
+        state.set_selected_playlist(-1);
+        state.invoke_select_item(2);
+        self.show_playlists();
+    }
+
+    fn open_add_to_playlist(&self, subject: String) {
+        if let Some(window) = self.window.upgrade() {
+            let state = window.global::<AppState>();
+            state.set_add_to_playlist_subject(subject.into());
+            state.set_is_add_to_playlist_open(true);
+        }
+    }
+
+    fn close_add_to_playlist(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window
+                .global::<AppState>()
+                .set_is_add_to_playlist_open(false);
+        }
+    }
+
+    fn add_pending_to_playlist(&self, index: usize) {
+        let tracks = std::mem::take(&mut *self.pending_playlist_tracks.borrow_mut());
+        self.close_add_to_playlist();
+        let Some((id, name)) = self
+            .playlists
+            .borrow()
+            .get(index)
+            .map(|playlist| (playlist.id, playlist.name.clone()))
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.append_to_playlist(id, &tracks))
+            .is_none()
+        {
+            return;
+        }
+        let count = tracks.len();
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
+            playlist.track_paths.extend(tracks);
+        }
+        self.show_playlists();
+        if let Some(window) = self.window.upgrade() {
+            window.global::<AppState>().set_import_status(
+                format!(
+                    "{count} morceau{} ajouté{} à « {name} »",
+                    if count == 1 { "" } else { "x" },
+                    if count == 1 { "" } else { "s" }
+                )
+                .into(),
+            );
         }
     }
 
@@ -707,6 +1630,14 @@ impl UiBridge {
     pub(crate) fn tick(&self) {
         for update in self.imports.try_iter() {
             self.apply_library_update(update);
+        }
+        for message in self.update_messages.try_iter() {
+            self.apply_update_message(message);
+        }
+        if !self.is_update_worker_busy.get()
+            && std::time::Instant::now() >= self.next_update_check.get()
+        {
+            self.check_for_update();
         }
         for event in self.engine.try_receive_events() {
             self.handle_event(event);
@@ -836,9 +1767,8 @@ impl UiBridge {
                     state.set_current_album(album.title.as_str().into());
                     state.set_current_format(
                         format!(
-                            "FLAC {} bits / {} kHz",
-                            track.bits_per_sample,
-                            presentation::frequency(track.sample_rate_hz)
+                            "FLAC {}",
+                            presentation::audio_format(track.bits_per_sample, track.sample_rate_hz)
                         )
                         .into(),
                     );
@@ -874,18 +1804,14 @@ impl UiBridge {
                 state.set_is_shared(
                     value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer,
                 );
-                let steps = presentation::signal_steps(&value)
-                    .into_iter()
-                    .map(|(label, value, is_transparent)| PathStep {
-                        label: label.into(),
-                        value: value.into(),
-                        is_transparent,
-                    })
-                    .collect::<Vec<_>>();
-                state.set_path_steps(ModelRc::new(VecModel::from(steps)));
+                state.set_is_output_active(true);
+                *self.last_assessment.borrow_mut() = Some(value);
+                self.show_volume();
                 self.update_detail_signal();
             }
             EngineEvent::SignalPathChanged { assessment: None } => {
+                self.last_assessment.borrow_mut().take();
+                state.set_is_output_active(false);
                 state.set_is_shared(false);
                 state.set_is_bit_perfect(false);
                 state.set_badge_label("Sortie libérée".into());
@@ -964,6 +1890,8 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
             albums.push(Album {
                 title: track.album.clone(),
                 artist: track.artist.clone(),
+                tag_title: track.album.clone(),
+                tag_artist: track.artist.clone(),
                 key,
                 tracks: Vec::new(),
                 artwork: slint::Image::default(),
@@ -981,6 +1909,14 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
                 &right.path,
             ))
         });
+        if let Some(text) = snapshot.text_overrides.get(&album.key) {
+            if let Some(title) = &text.title {
+                album.title = title.clone();
+            }
+            if let Some(artist) = &text.artist {
+                album.artist = artist.clone();
+            }
+        }
         let custom = snapshot.artwork_overrides.get(&album.key);
         album.has_custom_artwork = custom.is_some();
         album.artwork = decode_artwork(custom.or_else(|| original_artwork(&album.tracks)));
@@ -997,4 +1933,11 @@ fn decode_artwork(bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
     bytes
         .and_then(|bytes| slint::Image::load_from_data(bytes, None).ok())
         .unwrap_or_default()
+}
+
+/// The edited value to store: `None` when the field is empty or equal to the tags, so the app
+/// follows the files again.
+fn edited_value(field: &str, tag_value: &str) -> Option<String> {
+    let trimmed = field.trim();
+    (!trimmed.is_empty() && trimmed != tag_value).then(|| trimmed.to_owned())
 }

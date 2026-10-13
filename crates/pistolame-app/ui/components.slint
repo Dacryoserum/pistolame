@@ -1,8 +1,17 @@
-import { Button, ComboBox, Switch, ScrollView, ListView } from "std-widgets.slint";
+import { Switch, ScrollView, ListView } from "std-widgets.slint";
 import { Tokens } from "tokens.slint";
-import { AlbumCard, AppState, DataCell, PathStep } from "state.slint";
+import { AlbumCard, AppState, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
 
 export global Icons {
+    out property <image> queue: @image-url("../assets/icons/queue.svg");
+    out property <image> pencil-simple: @image-url("../assets/icons/pencil-simple.svg");
+    out property <image> check: @image-url("../assets/icons/check.svg");
+    out property <image> plus: @image-url("../assets/icons/plus.svg");
+    out property <image> trash: @image-url("../assets/icons/trash.svg");
+    out property <image> dots-three: @image-url("../assets/icons/dots-three.svg");
+    out property <image> x: @image-url("../assets/icons/x.svg");
+    out property <image> speaker-x: @image-url("../assets/icons/speaker-x.svg");
+    out property <image> arrows-clockwise: @image-url("../assets/icons/arrows-clockwise.svg");
     out property <image> intersect: @image-url("../assets/icons/intersect.svg");
     out property <image> magnifying-glass: @image-url("../assets/icons/magnifying-glass.svg");
     out property <image> clock-counter-clockwise: @image-url("../assets/icons/clock-counter-clockwise.svg");
@@ -58,6 +67,7 @@ export component Icon inherits Image {
 }
 
 export component IconButton inherits Rectangle {
+    out property <bool> has-hover: touch.has-hover;
     in property <image> icon;
     in property <length> icon-size: 16px;
     in property <color> icon-color: Tokens.text-primary;
@@ -96,6 +106,8 @@ export component IconButton inherits Rectangle {
 
 export component SidebarItem inherits Rectangle {
     in property <image> icon;
+    // A small cover (playlists) replaces the icon when set.
+    in property <image> artwork;
     in property <string> label;
     in property <bool> is-selected;
     callback clicked();
@@ -119,7 +131,7 @@ export component SidebarItem inherits Rectangle {
     accessible-action-default => {
         root.clicked();
     }
-    Icon {
+    if root.artwork.width == 0: Icon {
         x: 10px;
         y: 6px;
         width: 16px;
@@ -128,12 +140,28 @@ export component SidebarItem inherits Rectangle {
         colorize: Tokens.accent;
     }
 
+    if root.artwork.width > 0: Rectangle {
+        x: 9px;
+        y: 5px;
+        width: 18px;
+        height: 18px;
+        border-radius: 3px;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.artwork;
+            image-fit: cover;
+        }
+    }
+
     Txt {
         x: 34px;
         y: 0px;
         width: 176px;
         height: 28px;
         text: root.label;
+        overflow: elide;
     }
 
     touch := TouchArea {
@@ -207,9 +235,12 @@ export component Badge inherits Rectangle {
     in property <BadgeKind> kind: BadgeKind.authentic;
     in property <string> label;
     in property <bool> is-hovered;
+    // The LCD shows the icon alone (the text appears on hover); idle = no stream open.
+    in property <bool> is-icon-only;
+    in property <bool> is-idle;
     property <bool> is-ok: kind == BadgeKind.bit-perfect || kind == BadgeKind.authentic;
     property <color> foreground: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.text-primary : is-ok ? Tokens.status-ok : Tokens.status-caution;
-    width: row.preferred-width;
+    width: root.is-icon-only ? 30px : row.preferred-width;
     height: 20px;
     border-radius: 10px;
     background: (kind == BadgeKind.processed || kind == BadgeKind.shared || kind == BadgeKind.unknown) ? Tokens.fill-control : is-ok ? Tokens.status-ok-tint : Tokens.status-caution-tint;
@@ -219,16 +250,18 @@ export component Badge inherits Rectangle {
         padding-left: 8px;
         padding-right: 8px;
         spacing: 4px;
+        alignment: center;
         Icon {
-            width: 12px;
-            source: root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
-            colorize: root.foreground;
+            width: root.is-icon-only ? 14px : 12px;
+            source: root.is-idle ? Icons.speaker-hifi : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
+            colorize: root.is-idle ? Tokens.text-tertiary : root.foreground;
         }
 
-        Txt {
+        if !root.is-icon-only: Txt {
             role: TextRole.label;
             height: root.height;
             text: root.label;
+            overflow: elide;
             color: root.foreground;
         }
     }
@@ -261,7 +294,8 @@ export component PillButton inherits Rectangle {
     HorizontalLayout {
         alignment: center;
         spacing: 6px;
-        Icon {
+        // No icon, no reserved slot: the label stays centered.
+        if root.icon.width > 0: Icon {
             width: 14px;
             source: root.icon;
             colorize: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
@@ -272,6 +306,7 @@ export component PillButton inherits Rectangle {
             height: root.height;
             text: root.label;
             color: root.is-primary ? Tokens.text-on-accent : Tokens.accent;
+            vertical-alignment: center;
         }
     }
 
@@ -352,6 +387,77 @@ export component EqualizerBars inherits Rectangle {
     }
 }
 
+component MenuRow inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> is-destructive;
+    callback clicked();
+    height: 32px;
+    border-radius: 6px;
+    background: touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Icon { width: 15px; source: root.icon; colorize: root.is-destructive ? Tokens.status-caution : Tokens.accent; }
+        Txt {
+            height: root.height;
+            text: root.label;
+            vertical-alignment: center;
+            color: root.is-destructive ? Tokens.status-caution : Tokens.text-primary;
+        }
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+// "…" button with the actions available on any track, album or playlist: play next, add to the
+// queue, add to a playlist and, inside a playlist, remove. The menu opens under the button.
+export component ActionMenuButton inherits Rectangle {
+    out property <bool> has-hover: button.has-hover;
+    in property <string> label: "Plus d’actions";
+    in property <bool> can-remove;
+    in property <color> icon-color: Tokens.text-secondary;
+    callback action(TrackAction);
+    width: 28px;
+    height: 28px;
+    button := IconButton {
+        width: root.width;
+        height: root.height;
+        icon: Icons.dots-three;
+        icon-size: 18px;
+        icon-color: root.icon-color;
+        label: root.label;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        x: root.width - 232px;
+        y: root.height + 4px;
+        width: 232px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                MenuRow { icon: Icons.skip-forward-fill; label: "Lire ensuite"; clicked => { root.action(TrackAction.play-next); } }
+                MenuRow { icon: Icons.queue; label: "Ajouter à la file d’attente"; clicked => { root.action(TrackAction.add-to-queue); } }
+                MenuRow { icon: Icons.plus; label: "Ajouter à une playlist…"; clicked => { root.action(TrackAction.add-to-playlist); } }
+                if root.can-remove: MenuRow {
+                    icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
+                    clicked => { root.action(TrackAction.remove-from-playlist); }
+                }
+            }
+        }
+    }
+}
+
 export component TrackRow inherits Rectangle {
     in property <int> number;
     in property <string> title;
@@ -359,7 +465,13 @@ export component TrackRow inherits Rectangle {
     in property <string> duration-label;
     in property <bool> is-odd;
     in property <bool> is-current;
+    // "…" menu at the end of the row, shown while hovered. Its slot is always reserved so the
+    // columns never move.
+    in property <bool> has-menu: true;
+    in property <bool> can-remove;
+    in property <string> subtitle;
     callback clicked();
+    callback action(TrackAction);
     border-width: keyboard.has-focus ? 2px : 0px;
     border-color: Tokens.focus-ring;
     keyboard := FocusScope {
@@ -372,14 +484,19 @@ export component TrackRow inherits Rectangle {
     }
     height: 36px;
     border-radius: 6px;
-    background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : is-odd ? Tokens.fill-row-zebra : transparent;
+    // Still hovered while the pointer is on the row's own "…" button.
+    property <bool> is-hovered: touch.has-hover || menu-button.has-hover;
+    background: touch.pressed ? Tokens.fill-row-pressed : root.is-hovered ? Tokens.fill-row-hover : is-odd ? Tokens.fill-row-zebra : transparent;
     accessible-role: button;
     accessible-label: root.title;
     accessible-action-default => {
         root.clicked();
     }
-    property <length> duration-x: root.width - 12px - 44px;
-    property <length> format-x: duration-x - 16px - 64px;
+    property <length> action-slot: 32px;
+    property <length> duration-x: root.width - 12px - root.action-slot - 44px;
+    // Wide enough for "24 bits / 192 kHz" in the caption role.
+    property <length> format-width: 104px;
+    property <length> format-x: duration-x - 16px - root.format-width;
     if !root.is-current: Txt {
         x: 12px;
         y: 10px;
@@ -395,17 +512,29 @@ export component TrackRow inherits Rectangle {
     Txt {
         role: root.is-current ? TextRole.body-medium : TextRole.body;
         x: 52px;
-        y: 10px;
+        y: root.subtitle == "" ? 10px : 3px;
         width: root.format-x - 16px - 52px;
         text: root.title;
+        overflow: elide;
+    }
+
+    if root.subtitle != "": Txt {
+        role: TextRole.caption;
+        x: 52px;
+        y: 19px;
+        width: root.format-x - 16px - 52px;
+        text: root.subtitle;
+        color: Tokens.text-secondary;
+        overflow: elide;
     }
 
     Txt {
         role: TextRole.caption;
         x: root.format-x;
         y: 10px;
-        width: 64px;
+        width: root.format-width;
         text: root.format-label;
+        horizontal-alignment: right;
         color: Tokens.text-secondary;
     }
 
@@ -423,27 +552,47 @@ export component TrackRow inherits Rectangle {
             root.clicked();
         }
     }
+
+    menu-button := ActionMenuButton {
+        x: root.width - 8px - 28px;
+        y: 4px;
+        label: "Actions pour " + root.title;
+        can-remove: root.can-remove;
+        opacity: root.has-menu && root.is-hovered ? 1 : 0;
+        action(kind) => { root.action(kind); }
+    }
 }
 
+// Shared-mode volume in dB. Exclusive mode greys it out: the DAC sets the level and the
+// samples stay bit-perfect. The value appears in a small bubble while hovering or dragging.
 export component VolumeSlider inherits Rectangle {
     width: 88px;
     height: 28px;
-    property <length> thumb-center: 88px * AppState.volume / 100;
+    property <bool> is-adjustable: !AppState.exclusive || AppState.is-shared;
+    property <float> position: AppState.is-volume-muted ? 0 : 1 + AppState.volume-decibels / 60;
+    property <length> thumb-center: 88px * root.position;
     accessible-role: slider;
-    accessible-label: "Volume : utilisez le bouton du DAC";
-
-    accessible-value: AppState.volume;
+    accessible-label: root.is-adjustable ? "Volume" : "Volume réglé sur le DAC (mode exclusif)";
+    accessible-value: AppState.volume-label;
     accessible-value-minimum: 0;
-    accessible-value-maximum: 100;
+    accessible-value-maximum: 1;
+    // Half-decibel steps; the far left mutes.
     function apply(x: length) {
-        AppState.volume = Math.round(Math.clamp(x / 88px, 0, 1) * 100);
-        AppState.volume-changed(AppState.volume);
+        if !root.is-adjustable {
+            return;
+        }
+        if x <= 2px {
+            AppState.volume-changed(AppState.volume-decibels, true);
+        } else {
+            AppState.volume-changed(Math.round((Math.clamp(x / 88px, 0, 1) - 1) * 60 * 2) / 2, false);
+        }
     }
     Rectangle {
         y: 12.5px;
         height: 3px;
         border-radius: 1.5px;
         background: Tokens.rail;
+        opacity: root.is-adjustable ? 1 : 0.4;
     }
 
     Rectangle {
@@ -452,6 +601,7 @@ export component VolumeSlider inherits Rectangle {
         height: 3px;
         border-radius: 1.5px;
         background: Tokens.rail-fill;
+        opacity: root.is-adjustable ? 1 : 0.4;
     }
 
     Rectangle {
@@ -460,13 +610,49 @@ export component VolumeSlider inherits Rectangle {
         width: 11px;
         height: 11px;
         border-radius: 5.5px;
-        background: Tokens.scrubber-thumb;
+        background: root.is-adjustable ? Tokens.scrubber-thumb : Tokens.rail;
     }
 
+    touch := TouchArea {
+        mouse-cursor: root.is-adjustable ? MouseCursor.pointer : MouseCursor.not-allowed;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.apply(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.apply(self.mouse-x);
+            }
+        }
+    }
+
+    if touch.has-hover || touch.pressed: Rectangle {
+        property <length> bubble-width: 96px;
+        x: (root.width - self.bubble-width) / 2;
+        y: 30px;
+        width: self.bubble-width;
+        height: 20px;
+        border-radius: 10px;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-raised;
+        Txt {
+            role: TextRole.caption;
+            text: root.is-adjustable ? AppState.volume-label : "Réglé sur le DAC";
+            color: Tokens.text-secondary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
 }
 
 export component Lcd inherits Rectangle {
-    property <length> column-width: root.width - 68px - badge.width;
+    // Fixed slot for the badge: the title and the progress rail never move when the badge text
+    // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
+    // in it and its text is elided if ever too long.
+    property <length> badge-slot-width: 46px;
+    property <length> column-width: root.width - 68px - root.badge-slot-width;
     property <bool> is-seeking;
     property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
     height: 44px;
@@ -592,6 +778,8 @@ export component Lcd inherits Rectangle {
     badge := Badge {
         x: root.width - 8px - self.width;
         y: 12px;
+        is-icon-only: true;
+        is-idle: !AppState.is-output-active;
         kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
         label: AppState.badge-label;
         is-hovered: badge-touch.has-hover;
@@ -601,9 +789,33 @@ export component Lcd inherits Rectangle {
             AppState.is-popover-open = !AppState.is-popover-open;
         }
         badge-touch := TouchArea {
+            mouse-cursor: pointer;
             clicked => {
                 AppState.is-popover-open = !AppState.is-popover-open;
             }
+        }
+    }
+
+    // The full mode and format while hovering the badge; a click opens the signal panel.
+    if badge-touch.has-hover && !AppState.is-popover-open: Rectangle {
+        property <length> bubble-width: hint.preferred-width + 20px;
+        x: root.width - 8px - self.bubble-width;
+        y: root.height + 6px;
+        width: self.bubble-width;
+        height: 24px;
+        border-radius: 12px;
+        background: Tokens.surface-raised;
+        border-width: 1px;
+        border-color: Tokens.border-raised;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Tokens.shadow-popover;
+        hint := Txt {
+            role: TextRole.label;
+            text: AppState.badge-label;
+            color: AppState.is-bit-perfect ? Tokens.status-ok : Tokens.text-primary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 }
@@ -690,7 +902,10 @@ export component Popover inherits Rectangle {
             text: "En mode exclusif, les autres sons de ce périphérique sont coupés pendant la lecture.";
             color: Tokens.text-secondary; wrap: word-wrap;
         }
-        if AppState.show-exclusive-notice: Button { text: "Compris"; clicked => { AppState.dismiss-notice(); } }
+        if AppState.show-exclusive-notice: HorizontalLayout {
+            alignment: start;
+            PillButton { label: "Compris"; clicked => { AppState.dismiss-notice(); } }
+        }
         Text { text: AppState.underrun-label; color: Tokens.text-secondary; }
         Rectangle { height: 8px; }
         HorizontalLayout {
@@ -710,36 +925,12 @@ export component Popover inherits Rectangle {
     }
 }
 
-// Right-click menu on an album cover. Only the right button is handled: clicks, hover and the
-// play button underneath keep working. The chosen cover lives in the library, never in files.
-component AlbumArtworkMenu inherits Rectangle {
-    in property <int> album-index;
-    in property <bool> has-custom-artwork;
-    ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "Choisir une pochette…";
-                activated => {
-                    AppState.choose-album-artwork(root.album-index);
-                }
-            }
-            MenuItem {
-                title: "Rétablir la pochette d’origine";
-                enabled: root.has-custom-artwork;
-                activated => {
-                    AppState.reset-album-artwork(root.album-index);
-                }
-            }
-        }
-    }
-}
-
 component AlbumTile inherits Rectangle {
     in property <AlbumCard> album;
     in property <length> tile;
     callback open();
     callback play();
-    property <bool> is-hovered: open-touch.has-hover || play-touch.has-hover;
+    property <bool> is-hovered: open-touch.has-hover || play-touch.has-hover || tile-menu.has-hover;
     width: root.tile;
     height: root.tile + 40px;
     border-width: keyboard.has-focus ? 2px : 0px;
@@ -802,8 +993,10 @@ component AlbumTile inherits Rectangle {
         border-radius: 16px;
         visible: root.is-hovered;
         background: play-touch.has-hover ? Tokens.overlay-button-hover : Tokens.overlay-button;
+        // Optical centering: the triangle's box sits 1 px right of the circle's center so its
+        // visual weight is centered (measured on a Retina capture, 2026-10-12).
         Icon {
-            x: 10px;
+            x: 9px;
             y: 9px;
             width: 14px;
             height: 14px;
@@ -824,14 +1017,17 @@ component AlbumTile inherits Rectangle {
         }
     }
 
-    AlbumArtworkMenu {
-        x: 0px;
-        y: 0px;
-        width: root.tile;
-        height: root.tile;
-        album-index: root.album.catalog-index;
-        has-custom-artwork: root.album.has-custom-artwork;
+    tile-menu := ActionMenuButton {
+        x: root.tile - 8px - 28px;
+        y: root.tile - 36px;
+        label: "Actions pour " + root.album.title;
+        icon-color: Tokens.overlay-icon;
+        opacity: root.is-hovered ? 1 : 0;
+        action(kind) => {
+            AppState.track-action({ source: TrackSource.album, album: root.album.catalog-index, track: 0, position: 0 }, kind);
+        }
     }
+
 }
 
 export component AlbumsGrid inherits Rectangle {
@@ -973,14 +1169,29 @@ export component AlbumDetail inherits Rectangle {
             source: AppState.detail.artwork;
         }
 
-        AlbumArtworkMenu {
-            x: 32px;
+        ActionMenuButton {
+            x: root.content-width - 32px - 28px - 8px - 28px;
             y: 60px;
-            width: 240px;
-            height: 240px;
-            album-index: AppState.detail-album-index;
-            has-custom-artwork: AppState.detail.has-custom-artwork;
+            label: "Actions pour l’album";
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.album, album: AppState.detail-album-index, track: 0, position: 0 }, kind);
+            }
         }
+
+        // Discreet edit button, top-aligned with the cover, at the right edge of the content.
+        IconButton {
+            x: root.content-width - 32px - 28px;
+            y: 60px;
+            width: 28px;
+            height: 28px;
+            icon: Icons.pencil-simple;
+            icon-color: Tokens.text-secondary;
+            label: "Modifier l’album";
+            clicked => {
+                AppState.begin-album-edit(AppState.detail-album-index);
+            }
+        }
+
 
         Txt {
             role: TextRole.display;
@@ -1053,6 +1264,9 @@ export component AlbumDetail inherits Rectangle {
             is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == index;
             clicked => {
                 AppState.play-track(AppState.detail-album-index, index);
+            }
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.album-track, album: AppState.detail-album-index, track: index, position: 0 }, kind);
             }
         }
 
@@ -1229,30 +1443,125 @@ export component PlaceholderView inherits Rectangle {
 }
 
 
+// A grouped list in the style of the system settings: rounded card, hairline separators.
+component SettingsCard inherits Rectangle {
+    background: Tokens.fill-row-zebra;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Tokens.separator;
+}
+
+component DeviceRow inherits Rectangle {
+    in property <string> name;
+    in property <bool> is-selected;
+    in property <bool> has-separator;
+    callback clicked();
+    height: 40px;
+    border-radius: 8px;
+    background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        Icon { width: 16px; source: Icons.speaker-hifi; colorize: Tokens.text-secondary; }
+        Txt { height: root.height; text: root.name; vertical-alignment: center; }
+        Icon { width: 16px; source: Icons.check; colorize: Tokens.accent; opacity: root.is-selected ? 1 : 0; }
+    }
+    if root.has-separator: Rectangle {
+        x: 38px; y: root.height - 1px; width: root.width - 50px; height: 1px;
+        background: Tokens.separator;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
 export component OutputSettings inherits Rectangle {
-    VerticalLayout {
-        alignment: start; spacing: 16px;
-        Txt { role: TextRole.display; text: "Sortie audio"; }
-        HorizontalLayout {
+    ScrollView {
+        VerticalLayout {
+            alignment: start;
             spacing: 12px;
-            ComboBox {
-                model: AppState.device-names;
-                current-index: AppState.selected-device-index;
-                selected(value) => { AppState.select-device(self.current-index); }
+            padding-bottom: 24px;
+            // Keeps the content clear of the scroll bar on the right.
+            padding-right: 20px;
+            Txt { role: TextRole.display; text: "Sortie audio"; }
+            Rectangle { height: 4px; }
+            HorizontalLayout {
+                height: 32px;
+                alignment: space-between;
+                Txt { role: TextRole.title-3; height: 32px; text: "Périphérique"; vertical-alignment: center; }
+                PillButton {
+                    width: 128px;
+                    label: "Actualiser";
+                    icon: Icons.arrows-clockwise;
+                    clicked => { AppState.refresh-devices(); }
+                }
             }
-            Button { text: "Actualiser"; clicked => { AppState.refresh-devices(); } }
+            SettingsCard {
+                VerticalLayout {
+                    padding: 4px;
+                    for name[index] in AppState.device-names: DeviceRow {
+                        name: name;
+                        is-selected: index == AppState.selected-device-index;
+                        has-separator: index < AppState.device-names.length - 1;
+                        clicked => { AppState.select-device(index); }
+                    }
+                    if AppState.device-names.length == 0: Txt {
+                        height: 40px;
+                        text: "Aucune sortie audio détectée.";
+                        color: Tokens.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            SettingsCard {
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Txt { role: TextRole.headline; text: "Mode exclusif"; }
+                        Txt {
+                            role: TextRole.callout;
+                            text: "Pistolame prend la sortie pour lui seul, à la fréquence du fichier. Les autres sons de ce périphérique sont coupés pendant la lecture.";
+                            color: Tokens.text-secondary;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
+                    }
+                    Switch {
+                        checked: AppState.exclusive;
+                        accessible-label: "Mode exclusif";
+                        toggled => { AppState.set-exclusive(self.checked); }
+                    }
+                }
+            }
+            Txt { role: TextRole.title-3; text: "Chemin du signal"; height: 34px; vertical-alignment: bottom; }
+            SettingsCard {
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    Txt { text: AppState.signal-description; color: Tokens.text-secondary; wrap: word-wrap; height: self.preferred-height; }
+                    SignalPath { steps: AppState.path-steps; }
+                    Txt { text: AppState.transmission-text; wrap: word-wrap; height: self.preferred-height; }
+                    Txt { text: AppState.integrity-text; wrap: word-wrap; height: self.preferred-height; }
+                    Txt { role: TextRole.callout; text: AppState.underrun-label; color: Tokens.text-secondary; }
+                    Txt { role: TextRole.callout; text: AppState.volume-description; color: Tokens.text-secondary; wrap: word-wrap; height: self.preferred-height; }
+                }
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                PillButton {
+                    width: 168px;
+                    label: "Arrêter la lecture";
+                    icon: Icons.pause-fill;
+                    clicked => { AppState.stop(); }
+                }
+            }
         }
-        Switch {
-            text: "Mode exclusif"; checked: AppState.exclusive;
-            toggled => { AppState.set-exclusive(self.checked); }
-        }
-        Text { text: AppState.signal-description; color: Tokens.text-secondary; wrap: word-wrap; }
-        SignalPath { steps: AppState.path-steps; }
-        Text { text: AppState.transmission-text; color: Tokens.text-primary; wrap: word-wrap; }
-        Text { text: AppState.integrity-text; color: Tokens.text-primary; wrap: word-wrap; }
-        Text { text: AppState.underrun-label; color: Tokens.text-secondary; }
-        Text { text: "Volume : utilisez le bouton de votre DAC."; color: Tokens.text-secondary; }
-        Button { text: "Arrêter la lecture"; clicked => { AppState.stop(); } }
     }
 }
 
@@ -1298,5 +1607,464 @@ export component NowPlaying inherits Rectangle {
         PillButton { x: 440px; y: 628px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
         Txt { x: 32px; y: 710px; role: TextRole.caption; text: "FICHIER SOURCE"; color: Tokens.text-secondary; }
         Txt { x: 32px; y: 734px; width: root.width - 64px; text: AppState.current-filename; color: Tokens.text-secondary; }
+    }
+}
+
+// Single-line field in the search field's style, with a caption above it.
+export component LabeledField inherits VerticalLayout {
+    in property <string> caption;
+    in-out property <string> text;
+    spacing: 6px;
+    Txt { role: TextRole.label; text: root.caption; color: Tokens.text-secondary; }
+    Rectangle {
+        height: 30px;
+        border-radius: 7px;
+        background: Tokens.surface-field;
+        border-width: input.has-focus ? 2px : 0px;
+        border-color: Tokens.focus-ring;
+        input := TextInput {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            single-line: true;
+            vertical-alignment: center;
+            font-family: "Inter";
+            font-size: 13px;
+            color: Tokens.text-primary;
+            selection-background-color: Tokens.accent.with-alpha(0.35);
+            selection-foreground-color: Tokens.text-primary;
+            accessible-label: root.caption;
+            text <=> root.text;
+        }
+    }
+}
+
+// "Modifier l'album": what the app shows for an album. The music files are never modified.
+export component AlbumEditor inherits Rectangle {
+    width: 460px;
+    height: 360px;
+    border-radius: 12px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-blur: 32px;
+    drop-shadow-color: Tokens.shadow-popover;
+    // Swallows clicks so that only the scrim behind closes nothing by accident.
+    TouchArea { }
+    Txt { x: 24px; y: 22px; role: TextRole.title-3; text: "Modifier l’album"; }
+    Artwork { x: 24px; y: 64px; width: 132px; height: 132px; source: AppState.editor-artwork; }
+    PillButton {
+        x: 24px; y: 208px; width: 132px;
+        label: "Choisir…";
+        icon: Icons.pencil-simple;
+        clicked => { AppState.editor-choose-artwork(); }
+    }
+    Rectangle {
+        x: 24px; y: 246px; width: 132px; height: 20px;
+        visible: AppState.editor-has-custom-artwork;
+        Txt {
+            role: TextRole.callout;
+            text: "Rétablir l’originale";
+            color: reset-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+            horizontal-alignment: center;
+        }
+        reset-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { AppState.editor-reset-artwork(); }
+        }
+    }
+    VerticalLayout {
+        x: 180px; y: 64px; width: root.width - 204px;
+        spacing: 14px;
+        alignment: start;
+        LabeledField { caption: "TITRE"; text <=> AppState.editor-title; }
+        LabeledField { caption: "ARTISTE"; text <=> AppState.editor-artist; }
+        Txt {
+            role: TextRole.caption;
+            text: "Vos fichiers ne sont pas modifiés. Laissez un champ vide pour revenir aux informations des fichiers.";
+            color: Tokens.text-tertiary;
+            wrap: word-wrap;
+            height: self.preferred-height;
+        }
+    }
+    Rectangle { x: 0px; y: root.height - 64px; width: root.width; height: 1px; background: Tokens.separator; }
+    PillButton {
+        x: root.width - 24px - 112px - 10px - 112px; y: root.height - 48px;
+        label: "Annuler";
+        clicked => { AppState.cancel-album-edit(); }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 48px;
+        is-primary: true;
+        label: "Enregistrer";
+        clicked => { AppState.save-album-edit(); }
+    }
+}
+
+// One user playlist: its tracks in order, each removable.
+export component PlaylistView inherits Rectangle {
+    property <length> list-width: root.width - 64px;
+    ScrollView {
+        content-height: 150px + 36px * AppState.playlist-tracks.length + 32px;
+        Rectangle {
+            x: 32px; y: 24px; width: 56px; height: 56px;
+            border-radius: 8px;
+            background: Tokens.fill-control;
+            clip: true;
+            if AppState.playlist-artwork.width == 0: Icon { width: 26px; height: 26px; source: Icons.playlist; colorize: Tokens.accent; }
+            if AppState.playlist-artwork.width > 0: Image {
+                width: parent.width; height: parent.height;
+                source: AppState.playlist-artwork; image-fit: cover;
+            }
+        }
+        Txt { x: 104px; y: 26px; width: root.list-width - 72px - 76px; role: TextRole.display; text: AppState.playlist-title; overflow: elide; }
+        Txt { x: 104px; y: 60px; width: root.list-width - 72px; role: TextRole.callout; text: AppState.playlist-meta; color: Tokens.text-secondary; }
+        ActionMenuButton {
+            x: root.width - 32px - 28px - 8px - 28px; y: 24px;
+            label: "Actions pour la playlist";
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.playlist, album: 0, track: 0, position: 0 }, kind);
+            }
+        }
+        IconButton {
+            x: root.width - 32px - 28px; y: 24px; width: 28px; height: 28px;
+            icon: Icons.pencil-simple; icon-color: Tokens.text-secondary;
+            label: "Modifier la playlist";
+            clicked => { AppState.begin-playlist-edit(); }
+        }
+        PillButton {
+            x: 32px; y: 96px;
+            is-primary: true;
+            label: "Lecture";
+            icon: Icons.play-fill;
+            clicked => { AppState.play-playlist-row(0); }
+        }
+        if AppState.playlist-tracks.length == 0: Txt {
+            x: 32px; y: 152px; width: root.list-width;
+            text: "Cette playlist est vide. Ajoutez des morceaux avec le bouton + d’un album ou d’un morceau.";
+            color: Tokens.text-secondary;
+            wrap: word-wrap;
+        }
+        for track[index] in AppState.playlist-tracks: TrackRow {
+            x: 32px;
+            y: 148px + 36px * index;
+            width: root.list-width;
+            number: track.number;
+            title: track.title;
+            subtitle: track.subtitle;
+            format-label: track.format-label;
+            duration-label: track.duration-label;
+            is-odd: Math.mod(index, 2) == 1;
+            is-current: track.is-current;
+            can-remove: true;
+            clicked => { AppState.play-playlist-row(index); }
+            action(kind) => {
+                AppState.track-action({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, kind);
+            }
+        }
+    }
+}
+
+// A dimmed-window sheet frame shared by the editors.
+export component Sheet inherits Rectangle {
+    in property <string> title;
+    border-radius: 12px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-blur: 32px;
+    drop-shadow-color: Tokens.shadow-popover;
+    TouchArea { }
+    Txt { x: 24px; y: 22px; role: TextRole.title-3; text: root.title; }
+    @children
+}
+
+export component PlaylistEditor inherits Sheet {
+    title: "Modifier la playlist";
+    width: 460px;
+    height: 260px;
+    Rectangle {
+        x: 24px; y: 64px; width: 96px; height: 96px;
+        border-radius: 10px;
+        background: Tokens.fill-control;
+        clip: true;
+        if AppState.playlist-editor-artwork.width == 0: Icon { width: 36px; height: 36px; source: Icons.playlist; colorize: Tokens.accent; }
+        if AppState.playlist-editor-artwork.width > 0: Image {
+            width: parent.width; height: parent.height;
+            source: AppState.playlist-editor-artwork; image-fit: cover;
+        }
+    }
+    PillButton {
+        x: 24px; y: 168px; width: 96px;
+        label: "Choisir…";
+        clicked => { AppState.playlist-editor-choose-artwork(); }
+    }
+    if AppState.playlist-editor-artwork.width > 0: Rectangle {
+        x: 24px; y: 204px; width: 96px; height: 18px;
+        Txt {
+            role: TextRole.callout; text: "Retirer";
+            color: remove-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+            horizontal-alignment: center;
+        }
+        remove-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.playlist-editor-remove-artwork(); } }
+    }
+    LabeledField { x: 144px; y: 64px; width: root.width - 168px; caption: "NOM"; text <=> AppState.playlist-editor-name; }
+    Rectangle {
+        x: 144px; y: 132px; width: 180px; height: 20px;
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            Icon { width: 14px; source: Icons.trash; colorize: Tokens.status-caution; }
+            Txt { role: TextRole.callout; text: "Supprimer la playlist"; color: Tokens.status-caution; vertical-alignment: center; }
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { AppState.delete-current-playlist(); } }
+    }
+    PillButton {
+        x: root.width - 24px - 112px - 10px - 112px; y: root.height - 48px;
+        label: "Annuler";
+        clicked => { AppState.is-playlist-editor-open = false; }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 48px;
+        is-primary: true;
+        label: "Enregistrer";
+        clicked => { AppState.save-playlist-edit(); }
+    }
+}
+
+component PlaylistChoiceRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <image> icon;
+    in property <bool> has-separator;
+    callback clicked();
+    height: 40px;
+    border-radius: 8px;
+    background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        Icon { width: 16px; source: root.icon; colorize: Tokens.accent; }
+        Txt { height: root.height; text: root.name; vertical-alignment: center; overflow: elide; }
+        Txt { height: root.height; role: TextRole.callout; text: root.detail; color: Tokens.text-secondary; vertical-alignment: center; horizontal-alignment: right; }
+    }
+    if root.has-separator: Rectangle {
+        x: 38px; y: root.height - 1px; width: root.width - 50px; height: 1px;
+        background: Tokens.separator;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component AddToPlaylistSheet inherits Sheet {
+    title: "Ajouter à une playlist";
+    width: 400px;
+    height: 132px + 40px * min(AppState.playlists.length + 1, 6);
+    Txt {
+        x: 24px; y: 48px; width: root.width - 48px;
+        role: TextRole.callout; text: AppState.add-to-playlist-subject;
+        color: Tokens.text-secondary; overflow: elide;
+    }
+    Rectangle {
+        x: 16px; y: 76px; width: root.width - 32px; height: 40px * min(AppState.playlists.length + 1, 6);
+        border-radius: 10px;
+        background: Tokens.fill-row-zebra;
+        border-width: 1px;
+        border-color: Tokens.separator;
+        clip: true;
+        Flickable {
+            content-height: 40px * (AppState.playlists.length + 1);
+            VerticalLayout {
+                PlaylistChoiceRow {
+                    name: "Nouvelle playlist";
+                    icon: Icons.plus;
+                    has-separator: AppState.playlists.length > 0;
+                    clicked => { AppState.add-pending-to-new-playlist(); }
+                }
+                for item[index] in AppState.playlists: PlaylistChoiceRow {
+                    name: item.name;
+                    detail: item.track-count + (item.track-count == 1 ? " morceau" : " morceaux");
+                    icon: Icons.playlist;
+                    has-separator: index < AppState.playlists.length - 1;
+                    clicked => { AppState.add-pending-to-playlist(index); }
+                }
+            }
+        }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 44px;
+        label: "Annuler";
+        clicked => { AppState.is-add-to-playlist-open = false; }
+    }
+}
+
+component QueueTrack inherits Rectangle {
+    in property <QueueRow> entry;
+    in property <bool> can-remove;
+    callback clicked();
+    callback remove();
+    height: 48px;
+    border-radius: 8px;
+    property <bool> is-hovered: touch.has-hover || remove-button.has-hover;
+    background: root.is-hovered ? Tokens.fill-row-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.entry.title;
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Rectangle {
+        x: 8px; y: 6px; width: 36px; height: 36px;
+        background: Tokens.surface-field;
+        Image { width: parent.width; height: parent.height; source: root.entry.artwork; image-fit: cover; }
+    }
+    Txt { x: 52px; y: 7px; width: root.width - 52px - 76px; text: root.entry.title; overflow: elide; }
+    Txt { x: 52px; y: 25px; width: root.width - 52px - 76px; role: TextRole.callout; text: root.entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
+    Txt { x: root.width - 76px; y: 16px; width: 40px; role: TextRole.callout; text: root.entry.duration-label; color: Tokens.text-secondary; horizontal-alignment: right; }
+    remove-button := IconButton {
+        x: root.width - 32px; y: 12px; width: 24px; height: 24px;
+        icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
+        label: "Retirer de la file d’attente";
+        visible: root.can-remove;
+        opacity: root.is-hovered ? 1 : 0;
+        clicked => { root.remove(); }
+    }
+}
+
+// "À suivre": the current track, the tracks queued by hand, then the rest of the album or
+// playlist being played.
+export component QueuePanel inherits Rectangle {
+    width: 340px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.separator;
+    TouchArea { }
+    Txt { x: 20px; y: 18px; role: TextRole.title-3; text: "À suivre"; }
+    IconButton {
+        x: root.width - 16px - 28px; y: 14px; width: 28px; height: 28px;
+        icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
+        label: "Fermer la file d’attente";
+        clicked => { AppState.is-queue-open = false; }
+    }
+    Flickable {
+        y: 56px;
+        height: root.height - 56px;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 16px;
+            spacing: 2px;
+            alignment: start;
+            if !AppState.has-queue-current: Txt {
+                height: 40px;
+                text: "Lancez un album ou une playlist pour remplir la file.";
+                color: Tokens.text-secondary;
+                wrap: word-wrap;
+            }
+            if AppState.has-queue-current: Txt { height: 24px; role: TextRole.label; text: "EN COURS"; color: Tokens.text-secondary; }
+            if AppState.has-queue-current: QueueTrack { entry: AppState.queue-current; }
+            if AppState.queue-up-next.length > 0: HorizontalLayout {
+                height: 34px;
+                padding-top: 10px;
+                Txt { role: TextRole.label; text: "ENSUITE DANS LA FILE"; color: Tokens.text-secondary; }
+                Rectangle { }
+                Txt {
+                    role: TextRole.callout; text: "Effacer";
+                    color: clear-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+                    clear-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.queue-clear(); } }
+                }
+            }
+            for item[index] in AppState.queue-up-next: QueueTrack {
+                entry: item;
+                can-remove: true;
+                clicked => { AppState.queue-play-up-next(index); }
+                remove => { AppState.queue-remove(index); }
+            }
+            if AppState.queue-upcoming.length > 0: Txt {
+                height: 34px;
+                vertical-alignment: bottom;
+                role: TextRole.label;
+                text: "ENSUITE DEPUIS : " + AppState.queue-context-name;
+                color: Tokens.text-secondary;
+                overflow: elide;
+            }
+            for item[index] in AppState.queue-upcoming: QueueTrack {
+                entry: item;
+                clicked => { AppState.queue-play-upcoming(index); }
+            }
+        }
+    }
+}
+
+// "Mise à jour disponible": opened from the green dot in the toolbar.
+export component UpdatePanel inherits Rectangle {
+    width: 360px;
+    height: 330px;
+    border-radius: 12px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Tokens.shadow-popover;
+    TouchArea { }
+    Rectangle {
+        x: 20px; y: 22px; width: 10px; height: 10px; border-radius: 5px;
+        background: Tokens.status-ok;
+    }
+    Txt { x: 40px; y: 16px; role: TextRole.title-3; text: "Mise à jour disponible"; }
+    Txt {
+        x: 20px; y: 48px; width: root.width - 40px;
+        role: TextRole.headline;
+        text: "Pistolame " + AppState.update-version;
+    }
+    Txt {
+        x: 20px; y: 68px; width: root.width - 40px;
+        role: TextRole.callout;
+        text: "Version installée : " + AppState.current-version;
+        color: Tokens.text-secondary;
+    }
+    Rectangle {
+        x: 20px; y: 96px; width: root.width - 40px; height: 140px;
+        border-radius: 8px;
+        background: Tokens.fill-row-zebra;
+        clip: true;
+        Flickable {
+            content-height: notes.preferred-height + 20px;
+            notes := Txt {
+                x: 10px; y: 10px; width: parent.width - 20px;
+                role: TextRole.callout;
+                text: AppState.update-notes;
+                wrap: word-wrap;
+                height: self.preferred-height;
+            }
+        }
+    }
+    Txt {
+        x: 20px; y: 246px; width: root.width - 40px;
+        role: TextRole.callout;
+        text: AppState.update-status != "" ? AppState.update-status : "L’application se fermera et se rouvrira toute seule, déjà à jour.";
+        color: AppState.update-status != "" && !AppState.is-updating ? Tokens.status-caution : Tokens.text-secondary;
+        wrap: word-wrap;
+        height: 32px;
+    }
+    PillButton {
+        x: root.width - 20px - 132px - 10px - 112px; y: root.height - 48px;
+        label: "Plus tard";
+        clicked => { AppState.is-update-panel-open = false; }
+    }
+    PillButton {
+        x: root.width - 20px - 132px; y: root.height - 48px; width: 132px;
+        is-primary: true;
+        label: AppState.is-updating ? "Installation…" : "Mettre à jour";
+        clicked => {
+            if !AppState.is-updating {
+                AppState.start-update();
+            }
+        }
     }
 }

@@ -17,4 +17,5 @@ rusqlite.workspace = true
 md-5.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 pistolame-core = { workspace = true, features = ["test-support"] }

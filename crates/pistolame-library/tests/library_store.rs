@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use pistolame_core::testing::{CD_STEREO, generate_fixture};
-use pistolame_library::{AlbumKey, LibraryStore};
+use pistolame_library::{AlbumKey, AlbumTextOverride, LibraryStore};
 
 /// A fresh folder with a music subfolder holding `track_count` copies of a generated FLAC,
 /// and the database path beside it.
@@ -182,4 +182,89 @@ fn a_too_large_cover_is_refused() {
     let album = album_of(&store);
     let oversized = vec![0u8; pistolame_library::MAX_COVER_BYTES as usize + 1];
     assert!(store.set_album_artwork(&album, &oversized).is_err());
+}
+
+#[test]
+fn edited_album_text_survives_reopening_and_can_be_cleared() {
+    let library = TestLibrary::new("album-text", 1);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let album = album_of(&store);
+    let edited = AlbumTextOverride {
+        title: Some("Live à Paris".into()),
+        artist: None,
+    };
+    store.set_album_text(&album, &edited).unwrap();
+    drop(store);
+    let mut store = library.open();
+    assert_eq!(store.snapshot().unwrap().text_overrides[&album], edited);
+    store
+        .set_album_text(&album, &AlbumTextOverride::default())
+        .unwrap();
+    assert!(store.snapshot().unwrap().text_overrides.is_empty());
+}
+
+#[test]
+fn playlists_keep_order_and_survive_reopening() {
+    let library = TestLibrary::new("playlists", 3);
+    let mut store = library.open();
+    let id = store.create_playlist("Écoute critique").unwrap();
+    store
+        .append_to_playlist(id, &[library.track(3), library.track(1)])
+        .unwrap();
+    store.append_to_playlist(id, &[library.track(2)]).unwrap();
+    drop(store);
+    let mut store = library.open();
+    let playlists = store.snapshot().unwrap().playlists;
+    assert_eq!(playlists.len(), 1);
+    assert_eq!(playlists[0].name, "Écoute critique");
+    assert_eq!(
+        playlists[0].track_paths,
+        vec![library.track(3), library.track(1), library.track(2)]
+    );
+
+    store.remove_from_playlist(id, 1).unwrap();
+    store.rename_playlist(id, "Favoris").unwrap();
+    let playlist = &store.snapshot().unwrap().playlists[0];
+    assert_eq!(playlist.name, "Favoris");
+    assert_eq!(
+        playlist.track_paths,
+        vec![library.track(3), library.track(2)]
+    );
+
+    store.delete_playlist(id).unwrap();
+    assert!(store.snapshot().unwrap().playlists.is_empty());
+}
+
+#[test]
+fn a_playlist_cover_is_stored_and_cleared() {
+    let library = TestLibrary::new("playlist-cover", 1);
+    let mut store = library.open();
+    let id = store.create_playlist("Vinyles").unwrap();
+    store.set_playlist_artwork(id, b"png bytes").unwrap();
+    let playlist = &store.snapshot().unwrap().playlists[0];
+    assert_eq!(playlist.artwork.as_deref(), Some(&b"png bytes"[..]));
+    store.clear_playlist_artwork(id).unwrap();
+    assert!(store.snapshot().unwrap().playlists[0].artwork.is_none());
+}
+
+#[test]
+fn a_version_3_database_gains_the_playlist_cover_column() {
+    let library = TestLibrary::new("migration-v3", 1);
+    {
+        let connection = rusqlite::Connection::open(&library.database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+                 INSERT INTO playlists (name) VALUES ('Ancienne');",
+            )
+            .unwrap();
+    }
+    let store = library.open();
+    let playlists = store.snapshot().unwrap().playlists;
+    assert_eq!(playlists[0].name, "Ancienne");
+    assert!(playlists[0].artwork.is_none());
 }

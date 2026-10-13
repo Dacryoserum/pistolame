@@ -346,6 +346,7 @@ impl HardwareEngine {
             pistolame_core::EngineStartOptions {
                 output_mode_preference: preference,
                 preferred_device_id: Some(device_id),
+                shared_mode_volume: Default::default(),
             },
         )
         .expect("the engine starts");

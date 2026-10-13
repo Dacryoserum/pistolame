@@ -10,12 +10,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use pistolame_core::{EngineStartOptions, OutputDeviceId, OutputModePreference};
+use pistolame_core::{EngineStartOptions, OutputDeviceId, OutputModePreference, SharedModeVolume};
 
 const OUTPUT_DEVICE_ID_KEY: &str = "output_device_id";
 const OUTPUT_DEVICE_NAME_KEY: &str = "output_device_name";
 const OUTPUT_MODE_KEY: &str = "output_mode";
 const EXCLUSIVE_MODE_NOTICE_SEEN_KEY: &str = "exclusive_mode_notice_seen";
+const SHARED_VOLUME_DECIBELS_KEY: &str = "shared_volume_db";
+const SHARED_VOLUME_MUTED_KEY: &str = "shared_volume_muted";
+/// Volume is stored in tenths of a decibel, so the settings stay exact integers.
+const TENTHS_PER_DECIBEL: f32 = 10.0;
 
 const SHARED_MODE_VALUE: &str = "shared";
 const EXCLUSIVE_MODE_VALUE: &str = "exclusive";
@@ -51,6 +55,10 @@ pub struct AppSettings {
     pub output_mode: OutputModePreference,
     /// Whether the one-time exclusive-mode notice was already shown.
     pub exclusive_mode_notice_seen: bool,
+    /// Shared-mode volume in tenths of a decibel (0 = full level, -600 = -60 dB).
+    pub shared_volume_tenths_of_decibel: i32,
+    /// Whether the shared-mode volume is muted.
+    pub is_shared_volume_muted: bool,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
 }
@@ -79,7 +87,25 @@ impl AppSettings {
         EngineStartOptions {
             output_mode_preference: self.output_mode,
             preferred_device_id: self.output_device_id.clone(),
+            shared_mode_volume: self.shared_mode_volume(),
         }
+    }
+
+    /// The remembered shared-mode volume.
+    pub fn shared_mode_volume(&self) -> SharedModeVolume {
+        SharedModeVolume {
+            is_muted: self.is_shared_volume_muted,
+            ..SharedModeVolume::at_decibels(
+                self.shared_volume_tenths_of_decibel as f32 / TENTHS_PER_DECIBEL,
+            )
+        }
+    }
+
+    /// Remembers `volume` (saved by the caller).
+    pub fn set_shared_mode_volume(&mut self, volume: SharedModeVolume) {
+        self.shared_volume_tenths_of_decibel =
+            (volume.decibels * TENTHS_PER_DECIBEL).round() as i32;
+        self.is_shared_volume_muted = volume.is_muted;
     }
 
     /// Like [`AppSettings::load`], from an explicit path (lets tests avoid the real directory).
@@ -143,6 +169,23 @@ impl AppSettings {
             FALSE_VALUE
         };
         push_entry(&mut text, EXCLUSIVE_MODE_NOTICE_SEEN_KEY, notice_value)?;
+        push_entry(
+            &mut text,
+            SHARED_VOLUME_DECIBELS_KEY,
+            &format!(
+                "{:.1}",
+                self.shared_volume_tenths_of_decibel as f32 / TENTHS_PER_DECIBEL
+            ),
+        )?;
+        push_entry(
+            &mut text,
+            SHARED_VOLUME_MUTED_KEY,
+            if self.is_shared_volume_muted {
+                TRUE_VALUE
+            } else {
+                FALSE_VALUE
+            },
+        )?;
         Ok(text)
     }
 
@@ -192,6 +235,20 @@ impl AppSettings {
                     "{EXCLUSIVE_MODE_NOTICE_SEEN_KEY}: invalid value `{other}`"
                 )),
             }
+        }
+
+        if let Some(value) = entries.get(SHARED_VOLUME_DECIBELS_KEY) {
+            match value.parse::<f32>() {
+                Ok(decibels) => {
+                    settings.set_shared_mode_volume(SharedModeVolume::at_decibels(decibels))
+                }
+                Err(_) => note_problem(format!(
+                    "{SHARED_VOLUME_DECIBELS_KEY}: invalid value `{value}`"
+                )),
+            }
+        }
+        if let Some(value) = entries.get(SHARED_VOLUME_MUTED_KEY) {
+            settings.is_shared_volume_muted = *value == TRUE_VALUE;
         }
 
         settings.load_problem = first_problem;
@@ -298,6 +355,8 @@ mod tests {
             output_device_name: Some("FiiO K11 (Haut-parleurs)".to_owned()),
             output_mode: OutputModePreference::Exclusive,
             exclusive_mode_notice_seen: true,
+            shared_volume_tenths_of_decibel: -60,
+            is_shared_volume_muted: false,
             load_problem: None,
         };
         saved.save_to(&path).unwrap();
@@ -415,5 +474,16 @@ mod tests {
         fs::write(legacy.join(LIBRARY_FILE_NAME), "other").unwrap();
         assert!(!move_directory_once(&legacy, &new).unwrap());
         assert_eq!(fs::read(new.join(LIBRARY_FILE_NAME)).unwrap(), b"db");
+    }
+
+    #[test]
+    fn shared_volume_round_trips_through_the_file() {
+        let mut settings = AppSettings::default();
+        settings.set_shared_mode_volume(SharedModeVolume::at_decibels(-12.5));
+        settings.is_shared_volume_muted = true;
+        let parsed = AppSettings::parse(&settings.serialize().unwrap());
+        assert_eq!(parsed.shared_volume_tenths_of_decibel, -125);
+        assert!(parsed.is_shared_volume_muted);
+        assert_eq!(parsed.shared_mode_volume().decibels, -12.5);
     }
 }

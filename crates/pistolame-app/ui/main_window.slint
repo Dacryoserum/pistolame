@@ -2,12 +2,12 @@ import "../assets/fonts/Inter-Regular.ttf";
 import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
-import { Button, Palette } from "std-widgets.slint";
-import { AlbumDetail, NowPlaying, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { Palette } from "std-widgets.slint";
+import { AddToPlaylistSheet, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, TrackRowData, ViewKind } from "state.slint";
+export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind } from "state.slint";
 export { Tokens } from "tokens.slint";
 
 export component AppWindow inherits Window {
@@ -22,8 +22,11 @@ export component AppWindow inherits Window {
 
     property <bool> is-dark: AppState.is-dark;
     property <length> toolbar-width: root.width - 240px;
-    property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - 168px - 20px - 48px, 360px, 560px);
-    property <length> side-gap: (root.toolbar-width - 20px - 172px - 168px - 20px - root.lcd-width) / 2;
+    // Right toolbar group: update dot (slot always reserved), volume, queue and output buttons.
+    property <length> update-slot-width: 36px;
+    property <length> right-group-width: 200px + root.update-slot-width;
+    property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - root.right-group-width - 20px - 48px, 360px, 560px);
+    property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
     property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Sortie audio", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
@@ -92,6 +95,8 @@ export component AppWindow inherits Window {
             }
 
             NowPlaying { visible: AppState.view == ViewKind.now-playing; }
+
+            PlaylistView { visible: AppState.view == ViewKind.playlist; }
 
             PlaceholderView {
                 visible: AppState.view == ViewKind.placeholder && AppState.selected-item != 6;
@@ -197,12 +202,36 @@ export component AppWindow inherits Window {
             }
 
             Rectangle {
-                x: root.toolbar-width - 20px - 168px;
+                x: root.toolbar-width - 20px - root.right-group-width;
                 y: 0px;
-                width: 168px;
+                width: root.right-group-width;
                 height: 60px;
-                Image {
+                if AppState.is-update-available: Rectangle {
                     x: 0px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: update-touch.has-hover ? Tokens.status-ok-tint.darker(0.1) : Tokens.status-ok-tint;
+                    accessible-role: button;
+                    accessible-label: "Mise à jour disponible";
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Tokens.status-ok;
+                    }
+                    update-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            AppState.is-update-panel-open = !AppState.is-update-panel-open;
+                            AppState.is-popover-open = false;
+                        }
+                    }
+                }
+
+                Image {
+                    x: root.update-slot-width + 0px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
@@ -211,12 +240,12 @@ export component AppWindow inherits Window {
                 }
 
                 VolumeSlider {
-                    x: 20px;
+                    x: root.update-slot-width + 20px;
                     y: 16px;
                 }
 
                 Image {
-                    x: 114px;
+                    x: root.update-slot-width + 114px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
@@ -225,7 +254,22 @@ export component AppWindow inherits Window {
                 }
 
                 IconButton {
-                    x: 140px;
+                    x: root.update-slot-width + 140px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                    icon: Icons.queue;
+                    icon-size: 18px;
+                    icon-color: AppState.is-queue-open ? Tokens.accent : Tokens.text-secondary;
+                    label: "À suivre";
+                    clicked => {
+                        AppState.is-queue-open = !AppState.is-queue-open;
+                        AppState.is-popover-open = false;
+                    }
+                }
+
+                IconButton {
+                    x: root.update-slot-width + 172px;
                     y: 16px;
                     width: 28px;
                     height: 28px;
@@ -268,7 +312,7 @@ export component AppWindow inherits Window {
                 y: 84px;
                 icon: Icons.clock-counter-clockwise;
                 label: "Ajouts récents";
-                is-selected: AppState.selected-item == 0;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 0;
                 clicked => {
                     AppState.select-item(0);
                     key-scope.focus();
@@ -279,7 +323,7 @@ export component AppWindow inherits Window {
                 y: 112px;
                 icon: Icons.microphone-stage;
                 label: "Artistes";
-                is-selected: AppState.selected-item == 1;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 1;
                 clicked => {
                     AppState.select-item(1);
                     key-scope.focus();
@@ -290,7 +334,7 @@ export component AppWindow inherits Window {
                 y: 140px;
                 icon: Icons.vinyl-record;
                 label: "Albums";
-                is-selected: AppState.selected-item == 2;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 2;
                 clicked => {
                     AppState.select-item(2);
                     key-scope.focus();
@@ -301,7 +345,7 @@ export component AppWindow inherits Window {
                 y: 168px;
                 icon: Icons.music-note;
                 label: "Morceaux";
-                is-selected: AppState.selected-item == 3;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 3;
                 clicked => {
                     AppState.select-item(3);
                     key-scope.focus();
@@ -317,7 +361,7 @@ export component AppWindow inherits Window {
                 y: 236px;
                 icon: Icons.seal-check;
                 label: "Authenticité";
-                is-selected: AppState.selected-item == 4;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 4;
                 clicked => {
                     AppState.select-item(4);
                     key-scope.focus();
@@ -328,7 +372,7 @@ export component AppWindow inherits Window {
                 y: 264px;
                 icon: Icons.waveform;
                 label: "Spectrogrammes";
-                is-selected: AppState.selected-item == 5;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 5;
                 clicked => {
                     AppState.select-item(5);
                     key-scope.focus();
@@ -339,7 +383,7 @@ export component AppWindow inherits Window {
                 y: 292px;
                 icon: Icons.speaker-hifi;
                 label: "Sortie audio";
-                is-selected: AppState.selected-item == 6;
+                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 6;
                 clicked => {
                     AppState.select-item(6);
                     key-scope.focus();
@@ -351,35 +395,29 @@ export component AppWindow inherits Window {
                 text: "Playlists";
             }
 
-            SidebarItem {
-                y: 360px;
-                icon: Icons.playlist;
-                label: "Écoute critique";
-                is-selected: AppState.selected-item == 7;
+            IconButton {
+                x: 196px;
+                y: 332px;
+                width: 24px;
+                height: 24px;
+                icon: Icons.plus;
+                icon-size: 14px;
+                icon-color: Tokens.text-secondary;
+                label: "Nouvelle playlist";
                 clicked => {
-                    AppState.select-item(7);
+                    AppState.create-playlist();
                     key-scope.focus();
                 }
             }
 
-            SidebarItem {
-                y: 388px;
+            for item[index] in AppState.playlists: SidebarItem {
+                y: 360px + 28px * index;
                 icon: Icons.playlist;
-                label: "Hi-Res 24/192";
-                is-selected: AppState.selected-item == 8;
+                artwork: item.artwork;
+                label: item.name;
+                is-selected: AppState.view == ViewKind.playlist && AppState.selected-playlist == index;
                 clicked => {
-                    AppState.select-item(8);
-                    key-scope.focus();
-                }
-            }
-
-            SidebarItem {
-                y: 416px;
-                icon: Icons.playlist;
-                label: "Vinyles numérisés";
-                is-selected: AppState.selected-item == 9;
-                clicked => {
-                    AppState.select-item(9);
+                    AppState.open-playlist(index);
                     key-scope.focus();
                 }
             }
@@ -391,8 +429,42 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 padding: 8px; spacing: 8px;
                 Text { text: AppState.message; color: Tokens.status-caution; wrap: word-wrap; }
-                Button { text: "Fermer"; clicked => { AppState.message = ""; } }
+                IconButton {
+                    width: 24px; height: 24px; icon: Icons.x; icon-size: 14px;
+                    icon-color: Tokens.text-secondary; label: "Fermer le message";
+                    clicked => { AppState.message = ""; }
+                }
             }
+        }
+        if AppState.is-update-panel-open: UpdatePanel {
+            x: root.width - self.width - 20px;
+            y: 64px;
+        }
+        if AppState.is-queue-open: QueuePanel {
+            x: root.width - self.width;
+            y: 60px;
+            height: root.height - 60px;
+        }
+        if AppState.is-playlist-editor-open || AppState.is-add-to-playlist-open: Rectangle {
+            background: #00000066;
+            TouchArea { }
+        }
+        if AppState.is-playlist-editor-open: PlaylistEditor {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
+        }
+        if AppState.is-add-to-playlist-open: AddToPlaylistSheet {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
+        }
+        // Album editor sheet over a dimmed window; Escape or Annuler closes it.
+        if AppState.is-album-editor-open: Rectangle {
+            background: #00000066;
+            TouchArea { }
+        }
+        if AppState.is-album-editor-open: AlbumEditor {
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
         }
         // Popover layer: an outside click closes it.
         if AppState.is-popover-open: TouchArea {

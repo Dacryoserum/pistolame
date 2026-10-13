@@ -155,6 +155,7 @@ fn an_absent_preferred_device_selects_the_default_and_says_so() {
         EngineStartOptions {
             output_mode_preference: EXCLUSIVE,
             preferred_device_id: Some(missing.clone()),
+            shared_mode_volume: Default::default(),
         },
         tuning(),
     );
