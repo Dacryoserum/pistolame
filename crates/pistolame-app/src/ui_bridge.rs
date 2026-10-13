@@ -699,6 +699,49 @@ impl UiBridge {
         self.show_playlists();
         self.show_artists();
         self.show_library_tracks();
+        self.show_recent_albums();
+    }
+
+    /// Fills "Ajouts récents": the newest albums, then the ones played last.
+    fn show_recent_albums(&self) {
+        /// More than two rows of the widest grid never show.
+        const MAXIMUM_SHELF_ALBUMS: usize = 16;
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let albums = self.albums.borrow();
+        let card = |(index, album): (usize, &Album)| AlbumCard {
+            catalog_index: index as i32,
+            title: album.title.as_str().into(),
+            artist: album.artist.as_str().into(),
+            artwork: album.artwork.clone(),
+        };
+        let mut added: Vec<(usize, &Album)> = albums.iter().enumerate().collect();
+        added.sort_by_key(|(_, album)| std::cmp::Reverse(album.sort_keys.added_seconds));
+        let mut played: Vec<(usize, &Album, i64)> = albums
+            .iter()
+            .enumerate()
+            .filter_map(|(index, album)| {
+                album
+                    .sort_keys
+                    .last_played_seconds
+                    .map(|seconds| (index, album, seconds))
+            })
+            .collect();
+        played.sort_by_key(|(_, _, seconds)| std::cmp::Reverse(*seconds));
+        let added: Vec<AlbumCard> = added
+            .into_iter()
+            .take(MAXIMUM_SHELF_ALBUMS)
+            .map(card)
+            .collect();
+        let played: Vec<AlbumCard> = played
+            .into_iter()
+            .take(MAXIMUM_SHELF_ALBUMS)
+            .map(|(index, album, _)| card((index, album)))
+            .collect();
+        let state = window.global::<AppState>();
+        state.set_recently_added_albums(ModelRc::new(VecModel::from(added)));
+        state.set_recently_played_albums(ModelRc::new(VecModel::from(played)));
     }
 
     /// Opens the "Modifier l'album" sheet for album `index`.
@@ -1282,6 +1325,7 @@ impl UiBridge {
             }
             album.sort_keys.last_played_seconds = Some(now);
         }
+        self.show_recent_albums();
     }
 
     /// The (album, track) indices of a file in the current album list.

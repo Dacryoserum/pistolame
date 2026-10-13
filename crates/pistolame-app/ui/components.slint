@@ -2455,3 +2455,59 @@ export component TracksView inherits Rectangle {
         horizontal-alignment: center;
     }
 }
+
+// A block of album tiles, at most `max-rows` rows, for the "Ajouts récents" page.
+component AlbumShelf inherits Rectangle {
+    in property <[AlbumCard]> albums;
+    in property <int> columns;
+    in property <length> tile;
+    in property <int> max-rows: 2;
+    property <int> shown: Math.min(root.albums.length, root.columns * root.max-rows);
+    property <length> pitch: root.tile + 64px;
+    height: Math.ceil(root.shown / root.columns) * root.pitch;
+    for album[index] in root.albums: AlbumTile {
+        visible: index < root.shown;
+        x: 32px + Math.mod(index, root.columns) * (root.tile + 24px);
+        y: Math.floor(index / root.columns) * root.pitch;
+        tile: root.tile;
+        album: album;
+        open => { AppState.show-album(album.catalog-index); }
+        play => { AppState.play-track(album.catalog-index, 0); }
+    }
+}
+
+// "Ajouts récents": the latest albums added, then the ones played last.
+export component RecentView inherits Rectangle {
+    property <length> inner-width: root.width - 64px;
+    property <int> columns: Math.clamp(Math.floor((root.inner-width + 24px) / 184px), 3, 8);
+    property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
+    Txt { role: TextRole.display; x: 32px; y: 24px; width: root.width - 64px; text: "Ajouts récents"; }
+    Flickable {
+        y: 76px;
+        height: root.height - 76px;
+        // Same top margin as the album grid's first row.
+        content-height: 12px + added.height + (AppState.recently-played-albums.length > 0 ? 56px + played.height : 0px) + 32px;
+        added := AlbumShelf {
+            y: 12px;
+            albums: AppState.recently-added-albums;
+            columns: root.columns;
+            tile: root.tile;
+        }
+        if AppState.recently-played-albums.length > 0: Txt {
+            x: 32px; y: 12px + added.height + 12px; role: TextRole.title-3; text: "Écoutés récemment";
+        }
+        played := AlbumShelf {
+            y: 12px + added.height + 56px;
+            visible: AppState.recently-played-albums.length > 0;
+            albums: AppState.recently-played-albums;
+            columns: root.columns;
+            tile: root.tile;
+        }
+    }
+    if AppState.recently-added-albums.length == 0: Txt {
+        y: 200px; width: root.width;
+        text: "Rien pour l’instant : importez de la musique pour remplir cette vue.";
+        color: Tokens.text-secondary;
+        horizontal-alignment: center;
+    }
+}

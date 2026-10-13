@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistsView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -103,9 +103,10 @@ export component AppWindow inherits Window {
 
             ArtistsView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 1; }
             TracksView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 3; }
+            RecentView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 0; }
 
             PlaceholderView {
-                visible: AppState.view == ViewKind.placeholder && AppState.selected-item != 6 && AppState.selected-item != 1 && AppState.selected-item != 3;
+                visible: AppState.view == ViewKind.placeholder && AppState.selected-item > 3 && AppState.selected-item != 6;
                 title: root.item-labels[AppState.selected-item];
                 icon: root.item-icons[AppState.selected-item];
             }

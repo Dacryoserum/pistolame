@@ -225,6 +225,9 @@ export global AppState {
     // Artists view: one card per album artist; opening one shows its albums in the grid.
     in property <[ArtistCard]> artists;
     in-out property <string> artist-filter;
+    // "Ajouts récents": the newest albums, then the ones played last.
+    in property <[AlbumCard]> recently-added-albums;
+    in property <[AlbumCard]> recently-played-albums;
     callback open-artist(int);
     // "Morceaux" table: every track, sorted by one column (index in display order).
     in property <[LibraryTrackRow]> library-tracks;
