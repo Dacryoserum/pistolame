@@ -3,32 +3,35 @@
 A native lossless audio player built with Rust and Slint. Windows is the first supported
 playback platform; macOS and Linux audio backends are planned.
 
-## Development preview
+## Download
 
-Download the Windows x64, macOS universal (Apple Silicon + Intel) or Linux x64 archive from
-[Releases](https://github.com/Dacryoserum/pistolame/releases). Mac and Linux preview the interface
-and FLAC import only: their audio backends are not implemented. Mac requires macOS 11 or later;
-Linux builds target Ubuntu 24.04 or newer with fontconfig, xkbcommon and a working graphics stack.
+Get the Windows x64, macOS universal (Apple Silicon + Intel, macOS 11+) or Linux x64 archive from
+[Releases](https://github.com/Dacryoserum/pistolame/releases) and check its SHA-256 file.
 
-The Mac app is ad-hoc signed, without Apple Developer signing or notarization. Windows is
-unsigned. Consult the release notes for platform limits. Verify archive SHA256 files after download.
-Project handoff and local plans are synchronized in the private
-[pistolame-docs](https://github.com/Dacryoserum/pistolame-docs) companion repository.
+- **Windows**: FLAC playback through WASAPI, shared (default) or exclusive mode. Unsigned build.
+- **macOS**: FLAC playback through CoreAudio, shared or exclusive mode (hog mode at the file's
+  sample rate). Ad-hoc signed, not notarized: macOS may ask for approval in System Settings >
+  Privacy & Security on first launch. Move the app to Applications so it can update itself.
+- **Linux**: interface and library only; the ALSA backend is not implemented yet. Targets
+  Ubuntu 24.04 or newer with fontconfig, xkbcommon and a working graphics stack.
 
-## Current player
+Installed copies check GitHub for new releases and update themselves after one click; every
+download is verified against an ed25519 signature before anything is replaced.
 
-- Import FLAC files or folders into an album grid with titles, artists and square covers.
-  Embedded covers and JPEG/PNG files beside the music are supported.
-- Open an album and choose a track. Play, pause, stop, seek, and select the previous or next
-  track with the transport controls.
-- Select an output device and choose shared mode (default) or WASAPI exclusive mode.
-  Pausing releases the device. The output preference and selected device are remembered.
-- Inspect the signal path and two independent checks: decoded samples versus the device
-  buffer in exclusive mode, and decoded samples versus the FLAC's stored MD5 when present.
+## What it does
 
-The badge describes the active audio path. A shared-mode path cannot claim bit-perfect
-transmission. The verification checks are software checks at the device-buffer boundary,
-not a physical measurement of the DAC's analog output.
+- **Library**: import FLAC files or folders; albums are remembered between launches and
+  rescanned in the background (files that vanish with an unplugged drive are kept). Edit an
+  album's title, artist and cover in the app; your music files are never modified.
+- **Playback**: play, pause, seek, previous/next, shuffle and repeat. Playlists (with covers) and
+  an *Up next* queue: "Play next" or "Add to queue" from any track, album or playlist.
+- **Output**: choose the device and the mode. Exclusive mode holds the device at the file's
+  format; the volume is then set on your DAC. Shared mode offers a volume in decibels (0 to
+  -60 dB) applied before the system mixer (Windows: not yet).
+- **Proof**: the quality badge describes the real audio path (Bit-perfect, Exclusif, Mode
+  partagé); hover it for details, click it for the signal path and two independent checks:
+  decoded samples versus the device buffer, and decoded samples versus the FLAC's stored MD5.
+  These are software checks at the device-buffer boundary, not a measurement of the DAC's output.
 
 ## Run from source
 
@@ -42,8 +45,6 @@ From an empty library, add files or a folder, open an album, then choose a track
 closes the signal-path panel or returns to the album grid. Ctrl+T switches themes; Ctrl+O imports files, Ctrl+Shift+O imports a folder, and Ctrl+. stops playback. Click the quality badge or output
 icon to see verification details. Seek by releasing the pointer on the position bar.
 
-Adjust listening volume on the DAC. The toolbar slider is disabled because software gain and endpoint volume control are not implemented.
-
 The three navigation groups, album grid, album detail and two themes follow the visual prototype.
 Views whose backend is not implemented show an unavailable state; authenticity reports never use simulated results.
 
@@ -51,15 +52,10 @@ Click the title in the central display to open the current track page. It follow
 shows artwork, metadata and the two real verification results, and returns to the previous view
 with Back or Escape. The quality badge still opens the signal-path popover.
 
-## First-version limits
+## Limits of 0.1.0
 
-The imported album collection is kept for the current session only. Persistent indexing,
-gapless playback, playlists, authenticity analysis,
-spectrograms, other audio formats, and CoreAudio/ALSA outputs are not implemented yet.
-Album playback advances automatically, with shuffle and album repeat. Transitions reopen the stream and are not gapless. FLAC playback supports up to 24 significant bits.
-
-Hardware acceptance of the integrated desktop player is required before publishing v0.1.0.
-Windows preview executables are unsigned.
+No gapless playback, authenticity analysis or spectrograms yet; FLAC only, up to 24 significant
+bits. Hardware acceptance on the reference DAC and screen-reader testing are still pending.
 
 ## Development
 

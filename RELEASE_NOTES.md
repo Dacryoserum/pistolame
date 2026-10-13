@@ -1,32 +1,49 @@
-# Pistolame 0.1.0-preview.2
+# Pistolame 0.1.0
 
-Development preview of the native Rust/Slint player. Hardware acceptance of the integrated
-player is still pending; this is not the completed M1 release.
+First public release of Pistolame, a native lossless player for audiophiles (Rust + Slint,
+GPL-3.0). Bit-perfect playback you can verify.
 
-- Windows x64: FLAC playback through WASAPI shared or exclusive mode.
-- macOS universal (Apple Silicon and Intel, macOS 11+): interface, metadata and artwork import;
-  **no audio output yet**. CoreAudio is not implemented.
-- Linux x64 (built on Ubuntu 24.04): interface and import; **no audio output yet**.
-  ALSA is not implemented. Requires a desktop session, fontconfig, xkbcommon and graphics drivers.
+## Platforms
 
-The approved album grid and album detail use square artwork, Inter type and brass accents in
-both themes. Playback includes seeking, previous/next, shuffle and album repeat on Windows.
-Click the central title to open the current track page; Back/Escape restores the previous view.
-Software verification distinguishes transmission to the device buffer from FLAC file integrity.
+- **Windows x64**: FLAC through WASAPI, shared mode (default) or exclusive mode.
+- **macOS universal** (Apple Silicon and Intel, macOS 11+): FLAC through CoreAudio. Shared mode,
+  or exclusive mode (hog mode at the file's sample rate, exact float conversion). Built-in Mac
+  outputs only accept float samples, so they show "Exclusif", never "Bit-perfect".
+- **Linux x64**: interface and library only, no audio output yet (ALSA is planned).
 
-Known limits: session-only library, inactive volume slider (use the DAC), no gapless playback,
-playlists, authenticity analysis or spectrogram computation. Several sidebar views are placeholders.
-Narrator and the full K11 hardware acceptance checklist have not been validated.
+## What is new since the previews
 
-Archives include licenses and SHA256 checksums. Windows is unsigned. The Mac bundle has only
-an ad-hoc signature, with no Apple Developer signature or notarization. macOS may require
-explicit approval in System Settings > Privacy & Security after an attempted launch.
+- Sound on macOS (CoreAudio backend).
+- Persistent library: albums are kept between launches and rescanned in the background.
+- Edit an album's title, artist and cover inside the app (your files are never modified).
+- Playlists with covers, and an "Up next" queue: play next or add to the queue from anywhere.
+- Shared-mode volume in decibels (0 to -60 dB); disabled in exclusive mode (use your DAC).
+- Icon-only quality badge in the central display; hover for details, click for the signal path.
+- Automatic updates: a green dot appears when a new release exists; one click downloads,
+  verifies the signature and restarts the app.
 
-To resume development, clone the source and the private `Dacryoserum/pistolame-docs` repository.
-Follow its Mac setup and handoff guide. The binary archives are for previewing the application;
-source and project memory are versioned separately.
+## Known limits
+
+- Windows: the shared-mode volume slider does not change the level yet.
+- No gapless playback, authenticity analysis or spectrograms yet. FLAC only, up to 24 bits.
+- Hardware acceptance on the reference DAC and screen-reader testing are still pending.
+- Windows builds are unsigned; the Mac app has an ad-hoc signature only (no notarization).
+  macOS may ask for approval in System Settings > Privacy & Security on first launch.
+
+Archives include licenses and SHA-256 checksums; `latest.json` carries the update signatures.
 
 # Changelog
+
+## 0.1.0
+
+### Features
+- add CoreAudio backend with exact float exclusive mode (67be04e)
+- persist the library and let users choose album covers (a2facc4)
+- album editing, shared-mode volume, playlists, play queue and self-update (ac6bdbb)
+
+### Fixes
+- build the macOS package (41b5634)
+
 
 ## 0.1.0-preview.2
 

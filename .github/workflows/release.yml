@@ -95,4 +95,7 @@ jobs:
           cd ..
           # Signs every archive and writes latest.json for the in-app updater.
           python3 scripts/write_update_manifest.py dist
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --title "Pistolame $RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          # A tag with a suffix (v0.2.0-preview.1) is a prerelease; a plain version is stable.
+          prerelease_flag=""
+          case "$RELEASE_TAG" in *-*) prerelease_flag="--prerelease" ;; esac
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft $prerelease_flag --title "Pistolame $RELEASE_TAG" --notes-file RELEASE_NOTES.md

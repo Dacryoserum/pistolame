@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0
+
+### Features
+- add CoreAudio backend with exact float exclusive mode (67be04e)
+- persist the library and let users choose album covers (a2facc4)
+- album editing, shared-mode volume, playlists, play queue and self-update (ac6bdbb)
+
+### Fixes
+- build the macOS package (41b5634)
+
+
 ## 0.1.0-preview.2
 
 ### Fixes
