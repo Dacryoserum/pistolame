@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Dacryoserum/pistolame"
-version = "0.1.1"
+version = "0.2.0"
 
 [workspace.dependencies]
 pistolame-core    = { path = "crates/pistolame-core" }
@@ -21,9 +21,16 @@ md-5              = "0.11.0"
 crossbeam-channel = "0.5.17"
 thiserror         = "2.0.21"
 anyhow            = "1.0.104"
-slint             = "=1.18.1"
+# `raw-window-handle-06`: the native window handle, which Windows media controls need.
+# `unstable-winit-030`: winit's file-drop events (Slint has no drop API of its own). Pinned
+# with `=` above, so this unstable API cannot change under us.
+slint             = { version = "=1.18.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
 slint-build       = "=1.18.1"
 rfd               = "0.17.2"
+# Media keys and the system "Now Playing" (SMTC, MPNowPlayingInfoCenter, MPRIS). MIT. `use_zbus`
+# talks to D-Bus in pure Rust, so Linux needs no libdbus at build time.
+souvlaki          = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
+raw-window-handle = "0.6.2"
 # Per-OS application folders (MIT OR Apache-2.0).
 dirs              = "7.0.0"
 # Embeds the app icon into the Windows executable (MIT).
@@ -38,6 +45,8 @@ base64            = "0.23.1"
 ed25519-dalek     = "3.0.0"
 # SQLite for the library (MIT; `bundled` builds the public-domain SQLite, no system library).
 rusqlite          = { version = "0.40.2", features = ["bundled"] }
+# Folder watching for the library (CC0-1.0): new or removed files show up without a restart.
+notify            = "8.2.0"
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
 # CoreAudio bindings (macOS). Zlib/Apache-2.0/MIT; same objc2 0.6 family Slint already pulls in.

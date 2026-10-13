@@ -15,6 +15,7 @@ symphonia.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
 md-5.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true

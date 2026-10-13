@@ -3,11 +3,11 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export { AlbumCard, AppState, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind } from "state.slint";
+export { AlbumCard, AppState, ArtistCard, LibraryTrackRow, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind } from "state.slint";
 export { Tokens } from "tokens.slint";
 
 export component AppWindow inherits Window {
@@ -32,7 +32,7 @@ export component AppWindow inherits Window {
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
-    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Sortie audio", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
+    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Réglages", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
     property <[image]> item-icons: [Icons.clock-counter-clockwise, Icons.microphone-stage, Icons.vinyl-record, Icons.music-note, Icons.seal-check, Icons.waveform, Icons.speaker-hifi, Icons.playlist, Icons.playlist, Icons.playlist];
 
     // The std widgets (scrollbars) follow the theme through the Palette global.
@@ -42,6 +42,14 @@ export component AppWindow inherits Window {
     init => {
         Palette.color-scheme = root.is-dark ? ColorScheme.dark : ColorScheme.light;
         key-scope.focus();
+    }
+
+    // Cmd/Ctrl+Up/Down: one decibel at a time, shared mode only (exclusive mode leaves the
+    // level to the DAC).
+    function step-volume(decibels: float) {
+        if root.is-volume-adjustable {
+            AppState.volume-changed(Math.clamp(AppState.volume-decibels + decibels, -60, 0), false);
+        }
     }
 
     function close-popover-or-go-back() {
@@ -71,6 +79,18 @@ export component AppWindow inherits Window {
                 return accept;
             }
             if event.modifiers.control && (event.text == "." ) { AppState.stop(); return accept; }
+            // Slint reports the Command key as `control` on macOS.
+            if event.modifiers.control && (event.text == "f" || event.text == "F") { search.focus-search(); return accept; }
+            if event.modifiers.control && event.text == Key.RightArrow { AppState.next-track(); return accept; }
+            if event.modifiers.control && event.text == Key.LeftArrow { AppState.previous-track(); return accept; }
+            if event.modifiers.control && event.text == Key.UpArrow { root.step-volume(1); return accept; }
+            if event.modifiers.control && event.text == Key.DownArrow { root.step-volume(-1); return accept; }
+            if event.modifiers.control && (event.text == "l" || event.text == "L") { AppState.show-now-playing(); return accept; }
+            if event.modifiers.control && event.text == "," { AppState.select-item(6); return accept; }
+            if event.modifiers.control && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4") {
+                AppState.select-item(event.text.to-float() - 1);
+                return accept;
+            }
             return reject;
         }
 
@@ -101,8 +121,12 @@ export component AppWindow inherits Window {
 
             PlaylistView { visible: AppState.view == ViewKind.playlist; }
 
+            ArtistsView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 1; }
+            TracksView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 3; }
+            RecentView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 0; }
+
             PlaceholderView {
-                visible: AppState.view == ViewKind.placeholder && AppState.selected-item != 6;
+                visible: AppState.view == ViewKind.placeholder && AppState.selected-item > 3 && AppState.selected-item != 6;
                 title: root.item-labels[AppState.selected-item];
                 icon: root.item-icons[AppState.selected-item];
             }
@@ -331,7 +355,7 @@ export component AppWindow inherits Window {
                 background: Tokens.separator-chrome;
             }
 
-            SearchField {
+            search := SearchField {
                 x: 12px;
                 y: 16px;
             }
@@ -414,8 +438,8 @@ export component AppWindow inherits Window {
 
             SidebarItem {
                 y: 292px;
-                icon: Icons.speaker-hifi;
-                label: "Sortie audio";
+                icon: Icons.sliders-horizontal;
+                label: "Réglages";
                 is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 6;
                 clicked => {
                     AppState.select-item(6);
@@ -516,6 +540,24 @@ export component AppWindow inherits Window {
             x: root.lcd-right-window - 380px;
             y: 60px + 4px * self.appear;
             opacity: self.appear;
+        }
+        // Drop veil while files are dragged over the window.
+        if AppState.is-drop-hovering: Rectangle {
+            x: 8px;
+            y: 8px;
+            width: root.width - 16px;
+            height: root.height - 16px;
+            border-radius: 12px;
+            border-width: 2px;
+            border-color: Tokens.accent;
+            background: Tokens.surface-content.with-alpha(0.9);
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Icon { height: 40px; source: Icons.plus; colorize: Tokens.accent; }
+                Txt { role: TextRole.title-3; text: "Déposez pour ajouter à la bibliothèque"; horizontal-alignment: center; }
+                Txt { text: "Dossiers et fichiers FLAC. Vos fichiers restent où ils sont."; color: Tokens.text-secondary; horizontal-alignment: center; }
+            }
         }
     }
 }

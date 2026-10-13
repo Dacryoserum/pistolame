@@ -18,6 +18,7 @@ const OUTPUT_MODE_KEY: &str = "output_mode";
 const EXCLUSIVE_MODE_NOTICE_SEEN_KEY: &str = "exclusive_mode_notice_seen";
 const SHARED_VOLUME_DECIBELS_KEY: &str = "shared_volume_db";
 const SHARED_VOLUME_MUTED_KEY: &str = "shared_volume_muted";
+const ALBUM_SORT_KEY: &str = "album_sort";
 /// Volume is stored in tenths of a decibel, so the settings stay exact integers.
 const TENTHS_PER_DECIBEL: f32 = 10.0;
 
@@ -59,6 +60,8 @@ pub struct AppSettings {
     pub shared_volume_tenths_of_decibel: i32,
     /// Whether the shared-mode volume is muted.
     pub is_shared_volume_muted: bool,
+    /// Order of the album grid (`AlbumSort::key`), `None` for the default.
+    pub album_sort: Option<String>,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
 }
@@ -186,6 +189,9 @@ impl AppSettings {
                 FALSE_VALUE
             },
         )?;
+        if let Some(sort) = &self.album_sort {
+            push_entry(&mut text, ALBUM_SORT_KEY, sort)?;
+        }
         Ok(text)
     }
 
@@ -249,6 +255,13 @@ impl AppSettings {
         }
         if let Some(value) = entries.get(SHARED_VOLUME_MUTED_KEY) {
             settings.is_shared_volume_muted = *value == TRUE_VALUE;
+        }
+
+        if let Some(value) = entries
+            .get(ALBUM_SORT_KEY)
+            .filter(|value| !value.is_empty())
+        {
+            settings.album_sort = Some((*value).to_owned());
         }
 
         settings.load_problem = first_problem;
@@ -357,6 +370,7 @@ mod tests {
             exclusive_mode_notice_seen: true,
             shared_volume_tenths_of_decibel: -60,
             is_shared_volume_muted: false,
+            album_sort: Some("year".to_owned()),
             load_problem: None,
         };
         saved.save_to(&path).unwrap();

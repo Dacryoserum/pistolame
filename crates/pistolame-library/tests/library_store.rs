@@ -268,3 +268,63 @@ fn a_version_3_database_gains_the_playlist_cover_column() {
     assert_eq!(playlists[0].name, "Ancienne");
     assert!(playlists[0].artwork.is_none());
 }
+
+#[test]
+fn plays_are_counted_and_added_dates_recorded() {
+    let library = TestLibrary::new("plays", 1);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let before = store.snapshot().unwrap().tracks[0].clone();
+    assert!(before.added_seconds > 0);
+    assert_eq!((before.play_count, before.last_played_seconds), (0, None));
+    store.record_play(&library.track(1)).unwrap();
+    store.record_play(&library.track(1)).unwrap();
+    let after = &store.snapshot().unwrap().tracks[0];
+    assert_eq!(after.play_count, 2);
+    assert!(after.last_played_seconds.is_some());
+    // A rescan of a changed file keeps the statistics.
+    touch_with_extra_byte(&library.track(1));
+    store.synchronize().unwrap();
+    let rescanned = &store.snapshot().unwrap().tracks[0];
+    assert_eq!(rescanned.play_count, 2);
+    assert_eq!(rescanned.added_seconds, before.added_seconds);
+}
+
+#[test]
+fn removing_a_root_forgets_its_tracks_only() {
+    let library = TestLibrary::new("remove-root", 2);
+    let other = library.folder.join("Other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(library.track(1), other.join("x.flac")).unwrap();
+    let mut store = library.open();
+    store
+        .add_roots(&[library.music.clone(), other.clone()])
+        .unwrap();
+    store.synchronize().unwrap();
+    assert_eq!(paths(&store).len(), 3);
+    store.remove_root(&library.music).unwrap();
+    assert_eq!(store.roots().unwrap(), vec![other.clone()]);
+    assert_eq!(paths(&store), vec![other.join("x.flac")]);
+    assert!(library.track(1).exists(), "files are never deleted");
+}
+
+#[test]
+fn favorites_survive_reopening_and_can_be_removed() {
+    let library = TestLibrary::new("favorites", 2);
+    let mut store = library.open();
+    store.set_favorite(&library.track(1), true).unwrap();
+    store.set_favorite(&library.track(2), true).unwrap();
+    // Marking twice changes nothing.
+    store.set_favorite(&library.track(1), true).unwrap();
+    drop(store);
+    let mut reopened = library.open();
+    assert_eq!(
+        reopened.favorites().unwrap(),
+        vec![library.track(2), library.track(1)]
+    );
+    reopened.set_favorite(&library.track(2), false).unwrap();
+    assert_eq!(reopened.favorites().unwrap(), vec![library.track(1)]);
+}

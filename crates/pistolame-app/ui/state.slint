@@ -12,6 +12,11 @@ export struct TrackRowData {
     title: string,
     format-label: string,
     duration-label: string,
+    // A "Disque 2" heading row instead of a track (multi-disc albums).
+    is-disc-header: bool,
+    // Index of the track in the album (rows and tracks differ when there are headings).
+    track-index: int,
+    is-favorite: bool,
 }
 
 export struct PathStep {
@@ -58,6 +63,10 @@ export enum TrackSource {
     album,
     playlist-entry,
     playlist,
+    // A track in the search results (position = its index there).
+    search-result,
+    // A row of the "Morceaux" table (position = its index there).
+    library-track,
 }
 
 export struct TrackTarget {
@@ -73,12 +82,36 @@ export enum TrackAction {
     add-to-queue,
     add-to-playlist,
     remove-from-playlist,
+    reveal-in-file-manager,
+    // Adds the tracks to the favorites, or removes them when they all are already.
+    toggle-favorite,
+    go-to-album,
+    go-to-artist,
 }
 
 export struct QueueRow {
     title: string,
     subtitle: string,
     duration-label: string,
+    artwork: image,
+}
+
+// One row of the "Morceaux" table.
+export struct LibraryTrackRow {
+    title: string,
+    artist: string,
+    album: string,
+    year: string,
+    format-label: string,
+    duration-label: string,
+    // File path, compared with `AppState.current-track-path` to mark the playing row.
+    path: string,
+    is-favorite: bool,
+}
+
+export struct ArtistCard {
+    name: string,
+    detail: string,
     artwork: image,
 }
 
@@ -97,6 +130,7 @@ export struct PlaylistTrackRow {
     format-label: string,
     duration-label: string,
     is-current: bool,
+    is-favorite: bool,
 }
 
 export global AppState {
@@ -155,6 +189,7 @@ export global AppState {
     callback begin-playlist-edit();
     callback save-playlist-edit();
     callback delete-current-playlist();
+    callback export-current-playlist();
     // "Ajouter à une playlist" sheet, for an album or one of its tracks.
     in-out property <bool> is-add-to-playlist-open;
     in property <string> add-to-playlist-subject;
@@ -163,6 +198,8 @@ export global AppState {
     // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
     // playlist being played.
     callback track-action(TrackTarget, TrackAction);
+    // "Afficher dans le Finder" / "Afficher dans l'Explorateur" / "Ouvrir le dossier".
+    in property <string> reveal-label: "Afficher dans le Finder";
     in-out property <bool> is-queue-open;
     in property <bool> has-queue-current;
     in property <QueueRow> queue-current;
@@ -182,6 +219,39 @@ export global AppState {
     in property <bool> is-updating;
     in-out property <bool> is-update-panel-open;
     callback start-update();
+    // Settings page: library folders and update check.
+    in property <[string]> library-folders;
+    callback remove-library-folder(int);
+    callback rescan-library();
+    callback check-for-updates();
+    in property <string> update-check-status;
+    // Album grid order.
+    in property <[string]> album-sort-labels;
+    in property <int> album-sort-index;
+    callback set-album-sort(int);
+    // Artists view: one card per album artist; opening one shows its albums in the grid.
+    in property <[ArtistCard]> artists;
+    in-out property <string> artist-filter;
+    // "Ajouts récents": the newest albums, then the ones played last.
+    in property <[AlbumCard]> recently-added-albums;
+    in property <[AlbumCard]> recently-played-albums;
+    callback open-artist(int);
+    // "Morceaux" table: every track, sorted by one column (index in display order).
+    in property <[LibraryTrackRow]> library-tracks;
+    in property <string> current-track-path;
+    in property <int> track-sort-column;
+    in property <bool> is-track-sort-descending;
+    callback sort-tracks(int);
+    // Files are dragged over the window: show the "Déposez…" veil.
+    in property <bool> is-drop-hovering;
+    // "Favoris" filter of the table.
+    in property <bool> is-favorites-only;
+    callback toggle-favorites-only();
+    callback play-library-track(int);
+    callback show-all-albums();
+    // Tracks matching the search, listed under the matching albums.
+    in property <[PlaylistTrackRow]> search-tracks;
+    callback play-search-result(int);
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();
@@ -254,11 +324,17 @@ export global AppState {
     callback seek(float);
     callback volume-changed(float, bool);
     callback toggle-theme();
+    // "⌘" on macOS, "Ctrl+" elsewhere, for the shortcut list.
+    in property <string> shortcut-modifier: "Ctrl+";
 
     public function select-item(item: int) {
         selected-item = item;
         is-popover-open = false;
         view = item == 2 ? ViewKind.grid : ViewKind.placeholder;
+        if item == 2 && artist-filter != "" {
+            artist-filter = "";
+            show-all-albums();
+        }
     }
 
     public function show-album(catalog-index: int) {
@@ -273,6 +349,7 @@ export global AppState {
 
     public function edit-query(text: string) {
         query = text;
+        artist-filter = "";
         selected-item = 2;
         view = ViewKind.grid;
         grid-scroll-y = 0px;
