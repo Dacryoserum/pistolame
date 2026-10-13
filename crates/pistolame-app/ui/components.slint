@@ -1,6 +1,6 @@
 import { Switch, ScrollView, ListView } from "std-widgets.slint";
 import { Tokens } from "tokens.slint";
-import { AlbumCard, AppState, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
+import { AlbumCard, AppState, ArtistCard, DataCell, PathStep, QueueRow, TrackAction, TrackSource, ViewKind } from "state.slint";
 
 export global Icons {
     out property <image> queue: @image-url("../assets/icons/queue.svg");
@@ -1039,12 +1039,19 @@ export component AlbumsGrid inherits Rectangle {
     property <int> row-count: Math.ceil(AppState.albums.length / root.columns);
     // While searching: the "Morceaux" heading plus one row per matching track.
     property <int> search-row-count: AppState.query != "" && AppState.search-tracks.length > 0 ? AppState.search-tracks.length + 1 : 0;
+    if AppState.artist-filter != "": IconButton {
+        x: 26px; y: 26px; width: 28px; height: 28px;
+        icon: Icons.caret-left; icon-color: Tokens.accent;
+        label: "Retour aux artistes";
+        clicked => { AppState.select-item(1); }
+    }
     Txt {
         role: TextRole.display;
-        x: 32px;
+        x: AppState.artist-filter != "" ? 60px : 32px;
         y: 24px;
-        width: root.width - 64px;
-        text: "Albums";
+        width: root.width - 64px - 220px;
+        text: AppState.artist-filter != "" ? AppState.artist-filter : "Albums";
+        overflow: elide;
     }
 
     // "Trier par" menu, right-aligned with the grid, discreet like Apple Music's view options.
@@ -2256,5 +2263,61 @@ export component UpdatePanel inherits Rectangle {
                 AppState.start-update();
             }
         }
+    }
+}
+
+component ArtistTile inherits Rectangle {
+    in property <length> tile;
+    in property <ArtistCard> artist;
+    callback open();
+    width: root.tile;
+    height: root.tile + 52px;
+    accessible-role: button;
+    accessible-label: root.artist.name;
+    accessible-action-default => { root.open(); }
+    // Round portrait (the newest album cover), as in Apple Music's artist list.
+    Rectangle {
+        width: root.tile;
+        height: root.tile;
+        border-radius: root.tile / 2;
+        clip: true;
+        background: Tokens.surface-field;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: Tokens.shadow-artwork;
+        Image { width: parent.width; height: parent.height; source: root.artist.artwork; image-fit: cover; }
+        if touch.has-hover: Rectangle { background: Tokens.overlay-artwork-hover; }
+    }
+    Txt { y: root.tile + 10px; width: root.tile; role: TextRole.body-medium; text: root.artist.name; horizontal-alignment: center; overflow: elide; }
+    Txt { y: root.tile + 28px; width: root.tile; role: TextRole.callout; text: root.artist.detail; color: Tokens.text-secondary; horizontal-alignment: center; }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+}
+
+export component ArtistsView inherits Rectangle {
+    property <length> inner-width: root.width - 64px;
+    property <int> columns: Math.clamp(Math.floor((root.inner-width + 24px) / 164px), 3, 9);
+    property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
+    property <int> row-count: Math.ceil(AppState.artists.length / root.columns);
+    Txt { role: TextRole.display; x: 32px; y: 24px; width: root.width - 64px; text: "Artistes"; }
+    ListView {
+        y: 76px;
+        height: root.height - 76px;
+        for row-index in root.row-count: Rectangle {
+            height: root.tile + 76px;
+            for column in root.columns: Rectangle {
+                if row-index * root.columns + column < AppState.artists.length: ArtistTile {
+                    x: 32px + column * (root.tile + 24px);
+                    tile: root.tile;
+                    artist: AppState.artists[row-index * root.columns + column];
+                    open => { AppState.open-artist(row-index * root.columns + column); }
+                }
+            }
+        }
+    }
+    if AppState.artists.length == 0: Txt {
+        y: 200px; width: root.width;
+        text: "Aucun artiste : importez de la musique pour remplir cette vue.";
+        color: Tokens.text-secondary;
+        horizontal-alignment: center;
     }
 }

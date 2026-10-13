@@ -89,6 +89,12 @@ export struct QueueRow {
     artwork: image,
 }
 
+export struct ArtistCard {
+    name: string,
+    detail: string,
+    artwork: image,
+}
+
 export struct PlaylistItem {
     name: string,
     track-count: int,
@@ -202,6 +208,11 @@ export global AppState {
     in property <[string]> album-sort-labels;
     in property <int> album-sort-index;
     callback set-album-sort(int);
+    // Artists view: one card per album artist; opening one shows its albums in the grid.
+    in property <[ArtistCard]> artists;
+    in-out property <string> artist-filter;
+    callback open-artist(int);
+    callback show-all-albums();
     // Tracks matching the search, listed under the matching albums.
     in property <[PlaylistTrackRow]> search-tracks;
     callback play-search-result(int);
@@ -282,6 +293,10 @@ export global AppState {
         selected-item = item;
         is-popover-open = false;
         view = item == 2 ? ViewKind.grid : ViewKind.placeholder;
+        if item == 2 && artist-filter != "" {
+            artist-filter = "";
+            show-all-albums();
+        }
     }
 
     public function show-album(catalog-index: int) {
@@ -296,6 +311,7 @@ export global AppState {
 
     public function edit-query(text: string) {
         query = text;
+        artist-filter = "";
         selected-item = 2;
         view = ViewKind.grid;
         grid-scroll-y = 0px;

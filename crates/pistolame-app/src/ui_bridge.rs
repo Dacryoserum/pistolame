@@ -1,7 +1,7 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
 use crate::{
-    AlbumCard, AppState, AppWindow, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow,
-    TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind,
+    AlbumCard, AppState, AppWindow, ArtistCard, DetailInfo, PathStep, PlaylistItem,
+    PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind,
 };
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -235,6 +235,14 @@ impl UiBridge {
                 .position(|sort| *sort == self.album_sort())
                 .unwrap_or(0) as i32,
         );
+        let handle = self.clone();
+        state.on_open_artist(move |index| handle.open_artist(index));
+        let handle = self.clone();
+        state.on_show_all_albums(move || {
+            if let Some(window) = handle.window.upgrade() {
+                handle.update_grid(window.global::<AppState>().get_query().as_str());
+            }
+        });
         let handle = self.clone();
         state.on_play_search_result(move |index| {
             let paths = handle.search_results.borrow().clone();
@@ -639,6 +647,7 @@ impl UiBridge {
             state.set_playing_track_index(track);
         }
         self.show_playlists();
+        self.show_artists();
     }
 
     /// Opens the "Modifier l'album" sheet for album `index`.
@@ -833,10 +842,12 @@ impl UiBridge {
         };
         let state = window.global::<AppState>();
         let words = crate::search::query_words(query);
+        let artist_filter = state.get_artist_filter().to_string();
         let albums = self.albums.borrow();
         let cards: Vec<AlbumCard> = albums
             .iter()
             .enumerate()
+            .filter(|(_, album)| artist_filter.is_empty() || album.artist == artist_filter)
             .filter(|(_, album)| {
                 let year = album_year(album)
                     .map(|year| year.to_string())
@@ -892,6 +903,37 @@ impl UiBridge {
         });
         state.set_search_tracks(ModelRc::new(VecModel::from(rows)));
         state.set_albums(ModelRc::new(VecModel::from(cards)));
+    }
+
+    /// One card per album artist, in natural order, with their newest album's cover.
+    fn show_artists(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let cards = artist_cards(&self.albums.borrow());
+        window
+            .global::<AppState>()
+            .set_artists(ModelRc::new(VecModel::from(cards)));
+    }
+
+    /// Shows the albums of artist `index` (in the artists list) in the grid.
+    fn open_artist(&self, index: i32) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let Some(artist) = usize::try_from(index)
+            .ok()
+            .and_then(|index| slint::Model::row_data(&state.get_artists(), index))
+        else {
+            return;
+        };
+        state.set_query("".into());
+        state.set_artist_filter(artist.name.clone());
+        state.set_selected_item(2);
+        state.set_grid_scroll_y(0.0);
+        state.set_view(ViewKind::Grid);
+        self.update_grid("");
     }
 
     /// The file playing now, if any.
@@ -2340,4 +2382,51 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         command
     };
     let _ = command.spawn();
+}
+
+/// Artist cards from the albums: one per album artist (as displayed), natural order, with the
+/// cover of their newest album that has one.
+fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
+    struct ArtistEntry {
+        album_count: usize,
+        newest_year: Option<u32>,
+        artwork: slint::Image,
+    }
+    let mut by_artist: std::collections::HashMap<&str, ArtistEntry> =
+        std::collections::HashMap::new();
+    for album in albums
+        .iter()
+        .filter(|album| !album.artist.trim().is_empty())
+    {
+        let entry = by_artist
+            .entry(album.artist.as_str())
+            .or_insert_with(|| ArtistEntry {
+                album_count: 0,
+                newest_year: None,
+                artwork: slint::Image::default(),
+            });
+        entry.album_count += 1;
+        let has_artwork = album.artwork.size().width > 0;
+        let has_no_artwork_yet = entry.artwork.size().width == 0;
+        let year = album_year(album);
+        if has_artwork && (has_no_artwork_yet || year > entry.newest_year) {
+            entry.artwork = album.artwork.clone();
+            entry.newest_year = year;
+        }
+    }
+    let mut artists: Vec<(&str, ArtistEntry)> = by_artist.into_iter().collect();
+    artists.sort_by(|left, right| crate::album_sort::natural_compare(left.0, right.0));
+    artists
+        .into_iter()
+        .map(|(name, entry)| ArtistCard {
+            name: name.into(),
+            detail: format!(
+                "{} album{}",
+                entry.album_count,
+                if entry.album_count == 1 { "" } else { "s" }
+            )
+            .into(),
+            artwork: entry.artwork,
+        })
+        .collect()
 }
