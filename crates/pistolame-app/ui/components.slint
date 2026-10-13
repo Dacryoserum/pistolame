@@ -2039,8 +2039,9 @@ export component LabeledField inherits VerticalLayout {
 
 // "Modifier l'album": what the app shows for an album. The music files are never modified.
 export component AlbumEditor inherits Rectangle {
-    width: 460px;
-    height: 360px;
+    width: 500px;
+    // Grows with the artists list; the cover column needs at least 360px.
+    height: max(360px, 64px + fields.preferred-height + 24px + 64px);
     border-radius: 12px;
     background: Tokens.surface-raised;
     border-width: 1px;
@@ -2072,15 +2073,68 @@ export component AlbumEditor inherits Rectangle {
             clicked => { AppState.editor-reset-artwork(); }
         }
     }
-    VerticalLayout {
+    fields := VerticalLayout {
         x: 180px; y: 64px; width: root.width - 204px;
-        spacing: 14px;
+        spacing: 10px;
         alignment: start;
         LabeledField { caption: "TITRE"; text <=> AppState.editor-title; }
-        LabeledField { caption: "ARTISTE"; text <=> AppState.editor-artist; }
+        Txt { role: TextRole.label; text: "ARTISTES"; color: Tokens.text-secondary; }
+        for artist[index] in AppState.editor-artists: Rectangle {
+            height: 28px;
+            border-radius: 7px;
+            background: Tokens.fill-control;
+            Txt { x: 10px; width: parent.width - 44px; height: parent.height; text: artist; overflow: elide; }
+            IconButton {
+                x: parent.width - 28px; y: 2px; width: 24px; height: 24px;
+                icon: Icons.x; icon-size: 12px; icon-color: Tokens.text-secondary;
+                label: "Retirer " + artist;
+                clicked => { AppState.editor-remove-artist(index); }
+            }
+        }
+        HorizontalLayout {
+            height: 30px;
+            spacing: 8px;
+            Rectangle {
+                border-radius: 7px;
+                background: Tokens.surface-field;
+                border-width: new-artist.has-focus ? 2px : 0px;
+                border-color: Tokens.focus-ring;
+                Txt {
+                    x: 10px; width: parent.width - 20px; height: parent.height;
+                    text: "Ajouter un artiste"; color: Tokens.text-tertiary;
+                    visible: new-artist.text == "";
+                }
+                new-artist := TextInput {
+                    x: 10px; width: parent.width - 20px; height: parent.height;
+                    single-line: true;
+                    vertical-alignment: center;
+                    font-family: "Inter";
+                    font-size: 13px;
+                    color: Tokens.text-primary;
+                    selection-background-color: Tokens.accent.with-alpha(0.35);
+                    selection-foreground-color: Tokens.text-primary;
+                    accessible-label: "Ajouter un artiste";
+                    text <=> AppState.editor-new-artist;
+                    accepted => { AppState.editor-add-artist(); }
+                }
+            }
+            PillButton { width: 96px; label: "Ajouter"; icon: Icons.plus; clicked => { AppState.editor-add-artist(); } }
+        }
+        if AppState.editor-suggested-artists.length > 0: Txt { role: TextRole.label; text: "DANS LES MORCEAUX"; color: Tokens.text-secondary; }
+        if AppState.editor-suggested-artists.length > 0: ListView {
+            height: min(AppState.editor-suggested-artists.length * 26px, 130px);
+            for suggestion[index] in AppState.editor-suggested-artists: Rectangle {
+                height: 26px;
+                border-radius: 6px;
+                background: suggestion-touch.has-hover ? Tokens.fill-row-hover : transparent;
+                Icon { x: 8px; y: 7px; width: 12px; height: 12px; source: Icons.plus; colorize: Tokens.accent; }
+                Txt { x: 28px; width: parent.width - 36px; height: parent.height; role: TextRole.callout; text: suggestion; overflow: elide; }
+                suggestion-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.editor-add-suggested-artist(index); } }
+            }
+        }
         Txt {
             role: TextRole.caption;
-            text: "Vos fichiers ne sont pas modifiés. Laissez un champ vide pour revenir aux informations des fichiers.";
+            text: "Vos fichiers ne sont pas modifiés. Un album à plusieurs artistes apparaît sous chacun d’eux. Sans titre ni artiste, l’album reprend les informations des fichiers.";
             color: Tokens.text-tertiary;
             wrap: word-wrap;
             height: self.preferred-height;

@@ -20,7 +20,10 @@ struct Album {
     key: AlbumKey,
     /// What the app shows: the user's edit, or the tags.
     title: String,
+    /// The album's artists as one line ("A, B & C").
     artist: String,
+    /// Each artist of the album: the album shows under every one of them in "Artistes".
+    artists: Vec<String>,
     /// What the tags say, to tell an edit from the original.
     tag_title: String,
     tag_artist: String,
@@ -43,6 +46,7 @@ enum PendingArtwork {
 struct AlbumEditDraft {
     index: usize,
     pending_artwork: PendingArtwork,
+    artists: Vec<String>,
 }
 
 /// What the update worker sends back to the UI thread.
@@ -397,6 +401,35 @@ impl UiBridge {
         state.on_editor_reset_artwork(move || handle.editor_reset_artwork());
         let handle = self.clone();
         state.on_save_album_edit(move || handle.save_album_edit());
+        let handle = self.clone();
+        state.on_editor_add_artist(move || {
+            if let Some(window) = handle.window.upgrade() {
+                let state = window.global::<AppState>();
+                let name = state.get_editor_new_artist().to_string();
+                state.set_editor_new_artist("".into());
+                handle.editor_add_artist(&name);
+            }
+        });
+        let handle = self.clone();
+        state.on_editor_add_suggested_artist(move |index| {
+            let name = handle.window.upgrade().and_then(|window| {
+                usize::try_from(index).ok().and_then(|index| {
+                    slint::Model::row_data(
+                        &window.global::<AppState>().get_editor_suggested_artists(),
+                        index,
+                    )
+                })
+            });
+            if let Some(name) = name {
+                handle.editor_add_artist(&name);
+            }
+        });
+        let handle = self.clone();
+        state.on_editor_remove_artist(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.editor_remove_artist(index);
+            }
+        });
         let handle = self.clone();
         state.on_cancel_album_edit(move || handle.close_album_editor());
         let handle = self.clone();
@@ -847,14 +880,75 @@ impl UiBridge {
         };
         let state = window.global::<AppState>();
         state.set_editor_title(album.title.as_str().into());
-        state.set_editor_artist(album.artist.as_str().into());
+        state.set_editor_new_artist("".into());
         state.set_editor_artwork(album.artwork.clone());
         state.set_editor_has_custom_artwork(album.has_custom_artwork);
         state.set_is_album_editor_open(true);
         *self.album_edit.borrow_mut() = Some(AlbumEditDraft {
             index,
             pending_artwork: PendingArtwork::Unchanged,
+            artists: album.artists.clone(),
         });
+        drop(albums);
+        self.show_editor_artists();
+    }
+
+    /// Shows the draft's artists, and the track artists not yet among them.
+    fn show_editor_artists(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let draft = self.album_edit.borrow();
+        let Some(draft) = draft.as_ref() else {
+            return;
+        };
+        let albums = self.albums.borrow();
+        let suggestions = albums
+            .get(draft.index)
+            .map(|album| {
+                crate::album_artists::suggestions(
+                    album.tracks.iter().map(|track| track.artist.as_str()),
+                    &draft.artists,
+                )
+            })
+            .unwrap_or_default();
+        let model = |names: &[String]| {
+            ModelRc::new(VecModel::from(
+                names
+                    .iter()
+                    .map(|name| SharedString::from(name.as_str()))
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        let state = window.global::<AppState>();
+        state.set_editor_artists(model(&draft.artists));
+        state.set_editor_suggested_artists(model(&suggestions));
+    }
+
+    /// Adds the typed artist (or each one, when separated by `;`).
+    fn editor_add_artist(&self, name: &str) {
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
+            for artist in crate::album_artists::split(name) {
+                if !draft
+                    .artists
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&artist))
+                {
+                    draft.artists.push(artist);
+                }
+            }
+        }
+        self.show_editor_artists();
+    }
+
+    /// Removes artist `index` from the draft.
+    fn editor_remove_artist(&self, index: usize) {
+        if let Some(draft) = self.album_edit.borrow_mut().as_mut()
+            && index < draft.artists.len()
+        {
+            draft.artists.remove(index);
+        }
+        self.show_editor_artists();
     }
 
     /// Lets the user pick a JPEG or PNG; applied only on "Enregistrer".
@@ -938,9 +1032,22 @@ impl UiBridge {
             self.close_album_editor();
             return;
         };
+        // A name still typed in the field counts, as if "Ajouter" had been pressed.
+        let mut artists = draft.artists.clone();
+        for typed in crate::album_artists::split(state.get_editor_new_artist().as_str()) {
+            if !artists
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&typed))
+            {
+                artists.push(typed);
+            }
+        }
         let text = AlbumTextOverride {
             title: edited_value(state.get_editor_title().as_str(), &tag_title),
-            artist: edited_value(state.get_editor_artist().as_str(), &tag_artist),
+            artist: edited_value(
+                &crate::album_artists::join_for_storage(&artists),
+                &crate::album_artists::join_for_storage(&crate::album_artists::split(&tag_artist)),
+            ),
         };
         let saved = self.with_library(|store| {
             store.set_album_text(&key, &text)?;
@@ -955,7 +1062,9 @@ impl UiBridge {
         }
         if let Some(album) = self.albums.borrow_mut().get_mut(draft.index) {
             album.title = text.title.clone().unwrap_or(tag_title);
-            album.artist = text.artist.clone().unwrap_or(tag_artist);
+            album.artists =
+                crate::album_artists::split(text.artist.as_deref().unwrap_or(&tag_artist));
+            album.artist = crate::album_artists::display(&album.artists);
             match draft.pending_artwork {
                 PendingArtwork::Unchanged => {}
                 PendingArtwork::Chosen { image, .. } => {
@@ -1033,7 +1142,7 @@ impl UiBridge {
         let cards: Vec<AlbumCard> = albums
             .iter()
             .enumerate()
-            .filter(|(_, album)| artist_filter.is_empty() || album.artist == artist_filter)
+            .filter(|(_, album)| artist_filter.is_empty() || album.artists.contains(&artist_filter))
             .filter(|(_, album)| {
                 let year = album_year(album)
                     .map(|year| year.to_string())
@@ -1589,7 +1698,7 @@ impl UiBridge {
                         .albums
                         .borrow()
                         .get(album_index)
-                        .map(|album| album.artist.clone());
+                        .and_then(|album| album.artists.first().cloned());
                     if let Some(artist) = artist {
                         self.open_artist_named(&artist);
                     }
@@ -3000,9 +3109,11 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
     for track in snapshot.tracks {
         let key = AlbumKey::of(&track);
         let index = *positions.entry(key.clone()).or_insert_with(|| {
+            let artists = crate::album_artists::split(&track.artist);
             albums.push(Album {
                 title: track.album.clone(),
-                artist: track.artist.clone(),
+                artist: crate::album_artists::display(&artists),
+                artists,
                 tag_title: track.album.clone(),
                 tag_artist: track.artist.clone(),
                 key,
@@ -3028,7 +3139,8 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
                 album.title = title.clone();
             }
             if let Some(artist) = &text.artist {
-                album.artist = artist.clone();
+                album.artists = crate::album_artists::split(artist);
+                album.artist = crate::album_artists::display(&album.artists);
             }
         }
         let custom = snapshot.artwork_overrides.get(&album.key);
@@ -3044,7 +3156,7 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
 fn sort_keys_of(album: &Album) -> crate::album_sort::AlbumSortKeys {
     let tag = |pick: fn(&MusicFile) -> Option<&String>| album.tracks.iter().find_map(pick).cloned();
     let is_title_edited = album.title != album.tag_title;
-    let is_artist_edited = album.artist != album.tag_artist;
+    let is_artist_edited = album.artists != crate::album_artists::split(&album.tag_artist);
     crate::album_sort::AlbumSortKeys {
         title: tag(|track| track.sort_album.as_ref())
             .filter(|_| !is_title_edited)
@@ -3146,12 +3258,12 @@ fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
     }
     let mut by_artist: std::collections::HashMap<&str, ArtistEntry> =
         std::collections::HashMap::new();
-    for album in albums
+    for (album, artist) in albums
         .iter()
-        .filter(|album| !album.artist.trim().is_empty())
+        .flat_map(|album| album.artists.iter().map(move |artist| (album, artist)))
     {
         let entry = by_artist
-            .entry(album.artist.as_str())
+            .entry(artist.as_str())
             .or_insert_with(|| ArtistEntry {
                 album_count: 0,
                 newest_year: None,

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use slint::ComponentHandle;
+mod album_artists;
 mod album_sort;
 mod analysis_worker;
 mod authenticity;
@@ -43,7 +44,7 @@ fn main() -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
     // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…, -1 = the
-    // current track) to check a
+    // current track, -2 = the first album's editor) to check a
     // screen without clicking through the app.
     #[cfg(debug_assertions)]
     if let Some(item) = std::env::var("PISTOLAME_DEBUG_START_ITEM")
@@ -51,11 +52,16 @@ fn main() -> anyhow::Result<()> {
         .and_then(|item| item.parse::<i32>().ok())
     {
         if item < 0 {
-            // -1: the current-track page, once the restored session has shown its track.
+            // Once the library (and the restored session) is shown.
             let weak = window.as_weak();
             slint::Timer::single_shot(std::time::Duration::from_secs(3), move || {
                 if let Some(window) = weak.upgrade() {
-                    window.global::<AppState>().invoke_show_now_playing();
+                    let state = window.global::<AppState>();
+                    if item == -2 {
+                        state.invoke_begin_album_edit(0);
+                    } else {
+                        state.invoke_show_now_playing();
+                    }
                 }
             });
         } else {

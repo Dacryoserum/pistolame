@@ -167,7 +167,13 @@ export global AppState {
     // library; the music files are never modified.
     in-out property <bool> is-album-editor-open;
     in-out property <string> editor-title;
-    in-out property <string> editor-artist;
+    // The album's artists in the editor, and the track artists not yet among them.
+    in property <[string]> editor-artists;
+    in property <[string]> editor-suggested-artists;
+    in-out property <string> editor-new-artist;
+    callback editor-add-artist();
+    callback editor-add-suggested-artist(int);
+    callback editor-remove-artist(int);
     in property <image> editor-artwork;
     in property <bool> editor-has-custom-artwork;
     // Playlists (stored in the library).
