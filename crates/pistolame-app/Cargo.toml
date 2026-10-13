@@ -28,3 +28,6 @@ crossbeam-channel.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

@@ -41,8 +41,11 @@ def main():
             "CFBundleExecutable": "Pistolame", "CFBundleIdentifier": "com.dacryoserum.pistolame",
             "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version.split("-")[0],
             "CFBundleVersion": version.split("-")[0], "LSMinimumSystemVersion": "11.0",
-            "NSHighResolutionCapable": True,
+            "NSHighResolutionCapable": True, "CFBundleIconFile": "Pistolame",
         }
+        resources = app / "Contents" / "Resources"
+        resources.mkdir()
+        shutil.copyfile(root / "crates/pistolame-app/assets/app-icon/Pistolame.icns", resources / "Pistolame.icns")
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
         subprocess.run(["plutil", "-lint", str(app / "Contents" / "Info.plist")], check=True)
         subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
@@ -52,6 +55,14 @@ def main():
         executable = folder / ("Pistolame.exe" if args.platform == "windows-x64" else "Pistolame")
         shutil.copyfile(binary, executable)
         executable.chmod(0o755)
+        if args.platform == "linux-x64":
+            # Icon and desktop entry for menus and docks (freedesktop.org conventions).
+            shutil.copyfile(root / "crates/pistolame-app/assets/app-icon/pistolame-256.png", folder / "pistolame.png")
+            (folder / "pistolame.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=Pistolame\n"
+                "Comment=Lossless audio player for audiophiles\nExec=Pistolame\n"
+                "Icon=pistolame\nCategories=AudioVideo;Audio;Player;\nTerminal=false\n"
+            )
     dist = root / "target" / "dist"
     dist.mkdir(exist_ok=True)
     if args.platform == "linux-x64":
