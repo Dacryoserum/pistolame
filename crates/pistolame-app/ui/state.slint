@@ -173,6 +173,15 @@ export global AppState {
     callback queue-clear();
     callback queue-play-up-next(int);
     callback queue-play-upcoming(int);
+    // Self-update: a newer release was found on GitHub.
+    in property <bool> is-update-available;
+    in property <string> current-version;
+    in property <string> update-version;
+    in property <string> update-notes;
+    in property <string> update-status;
+    in property <bool> is-updating;
+    in-out property <bool> is-update-panel-open;
+    callback start-update();
     callback begin-album-edit(int);
     callback editor-choose-artwork();
     callback editor-reset-artwork();

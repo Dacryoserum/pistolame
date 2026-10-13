@@ -26,6 +26,14 @@ slint-build       = "=1.18.1"
 rfd               = "0.17.2"
 # Per-OS application folders (MIT OR Apache-2.0).
 dirs              = "7.0.0"
+# Self-update: manifest, versions and signature checks (all MIT/Apache except ed25519-dalek,
+# BSD-3-Clause; all GPL-3.0-compatible). Downloads go through the system's curl.
+serde             = { version = "1.0.229", features = ["derive"] }
+serde_json        = "1.0.151"
+semver            = "1.0.28"
+sha2              = "0.11.0"
+base64            = "0.23.1"
+ed25519-dalek     = "3.0.0"
 # SQLite for the library (MIT; `bundled` builds the public-domain SQLite, no system library).
 rusqlite          = { version = "0.40.2", features = ["bundled"] }
 flacenc           = { version = "0.5.1", default-features = false }

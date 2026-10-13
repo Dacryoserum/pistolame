@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, QueuePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
+import { AddToPlaylistSheet, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider } from "components.slint";
 import { AppState, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -22,8 +22,9 @@ export component AppWindow inherits Window {
 
     property <bool> is-dark: AppState.is-dark;
     property <length> toolbar-width: root.width - 240px;
-    // Right toolbar group: volume, queue and output buttons.
-    property <length> right-group-width: 200px;
+    // Right toolbar group: update dot (slot always reserved), volume, queue and output buttons.
+    property <length> update-slot-width: 36px;
+    property <length> right-group-width: 200px + root.update-slot-width;
     property <length> lcd-width: Math.clamp(root.toolbar-width - 20px - 172px - root.right-group-width - 20px - 48px, 360px, 560px);
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
@@ -205,8 +206,32 @@ export component AppWindow inherits Window {
                 y: 0px;
                 width: root.right-group-width;
                 height: 60px;
-                Image {
+                if AppState.is-update-available: Rectangle {
                     x: 0px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: update-touch.has-hover ? Tokens.status-ok-tint.darker(0.1) : Tokens.status-ok-tint;
+                    accessible-role: button;
+                    accessible-label: "Mise à jour disponible";
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Tokens.status-ok;
+                    }
+                    update-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            AppState.is-update-panel-open = !AppState.is-update-panel-open;
+                            AppState.is-popover-open = false;
+                        }
+                    }
+                }
+
+                Image {
+                    x: root.update-slot-width + 0px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
@@ -215,12 +240,12 @@ export component AppWindow inherits Window {
                 }
 
                 VolumeSlider {
-                    x: 20px;
+                    x: root.update-slot-width + 20px;
                     y: 16px;
                 }
 
                 Image {
-                    x: 114px;
+                    x: root.update-slot-width + 114px;
                     y: 23px;
                     width: 14px;
                     height: 14px;
@@ -229,7 +254,7 @@ export component AppWindow inherits Window {
                 }
 
                 IconButton {
-                    x: 140px;
+                    x: root.update-slot-width + 140px;
                     y: 16px;
                     width: 28px;
                     height: 28px;
@@ -244,7 +269,7 @@ export component AppWindow inherits Window {
                 }
 
                 IconButton {
-                    x: 172px;
+                    x: root.update-slot-width + 172px;
                     y: 16px;
                     width: 28px;
                     height: 28px;
@@ -410,6 +435,10 @@ export component AppWindow inherits Window {
                     clicked => { AppState.message = ""; }
                 }
             }
+        }
+        if AppState.is-update-panel-open: UpdatePanel {
+            x: root.width - self.width - 20px;
+            y: 64px;
         }
         if AppState.is-queue-open: QueuePanel {
             x: root.width - self.width;

@@ -1999,3 +1999,72 @@ export component QueuePanel inherits Rectangle {
         }
     }
 }
+
+// "Mise à jour disponible": opened from the green dot in the toolbar.
+export component UpdatePanel inherits Rectangle {
+    width: 360px;
+    height: 330px;
+    border-radius: 12px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Tokens.shadow-popover;
+    TouchArea { }
+    Rectangle {
+        x: 20px; y: 22px; width: 10px; height: 10px; border-radius: 5px;
+        background: Tokens.status-ok;
+    }
+    Txt { x: 40px; y: 16px; role: TextRole.title-3; text: "Mise à jour disponible"; }
+    Txt {
+        x: 20px; y: 48px; width: root.width - 40px;
+        role: TextRole.headline;
+        text: "Pistolame " + AppState.update-version;
+    }
+    Txt {
+        x: 20px; y: 68px; width: root.width - 40px;
+        role: TextRole.callout;
+        text: "Version installée : " + AppState.current-version;
+        color: Tokens.text-secondary;
+    }
+    Rectangle {
+        x: 20px; y: 96px; width: root.width - 40px; height: 140px;
+        border-radius: 8px;
+        background: Tokens.fill-row-zebra;
+        clip: true;
+        Flickable {
+            content-height: notes.preferred-height + 20px;
+            notes := Txt {
+                x: 10px; y: 10px; width: parent.width - 20px;
+                role: TextRole.callout;
+                text: AppState.update-notes;
+                wrap: word-wrap;
+                height: self.preferred-height;
+            }
+        }
+    }
+    Txt {
+        x: 20px; y: 246px; width: root.width - 40px;
+        role: TextRole.callout;
+        text: AppState.update-status != "" ? AppState.update-status : "L’application se fermera et se rouvrira toute seule, déjà à jour.";
+        color: AppState.update-status != "" && !AppState.is-updating ? Tokens.status-caution : Tokens.text-secondary;
+        wrap: word-wrap;
+        height: 32px;
+    }
+    PillButton {
+        x: root.width - 20px - 132px - 10px - 112px; y: root.height - 48px;
+        label: "Plus tard";
+        clicked => { AppState.is-update-panel-open = false; }
+    }
+    PillButton {
+        x: root.width - 20px - 132px; y: root.height - 48px; width: 132px;
+        is-primary: true;
+        label: AppState.is-updating ? "Installation…" : "Mettre à jour";
+        clicked => {
+            if !AppState.is-updating {
+                AppState.start-update();
+            }
+        }
+    }
+}

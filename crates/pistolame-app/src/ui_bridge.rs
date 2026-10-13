@@ -42,6 +42,18 @@ struct AlbumEditDraft {
     pending_artwork: PendingArtwork,
 }
 
+/// What the update worker sends back to the UI thread.
+enum UpdateMessage {
+    Checked(Option<crate::updater::AvailableUpdate>),
+    CheckFailed,
+    Installed(crate::updater::InstalledUpdate),
+    InstallFailed(String),
+}
+
+/// First update check after start-up, then once a day.
+const FIRST_UPDATE_CHECK_DELAY: Duration = Duration::from_secs(5);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// What the library worker sends back to the UI thread.
 struct LibraryUpdate {
     /// The whole library, when it changed; `None` when nothing needs to be redrawn.
@@ -72,6 +84,12 @@ pub(crate) struct UiBridge {
     pending_playlist_artwork: RefCell<PendingArtwork>,
     /// Tracks waiting in the "Ajouter à une playlist" sheet.
     pending_playlist_tracks: RefCell<Vec<PathBuf>>,
+    /// Self-update: messages from the worker, the update found, and when to check next.
+    update_messages: Receiver<UpdateMessage>,
+    update_sender: Sender<UpdateMessage>,
+    available_update: RefCell<Option<crate::updater::AvailableUpdate>>,
+    next_update_check: Cell<std::time::Instant>,
+    is_update_worker_busy: Cell<bool>,
     /// The latest signal-path assessment, to redraw the path when the volume changes.
     last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
@@ -104,6 +122,7 @@ impl UiBridge {
             settings.engine_start_options(),
         )?;
         let (sender, receiver) = unbounded();
+        let (update_sender, update_messages) = unbounded();
         let bridge = Rc::new(Self {
             window: window.as_weak(),
             engine,
@@ -116,6 +135,11 @@ impl UiBridge {
             is_importing: Cell::new(false),
             album_edit: RefCell::new(None),
             last_assessment: RefCell::new(None),
+            update_messages,
+            update_sender,
+            available_update: RefCell::new(None),
+            next_update_check: Cell::new(std::time::Instant::now() + FIRST_UPDATE_CHECK_DELAY),
+            is_update_worker_busy: Cell::new(false),
             playlists: RefCell::new(Vec::new()),
             play_queue: RefCell::new(crate::play_queue::PlayQueue::default()),
             pending_playlist_tracks: RefCell::new(Vec::new()),
@@ -191,6 +215,9 @@ impl UiBridge {
             });
         });
         self.connect_playlists(&state);
+        state.set_current_version(crate::updater::CURRENT_VERSION.into());
+        let handle = self.clone();
+        state.on_start_update(move || handle.start_update());
         self.connect_queue(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
@@ -1031,6 +1058,98 @@ impl UiBridge {
         }
     }
 
+    /// Asks GitHub for a newer release, in the background.
+    fn check_for_update(&self) {
+        self.next_update_check
+            .set(std::time::Instant::now() + UPDATE_CHECK_INTERVAL);
+        self.is_update_worker_busy.set(true);
+        let sender = self.update_sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pistolame-update-check".into())
+            .spawn(move || {
+                let _ = sender.send(match crate::updater::check_for_update() {
+                    Ok(update) => UpdateMessage::Checked(update),
+                    Err(_) => UpdateMessage::CheckFailed,
+                });
+            });
+        if spawned.is_err() {
+            self.is_update_worker_busy.set(false);
+        }
+    }
+
+    /// "Mettre à jour": download, verify and install in the background, then relaunch.
+    fn start_update(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        if let Some(reason) = crate::updater::installation_blocker() {
+            state.set_update_status(reason.into());
+            return;
+        }
+        let Some(update) = self.available_update.borrow().clone() else {
+            return;
+        };
+        state.set_is_updating(true);
+        state.set_update_status("Téléchargement et vérification de la signature…".into());
+        self.is_update_worker_busy.set(true);
+        let sender = self.update_sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pistolame-update-install".into())
+            .spawn(move || {
+                let work_folder = std::env::temp_dir().join("pistolame-update");
+                let result = crate::updater::download_and_verify(&update, &work_folder)
+                    .and_then(|archive| crate::updater::install(&archive, &work_folder));
+                let _ = sender.send(match result {
+                    Ok(installed) => UpdateMessage::Installed(installed),
+                    Err(error) => UpdateMessage::InstallFailed(format!("{error:#}")),
+                });
+            });
+        if spawned.is_err() {
+            self.is_update_worker_busy.set(false);
+            state.set_is_updating(false);
+        }
+    }
+
+    fn apply_update_message(&self, message: UpdateMessage) {
+        self.is_update_worker_busy.set(false);
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        match message {
+            UpdateMessage::Checked(Some(update)) => {
+                state.set_update_version(update.version.as_str().into());
+                state.set_update_notes(update.notes.as_str().into());
+                state.set_update_status("".into());
+                state.set_is_update_available(true);
+                *self.available_update.borrow_mut() = Some(update);
+            }
+            // No newer release, or no network: try again at the next interval, silently.
+            UpdateMessage::Checked(None) | UpdateMessage::CheckFailed => {}
+            UpdateMessage::Installed(installed) => {
+                state.set_update_status("Redémarrage…".into());
+                self.engine.send(EngineCommand::Stop);
+                match crate::updater::relaunch(&installed) {
+                    Ok(()) => {
+                        let _ = slint::quit_event_loop();
+                    }
+                    Err(error) => {
+                        state.set_is_updating(false);
+                        state.set_update_status(
+                            format!("Mise à jour installée, mais {error:#}. Relancez Pistolame.")
+                                .into(),
+                        );
+                    }
+                }
+            }
+            UpdateMessage::InstallFailed(error) => {
+                state.set_is_updating(false);
+                state.set_update_status(format!("Échec de la mise à jour : {error}").into());
+            }
+        }
+    }
+
     /// A short confirmation in the status line under the sidebar.
     fn status(&self, text: String) {
         if let Some(window) = self.window.upgrade() {
@@ -1511,6 +1630,14 @@ impl UiBridge {
     pub(crate) fn tick(&self) {
         for update in self.imports.try_iter() {
             self.apply_library_update(update);
+        }
+        for message in self.update_messages.try_iter() {
+            self.apply_update_message(message);
+        }
+        if !self.is_update_worker_busy.get()
+            && std::time::Instant::now() >= self.next_update_check.get()
+        {
+            self.check_for_update();
         }
         for event in self.engine.try_receive_events() {
             self.handle_event(event);

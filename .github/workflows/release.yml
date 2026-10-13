@@ -84,6 +84,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           test "$(find dist -name '*.zip' | wc -l)" -eq 2
           test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
@@ -91,4 +93,6 @@ jobs:
           cd dist
           sha256sum -c *.sha256
           cd ..
+          # Signs every archive and writes latest.json for the in-app updater.
+          python3 scripts/write_update_manifest.py dist
           gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease --title "Pistolame $RELEASE_TAG" --notes-file RELEASE_NOTES.md

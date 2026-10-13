@@ -9,6 +9,7 @@ mod transport;
 mod ui_bridge;
 #[cfg(test)]
 mod ui_preview;
+mod updater;
 
 #[allow(
     missing_docs,
@@ -24,6 +25,8 @@ use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
     settings::migrate_legacy_app_data();
+    // The copy an update replaced is deleted once this new copy runs.
+    updater::clean_up_previous_copy();
     let window = AppWindow::new()?;
     let bridge = ui_bridge::UiBridge::new(&window)?;
     bridge.connect(&window);
