@@ -4,6 +4,7 @@
 use slint::ComponentHandle;
 mod album_sort;
 mod m3u;
+mod media_controls;
 mod play_queue;
 mod presentation;
 mod search;

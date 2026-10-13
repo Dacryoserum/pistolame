@@ -116,6 +116,7 @@ pub(crate) struct UiBridge {
     /// Files of the "Morceaux" table, in its current order.
     library_tracks: RefCell<Vec<PathBuf>>,
     track_sort: Cell<(crate::track_sort::TrackColumn, bool)>,
+    media_controls: RefCell<crate::media_controls::SystemMediaControls>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -184,6 +185,7 @@ impl UiBridge {
             resume_position_seconds: Cell::new(None),
             library_tracks: RefCell::new(Vec::new()),
             track_sort: Cell::new((crate::track_sort::TrackColumn::default(), false)),
+            media_controls: RefCell::new(crate::media_controls::SystemMediaControls::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -419,9 +421,7 @@ impl UiBridge {
                     handle.resume_position_seconds.set(Some(position as u64));
                     return;
                 }
-                handle.engine.send(EngineCommand::SeekTo {
-                    position_in_track: Duration::from_secs_f64(position),
-                });
+                handle.seek_to(Duration::from_secs_f64(position));
             }
         });
         let handle = self.clone();
@@ -2143,6 +2143,106 @@ impl UiBridge {
         state.set_lcd_artwork(album.artwork.clone());
         state.set_playing_album_index(album_index as i32);
         state.set_playing_track_index(track_index as i32);
+        drop(albums);
+        self.publish_media_track();
+    }
+
+    /// Shows the selected track in the system media panel.
+    fn publish_media_track(&self) {
+        let Some((album_index, track_index)) = self.selected_track.get() else {
+            return;
+        };
+        let albums = self.albums.borrow();
+        if let Some(album) = albums.get(album_index)
+            && let Some(track) = album.tracks.get(track_index)
+        {
+            self.media_controls.borrow_mut().publish_track(
+                &track.title,
+                &track.artist,
+                &album.title,
+                Duration::from_secs(track.duration_seconds),
+            );
+        }
+    }
+
+    /// Position in the current track: the restored one, or what the engine has played.
+    fn position_in_track(&self) -> Duration {
+        if let Some(seconds) = self.resume_position_seconds.get() {
+            return Duration::from_secs(seconds);
+        }
+        let rate = u64::from(self.sample_rate_hz.get().max(1));
+        Duration::from_secs_f64(
+            self.engine.counters().frames_rendered_in_track as f64 / rate as f64,
+        )
+    }
+
+    /// Jumps in the current track (a restored track not opened yet starts there on Play).
+    fn seek_to(&self, position: Duration) {
+        if self.resume_position_seconds.get().is_some() {
+            self.resume_position_seconds.set(Some(position.as_secs()));
+        } else {
+            self.engine.send(EngineCommand::SeekTo {
+                position_in_track: position,
+            });
+        }
+        self.publish_media_status_at(position);
+    }
+
+    /// Tells the system media panel whether the app plays, and where.
+    fn publish_media_status(&self) {
+        self.publish_media_status_at(self.position_in_track());
+    }
+
+    fn publish_media_status_at(&self, position: Duration) {
+        use crate::media_controls::TransportStatus;
+        let status = match self.state.get() {
+            PlaybackState::Playing | PlaybackState::Opening => TransportStatus::Playing,
+            PlaybackState::Paused => TransportStatus::Paused,
+            PlaybackState::Stopped if self.selected_track.get().is_some() => {
+                TransportStatus::Paused
+            }
+            PlaybackState::Stopped => TransportStatus::Stopped,
+        };
+        self.media_controls
+            .borrow_mut()
+            .publish_status(status, position);
+    }
+
+    /// Registers the media keys once the window exists, then applies what they ask.
+    fn handle_media_commands(&self) {
+        use crate::media_controls::MediaCommand;
+        if let Some(window) = self.window.upgrade() {
+            let is_new = self.media_controls.borrow_mut().install_once(&window);
+            if is_new {
+                self.publish_media_track();
+                self.publish_media_status();
+            }
+        }
+        let commands = self.media_controls.borrow().take_commands();
+        for command in commands {
+            let is_active = matches!(
+                self.state.get(),
+                PlaybackState::Playing | PlaybackState::Opening
+            );
+            match command {
+                MediaCommand::Play if !is_active => self.toggle_play(),
+                MediaCommand::Pause if is_active => self.toggle_play(),
+                MediaCommand::Play | MediaCommand::Pause => {}
+                MediaCommand::Toggle => self.toggle_play(),
+                MediaCommand::Next => self.adjacent_track(true),
+                MediaCommand::Previous => self.adjacent_track(false),
+                MediaCommand::Stop => self.engine.send(EngineCommand::Stop),
+                MediaCommand::SeekTo(position) => self.seek_to(position),
+                MediaCommand::SeekBy { is_forward, amount } => {
+                    let current = self.position_in_track();
+                    self.seek_to(if is_forward {
+                        current + amount
+                    } else {
+                        current.saturating_sub(amount)
+                    });
+                }
+            }
+        }
     }
 
     /// Reopens the last session: the queue, and its current track shown paused at the stored
@@ -2257,6 +2357,7 @@ impl UiBridge {
         for event in self.engine.try_receive_events() {
             self.handle_event(event);
         }
+        self.handle_media_commands();
         if std::time::Instant::now() >= self.next_session_save.get() {
             self.next_session_save
                 .set(std::time::Instant::now() + SESSION_SAVE_INTERVAL);
@@ -2382,6 +2483,7 @@ impl UiBridge {
             EngineEvent::PlaybackStateChanged { state: playback } => {
                 self.state.set(playback);
                 state.set_is_playing(playback == PlaybackState::Playing);
+                self.publish_media_status();
             }
             EngineEvent::SignalPathChanged {
                 assessment: Some(value),
