@@ -1765,6 +1765,28 @@ export component OutputSettings inherits Rectangle {
                 text: "Retirer un dossier l’enlève de Pistolame ; vos fichiers ne sont jamais supprimés.";
                 color: Tokens.text-tertiary;
             }
+            SettingsCard {
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Txt { role: TextRole.headline; text: "Photos d’artistes"; }
+                        Txt {
+                            role: TextRole.callout;
+                            text: "Cherche la photo de chaque artiste sur Deezer. Seuls les noms d’artistes sont envoyés ; les photos sont gardées dans la bibliothèque.";
+                            color: Tokens.text-secondary;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
+                    }
+                    Switch {
+                        checked: AppState.are-artist-photos-on;
+                        accessible-label: "Photos d’artistes";
+                        toggled => { AppState.set-artist-photos(self.checked); }
+                    }
+                }
+            }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "Raccourcis clavier"; height: 32px; vertical-alignment: center; }
             SettingsCard {

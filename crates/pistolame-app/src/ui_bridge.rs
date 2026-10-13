@@ -135,6 +135,10 @@ pub(crate) struct UiBridge {
     analysis_worker: Option<crate::analysis_worker::AnalysisWorker>,
     /// The latest analyses, newest last, so going back to a track shows it at once.
     analyses: RefCell<std::collections::VecDeque<crate::analysis_worker::AnalysisOutcome>>,
+    /// Looks artist photos up online; `None` without a library database.
+    artist_photo_worker: Option<crate::artist_photos::ArtistPhotoWorker>,
+    /// Decoded artist photos, by artist name.
+    artist_photos: RefCell<std::collections::HashMap<String, slint::Image>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -168,7 +172,7 @@ impl UiBridge {
             window: window.as_weak(),
             engine,
             settings: RefCell::new(settings),
-            library_database,
+            library_database: library_database.clone(),
             devices: RefCell::new(Vec::new()),
             albums: RefCell::new(Vec::new()),
             imports: receiver,
@@ -213,6 +217,10 @@ impl UiBridge {
             dropped_paths: Rc::default(),
             analysis_worker: crate::analysis_worker::AnalysisWorker::start(),
             analyses: RefCell::new(std::collections::VecDeque::new()),
+            artist_photo_worker: library_database
+                .clone()
+                .and_then(crate::artist_photos::ArtistPhotoWorker::start),
+            artist_photos: RefCell::new(std::collections::HashMap::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
@@ -307,6 +315,19 @@ impl UiBridge {
             }
         });
         state.on_open_nyquist(|| open_in_browser(crate::authenticity::NYQUIST_URL));
+        state.set_are_artist_photos_on(!self.settings.borrow().are_artist_photos_off);
+        let handle = self.clone();
+        state.on_set_artist_photos(move |is_on| {
+            handle.settings.borrow_mut().are_artist_photos_off = !is_on;
+            // A failed save only loses the choice at the next launch.
+            let _ = handle.settings.borrow().save();
+            if let Some(window) = handle.window.upgrade() {
+                window.global::<AppState>().set_are_artist_photos_on(is_on);
+            }
+            if is_on {
+                handle.look_up_artist_photos();
+            }
+        });
         let handle = self.clone();
         state.on_toggle_favorites_only(move || {
             if let Some(window) = handle.window.upgrade() {
@@ -656,6 +677,48 @@ impl UiBridge {
         }
     }
 
+    /// Asks for the photos of the artists that have none yet (unless the user turned it off).
+    fn look_up_artist_photos(&self) {
+        let (Some(worker), Some(database)) = (&self.artist_photo_worker, &self.library_database)
+        else {
+            return;
+        };
+        if self.settings.borrow().are_artist_photos_off {
+            return;
+        }
+        let mut artists: Vec<String> = Vec::new();
+        for artist in self.albums.borrow().iter().flat_map(|album| &album.artists) {
+            if !artists.contains(artist) {
+                artists.push(artist.clone());
+            }
+        }
+        if let Ok(due) = LibraryStore::open(database).and_then(|store| {
+            store.artists_to_look_up(&artists, crate::artist_photos::RETRY_AFTER_SECONDS)
+        }) {
+            worker.request(due);
+        }
+    }
+
+    /// Shows the photos found since the last tick.
+    fn collect_artist_photos(&self) {
+        let Some(worker) = &self.artist_photo_worker else {
+            return;
+        };
+        let mut has_new_photo = false;
+        for photo in worker.take_results() {
+            if let Some(bytes) = photo.image {
+                let image = decode_artwork(Some(&std::sync::Arc::from(bytes)));
+                if image.size().width > 0 {
+                    self.artist_photos.borrow_mut().insert(photo.artist, image);
+                    has_new_photo = true;
+                }
+            }
+        }
+        if has_new_photo {
+            self.show_artists();
+        }
+    }
+
     /// Watches the library folders, restarting the watcher only when the folders changed.
     fn watch_library_folders(&self) {
         let Some(database) = &self.library_database else {
@@ -739,7 +802,8 @@ impl UiBridge {
     }
 
     fn apply_library_update(&self, update: LibraryUpdate) {
-        if update.is_final {
+        let is_final = update.is_final;
+        if is_final {
             self.is_importing.set(false);
             self.watch_library_folders();
         }
@@ -764,6 +828,9 @@ impl UiBridge {
                 .into(),
             );
         }
+        if is_final {
+            self.look_up_artist_photos();
+        }
         if let Some(first) = update.errors.first() {
             self.message(format!(
                 "{} problème(s) d’import. {first}",
@@ -774,7 +841,12 @@ impl UiBridge {
 
     /// Rebuilds the albums from a library snapshot, keeping the selected track and the open
     /// album when they still exist.
-    fn replace_albums(&self, snapshot: LibrarySnapshot) {
+    fn replace_albums(&self, mut snapshot: LibrarySnapshot) {
+        *self.artist_photos.borrow_mut() = std::mem::take(&mut snapshot.artist_images)
+            .into_iter()
+            .map(|(artist, bytes)| (artist, decode_artwork(Some(&bytes))))
+            .filter(|(_, image)| image.size().width > 0)
+            .collect();
         let selected_path = self.selected_track.get().and_then(|(album, track)| {
             self.albums
                 .borrow()
@@ -1206,7 +1278,7 @@ impl UiBridge {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        let cards = artist_cards(&self.albums.borrow());
+        let cards = artist_cards(&self.albums.borrow(), &self.artist_photos.borrow());
         window
             .global::<AppState>()
             .set_artists(ModelRc::new(VecModel::from(cards)));
@@ -2883,6 +2955,7 @@ impl UiBridge {
         self.handle_media_commands();
         self.synchronize_after_folder_changes();
         self.collect_analyses();
+        self.collect_artist_photos();
         // Dropped files wait for an import in progress to finish.
         if !self.is_importing.get() && !self.dropped_paths.borrow().is_empty() {
             let paths = std::mem::take(&mut *self.dropped_paths.borrow_mut());
@@ -3250,7 +3323,10 @@ fn open_in_browser(url: &str) {
 
 /// Artist cards from the albums: one per album artist (as displayed), natural order, with the
 /// cover of their newest album that has one.
-fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
+fn artist_cards(
+    albums: &[Album],
+    photos: &std::collections::HashMap<String, slint::Image>,
+) -> Vec<ArtistCard> {
     struct ArtistEntry {
         album_count: usize,
         newest_year: Option<u32>,
@@ -3290,7 +3366,7 @@ fn artist_cards(albums: &[Album]) -> Vec<ArtistCard> {
                 if entry.album_count == 1 { "" } else { "s" }
             )
             .into(),
-            artwork: entry.artwork,
+            artwork: photos.get(name).cloned().unwrap_or(entry.artwork),
         })
         .collect()
 }

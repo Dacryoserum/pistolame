@@ -242,6 +242,9 @@ export global AppState {
     in property <[AlbumCard]> recently-added-albums;
     in property <[AlbumCard]> recently-played-albums;
     callback open-artist(int);
+    // Artist photos looked up online (Réglages).
+    in property <bool> are-artist-photos-on: true;
+    callback set-artist-photos(bool);
     // "Morceaux" table: every track, sorted by one column (index in display order).
     in property <[LibraryTrackRow]> library-tracks;
     in property <string> current-track-path;

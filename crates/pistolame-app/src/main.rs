@@ -5,6 +5,7 @@ use slint::ComponentHandle;
 mod album_artists;
 mod album_sort;
 mod analysis_worker;
+mod artist_photos;
 mod authenticity;
 mod file_drop;
 mod m3u;

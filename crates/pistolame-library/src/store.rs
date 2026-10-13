@@ -13,7 +13,7 @@ use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS tracks (
     added_seconds INTEGER NOT NULL DEFAULT 0,
     play_count INTEGER NOT NULL DEFAULT 0,
     last_played_seconds INTEGER
+);
+CREATE TABLE IF NOT EXISTS artist_images (
+    artist TEXT PRIMARY KEY NOT NULL,
+    artwork_hash TEXT REFERENCES artworks(hash),
+    checked_seconds INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS favorites (
     track_path TEXT PRIMARY KEY NOT NULL,
@@ -105,6 +110,8 @@ pub struct LibrarySnapshot {
     pub text_overrides: HashMap<AlbumKey, AlbumTextOverride>,
     /// The user's playlists, in creation order.
     pub playlists: Vec<Playlist>,
+    /// Artist photos found online, by artist name as the library shows it.
+    pub artist_images: HashMap<String, Arc<[u8]>>,
 }
 
 /// A user playlist: an ordered list of track paths. A track may appear twice; an entry whose
@@ -284,7 +291,28 @@ impl LibraryStore {
             artwork_overrides,
             text_overrides: self.text_overrides()?,
             playlists: self.playlists()?,
+            artist_images: self.artist_images(&artworks)?,
         })
+    }
+
+    /// Artist photos with their bytes (artists looked up without result are left out).
+    fn artist_images(
+        &self,
+        artworks: &HashMap<String, Arc<[u8]>>,
+    ) -> Result<HashMap<String, Arc<[u8]>>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT artist, artwork_hash FROM artist_images WHERE artwork_hash IS NOT NULL",
+        )?;
+        let images = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|row| match row {
+                Ok((artist, hash)) => artworks.get(&hash).map(|bytes| Ok((artist, bytes.clone()))),
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        Ok(images)
     }
 
     /// Rescans every root: reads new and changed files, removes files that disappeared from a
@@ -458,6 +486,61 @@ impl LibraryStore {
             .query_map([], |row| Ok(PathBuf::from(row.get::<_, String>(0)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(paths)
+    }
+
+    /// Remembers the photo found for `artist`, or that none was found (`None`), so the lookup
+    /// is not repeated until [`LibraryStore::artists_to_look_up`] says it is due again.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn set_artist_image(
+        &mut self,
+        artist: &str,
+        image: Option<&[u8]>,
+    ) -> Result<(), LibraryError> {
+        let hash = match image {
+            Some(bytes) => Some(self.store_artwork(bytes)?),
+            None => None,
+        };
+        self.connection.execute(
+            "INSERT INTO artist_images (artist, artwork_hash, checked_seconds) VALUES (?1, ?2, ?3)
+             ON CONFLICT (artist) DO UPDATE SET artwork_hash = excluded.artwork_hash,
+                checked_seconds = excluded.checked_seconds",
+            params![artist, hash, now_seconds()],
+        )?;
+        self.delete_unused_artworks()
+    }
+
+    /// The artists of `artists` never looked up, or looked up without result more than
+    /// `retry_after_seconds` ago (a photo may have been added online since).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn artists_to_look_up(
+        &self,
+        artists: &[String],
+        retry_after_seconds: i64,
+    ) -> Result<Vec<String>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT artwork_hash IS NOT NULL, checked_seconds FROM artist_images WHERE artist = ?1",
+        )?;
+        let now = now_seconds();
+        let mut due = Vec::new();
+        for artist in artists {
+            let known: Option<(bool, i64)> = statement
+                .query_row(params![artist], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            let is_due = match known {
+                None => true,
+                Some((has_photo, checked)) => {
+                    !has_photo && now.saturating_sub(checked) >= retry_after_seconds
+                }
+            };
+            if is_due {
+                due.push(artist.clone());
+            }
+        }
+        Ok(due)
     }
 
     /// Deletes playlist `id` and its entries (the tracks stay in the library).
@@ -718,7 +801,8 @@ impl LibraryStore {
             "DELETE FROM artworks WHERE hash NOT IN (
                 SELECT artwork_hash FROM tracks WHERE artwork_hash IS NOT NULL
                 UNION SELECT artwork_hash FROM album_artwork_overrides
-                UNION SELECT artwork_hash FROM playlists WHERE artwork_hash IS NOT NULL)",
+                UNION SELECT artwork_hash FROM playlists WHERE artwork_hash IS NOT NULL
+                UNION SELECT artwork_hash FROM artist_images WHERE artwork_hash IS NOT NULL)",
             [],
         )?;
         Ok(())
