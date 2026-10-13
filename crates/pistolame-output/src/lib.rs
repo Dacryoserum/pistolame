@@ -10,6 +10,7 @@ pub use pistolame_core::format::{
 pub use pistolame_core::output_contract::*;
 
 pub mod float_conversion;
+pub mod sample_gain;
 mod stream_state;
 pub mod unsupported;
 

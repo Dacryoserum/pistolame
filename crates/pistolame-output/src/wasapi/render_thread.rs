@@ -35,9 +35,10 @@ use super::hresult_mapping::{NameWasapiCall, WasapiCallError, output_failure_fro
 use super::mmcss::MmcssRegistration;
 use super::stream_control::{RequestedStreamState, StreamControl, WasapiDiagnosticCounters};
 use super::stream_initialization::{InitializedStream, initialize_stream};
+use crate::sample_gain::apply_gain_to_integer_samples;
 use crate::{
-    NegotiatedOutput, OpenStreamRequest, OutputError, OutputFailure, OutputStreamStatus,
-    RenderOutcome, RenderSource, RenderStreamDescription,
+    DeviceAccessMode, DeviceSampleFormat, NegotiatedOutput, OpenStreamRequest, OutputError,
+    OutputFailure, OutputStreamStatus, RenderOutcome, RenderSource, RenderStreamDescription,
 };
 
 /// Index of the control event in the wait array; it comes first so a close request wins over
@@ -132,6 +133,7 @@ fn run_stream(context: &RenderThreadContext, render_source: &mut dyn RenderSourc
         render_source,
         stream.negotiated.buffer_frame_count,
         bytes_per_frame,
+        shared_mode_gain(&stream, &context.control),
     );
     if let Err(error) = prefill {
         // `begin_stream` has run and `render` may have consumed frames into a device buffer
@@ -178,13 +180,27 @@ fn stop_and_reset(audio_client: &IAudioClient, diagnostics: &WasapiDiagnosticCou
     }
 }
 
-/// Asks the render source to fill `frame_count` frames of the device buffer. Does not
-/// allocate.
+/// The volume to apply to this stream's samples: `Some` only in shared mode below 0 dB.
+/// Exclusive streams are never touched (bit-perfect; the DAC sets the level).
+fn shared_mode_gain(
+    stream: &InitializedStream,
+    control: &StreamControl,
+) -> Option<(f32, DeviceSampleFormat)> {
+    if stream.negotiated.access_mode != DeviceAccessMode::SharedThroughSystemMixer {
+        return None;
+    }
+    let gain = control.shared_mode_gain();
+    (gain < 1.0).then_some((gain, stream.negotiated.render_format))
+}
+
+/// Asks the render source to fill `frame_count` frames of the device buffer, then applies the
+/// shared-mode volume if any. Does not allocate.
 fn write_rendered_frames(
     render_client: &IAudioRenderClient,
     render_source: &mut dyn RenderSource,
     frame_count: u32,
     bytes_per_frame: usize,
+    shared_gain: Option<(f32, DeviceSampleFormat)>,
 ) -> Result<(), WasapiCallError> {
     if frame_count == 0 {
         return Ok(());
@@ -199,6 +215,9 @@ fn write_rendered_frames(
     // until ReleaseBuffer below; the slice does not outlive this function.
     let destination = unsafe { std::slice::from_raw_parts_mut(buffer_start, byte_count) };
     let outcome = render_source.render(destination);
+    if let Some((gain, format)) = shared_gain {
+        apply_gain_to_integer_samples(destination, &format, gain);
+    }
     // The silent flag only when the whole buffer is silence (B5.6); a full buffer of audio
     // skips the scan.
     let is_whole_buffer_silent =
@@ -420,6 +439,7 @@ impl RenderLoop<'_> {
                     render_source,
                     frame_count,
                     self.bytes_per_frame,
+                    shared_mode_gain(self.stream, self.control),
                 )
                 .map_err(|error| self.fail_call(error))?;
                 Ok(phase)
