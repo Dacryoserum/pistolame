@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+### Features
+- authenticity analysis ported from Nyquist: transcode verdict with evidence, padded bit depth, limited bandwidth, dynamics, loudness and spectrogram
+- redesigned current-track page: file information, then signal path, authenticity and spectrogram
+- several artists per album, with track artists suggested
+- artist photos from Deezer, cached in the library (can be turned off)
+
 ## 0.2.0
 
 ### Features
