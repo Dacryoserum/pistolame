@@ -3689,7 +3689,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -3711,7 +3711,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "flacenc",
@@ -3723,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-library"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "md-5 0.11.0",
  "pistolame-core",
@@ -3734,7 +3734,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-output"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "objc2-audio-toolbox",

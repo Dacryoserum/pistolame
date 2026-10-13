@@ -83,9 +83,31 @@ def main():
         with zipfile.ZipFile(archive) as output:
             assert output.testzip() is None
             assert f"{name}/LICENSE" in output.namelist()
-    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
-    archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n")
-    print(f"Verified {archive.name}: {archive.stat().st_size} bytes, SHA256 {digest}")
+    write_checksum(archive)
+    if args.platform == "windows-x64":
+        write_checksum(build_windows_installer(root, folder, version, dist))
+
+
+def write_checksum(path):
+    digest = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+    path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n")
+    print(f"Verified {path.name}: {path.stat().st_size} bytes, SHA256 {digest}")
+
+
+def build_windows_installer(root, folder, version, dist):
+    """Pistolame-<version>-windows-x64-setup.exe from the packaged folder (Inno Setup 6)."""
+    compiler = os.environ.get("INNO_SETUP_COMPILER", r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
+    if not Path(compiler).is_file():
+        raise SystemExit(f"Inno Setup compiler not found: {compiler}")
+    subprocess.run(
+        [compiler, f"/DAppVersion={version}", f"/DSourceDir={folder}", f"/DOutputDir={dist}",
+         str(root / "installer" / "pistolame.iss")],
+        check=True,
+    )
+    installer = dist / f"Pistolame-{version}-windows-x64-setup.exe"
+    if not installer.is_file():
+        raise SystemExit(f"installer missing: {installer}")
+    return installer
 
 
 if __name__ == "__main__":
