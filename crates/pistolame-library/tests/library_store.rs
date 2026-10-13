@@ -292,3 +292,21 @@ fn plays_are_counted_and_added_dates_recorded() {
     assert_eq!(rescanned.play_count, 2);
     assert_eq!(rescanned.added_seconds, before.added_seconds);
 }
+
+#[test]
+fn removing_a_root_forgets_its_tracks_only() {
+    let library = TestLibrary::new("remove-root", 2);
+    let other = library.folder.join("Other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(library.track(1), other.join("x.flac")).unwrap();
+    let mut store = library.open();
+    store
+        .add_roots(&[library.music.clone(), other.clone()])
+        .unwrap();
+    store.synchronize().unwrap();
+    assert_eq!(paths(&store).len(), 3);
+    store.remove_root(&library.music).unwrap();
+    assert_eq!(store.roots().unwrap(), vec![other.clone()]);
+    assert_eq!(paths(&store), vec![other.join("x.flac")]);
+    assert!(library.track(1).exists(), "files are never deleted");
+}

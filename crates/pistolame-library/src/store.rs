@@ -188,6 +188,24 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Forgets a root and every track found under it (the files themselves stay on disk).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn remove_root(&mut self, root: &Path) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM roots WHERE path = ?1",
+            params![path_text(root)],
+        )?;
+        transaction.execute(
+            "DELETE FROM tracks WHERE root = ?1",
+            params![path_text(root)],
+        )?;
+        transaction.commit()?;
+        self.delete_unused_artworks()
+    }
+
     /// The remembered roots.
     ///
     /// # Errors

@@ -77,6 +77,7 @@ export enum TrackAction {
     add-to-queue,
     add-to-playlist,
     remove-from-playlist,
+    reveal-in-file-manager,
 }
 
 export struct QueueRow {
@@ -167,6 +168,8 @@ export global AppState {
     // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
     // playlist being played.
     callback track-action(TrackTarget, TrackAction);
+    // "Afficher dans le Finder" / "Afficher dans l'Explorateur" / "Ouvrir le dossier".
+    in property <string> reveal-label: "Afficher dans le Finder";
     in-out property <bool> is-queue-open;
     in property <bool> has-queue-current;
     in property <QueueRow> queue-current;
@@ -186,6 +189,12 @@ export global AppState {
     in property <bool> is-updating;
     in-out property <bool> is-update-panel-open;
     callback start-update();
+    // Settings page: library folders and update check.
+    in property <[string]> library-folders;
+    callback remove-library-folder(int);
+    callback rescan-library();
+    callback check-for-updates();
+    in property <string> update-check-status;
     // Album grid order.
     in property <[string]> album-sort-labels;
     in property <int> album-sort-index;

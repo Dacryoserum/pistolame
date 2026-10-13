@@ -32,7 +32,7 @@ export component AppWindow inherits Window {
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
-    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Sortie audio", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
+    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Réglages", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
     property <[image]> item-icons: [Icons.clock-counter-clockwise, Icons.microphone-stage, Icons.vinyl-record, Icons.music-note, Icons.seal-check, Icons.waveform, Icons.speaker-hifi, Icons.playlist, Icons.playlist, Icons.playlist];
 
     // The std widgets (scrollbars) follow the theme through the Palette global.
@@ -414,8 +414,8 @@ export component AppWindow inherits Window {
 
             SidebarItem {
                 y: 292px;
-                icon: Icons.speaker-hifi;
-                label: "Sortie audio";
+                icon: Icons.sliders-horizontal;
+                label: "Réglages";
                 is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 6;
                 clicked => {
                     AppState.select-item(6);

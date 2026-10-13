@@ -449,6 +449,7 @@ export component ActionMenuButton inherits Rectangle {
                 MenuRow { icon: Icons.skip-forward-fill; label: "Lire ensuite"; clicked => { root.action(TrackAction.play-next); } }
                 MenuRow { icon: Icons.queue; label: "Ajouter à la file d’attente"; clicked => { root.action(TrackAction.add-to-queue); } }
                 MenuRow { icon: Icons.plus; label: "Ajouter à une playlist…"; clicked => { root.action(TrackAction.add-to-playlist); } }
+                MenuRow { icon: Icons.magnifying-glass; label: AppState.reveal-label; clicked => { root.action(TrackAction.reveal-in-file-manager); } }
                 if root.can-remove: MenuRow {
                     icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
                     clicked => { root.action(TrackAction.remove-from-playlist); }
@@ -1542,6 +1543,30 @@ component DeviceRow inherits Rectangle {
     touch := TouchArea { clicked => { root.clicked(); } }
 }
 
+component FolderRow inherits Rectangle {
+    in property <string> path;
+    in property <bool> has-separator;
+    callback remove();
+    height: 40px;
+    border-radius: 8px;
+    property <bool> is-hovered: touch.has-hover || remove-button.has-hover;
+    background: root.is-hovered ? Tokens.fill-row-hover : transparent;
+    touch := TouchArea { }
+    Icon { x: 12px; y: 12px; width: 16px; height: 16px; source: Icons.vinyl-record; colorize: Tokens.text-secondary; }
+    Txt { x: 38px; width: root.width - 38px - 44px; height: root.height; vertical-alignment: center; text: root.path; overflow: elide; }
+    remove-button := IconButton {
+        x: root.width - 36px; y: 8px; width: 24px; height: 24px;
+        icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
+        label: "Retirer ce dossier de la bibliothèque";
+        opacity: root.is-hovered ? 1 : 0;
+        clicked => { root.remove(); }
+    }
+    if root.has-separator: Rectangle {
+        x: 38px; y: root.height - 1px; width: root.width - 50px; height: 1px;
+        background: Tokens.separator;
+    }
+}
+
 export component OutputSettings inherits Rectangle {
     ScrollView {
         VerticalLayout {
@@ -1550,12 +1575,12 @@ export component OutputSettings inherits Rectangle {
             padding-bottom: 24px;
             // Keeps the content clear of the scroll bar on the right.
             padding-right: 20px;
-            Txt { role: TextRole.display; text: "Sortie audio"; }
+            Txt { role: TextRole.display; text: "Réglages"; }
             Rectangle { height: 4px; }
             HorizontalLayout {
                 height: 32px;
                 alignment: space-between;
-                Txt { role: TextRole.title-3; height: 32px; text: "Périphérique"; vertical-alignment: center; }
+                Txt { role: TextRole.title-3; height: 32px; text: "Sortie audio"; vertical-alignment: center; }
                 PillButton {
                     width: 128px;
                     label: "Actualiser";
@@ -1624,6 +1649,73 @@ export component OutputSettings inherits Rectangle {
                     label: "Arrêter la lecture";
                     icon: Icons.pause-fill;
                     clicked => { AppState.stop(); }
+                }
+            }
+            Rectangle { height: 12px; }
+            HorizontalLayout {
+                height: 32px;
+                spacing: 10px;
+                Txt { role: TextRole.title-3; height: 32px; text: "Bibliothèque"; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                PillButton {
+                    width: 128px;
+                    label: "Rescanner";
+                    icon: Icons.arrows-clockwise;
+                    clicked => { AppState.rescan-library(); }
+                }
+                PillButton {
+                    width: 168px;
+                    is-primary: true;
+                    label: "Ajouter un dossier";
+                    icon: Icons.plus;
+                    clicked => { AppState.import-folder(); }
+                }
+            }
+            SettingsCard {
+                VerticalLayout {
+                    padding: 4px;
+                    for folder[index] in AppState.library-folders: FolderRow {
+                        path: folder;
+                        has-separator: index < AppState.library-folders.length - 1;
+                        remove => { AppState.remove-library-folder(index); }
+                    }
+                    if AppState.library-folders.length == 0: Txt {
+                        height: 40px;
+                        text: "Aucun dossier suivi. Ajoutez le dossier où se trouve votre musique.";
+                        color: Tokens.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Txt {
+                role: TextRole.callout;
+                text: "Retirer un dossier l’enlève de Pistolame ; vos fichiers ne sont jamais supprimés.";
+                color: Tokens.text-tertiary;
+            }
+            Rectangle { height: 12px; }
+            Txt { role: TextRole.title-3; text: "À propos"; height: 32px; vertical-alignment: center; }
+            SettingsCard {
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Txt { role: TextRole.headline; text: "Pistolame " + AppState.current-version; }
+                        Txt {
+                            role: TextRole.callout;
+                            text: AppState.update-check-status != "" ? AppState.update-check-status : "Lecteur audio sans perte, GPL-3.0. Les mises à jour sont vérifiées chaque jour.";
+                            color: Tokens.text-secondary;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
+                    }
+                    PillButton {
+                        width: 236px;
+                        label: "Rechercher des mises à jour";
+                        icon: Icons.arrows-clockwise;
+                        clicked => { AppState.check-for-updates(); }
+                    }
                 }
             }
         }

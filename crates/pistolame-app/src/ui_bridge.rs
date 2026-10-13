@@ -239,8 +239,32 @@ impl UiBridge {
             }
         });
         state.set_current_version(crate::updater::CURRENT_VERSION.into());
+        state.set_reveal_label(reveal_label().into());
         let handle = self.clone();
         state.on_start_update(move || handle.start_update());
+        let handle = self.clone();
+        state.on_check_for_updates(move || {
+            if !handle.is_update_worker_busy.get() {
+                if let Some(window) = handle.window.upgrade() {
+                    window
+                        .global::<AppState>()
+                        .set_update_check_status("Recherche d’une mise à jour…".into());
+                }
+                handle.check_for_update();
+            }
+        });
+        let handle = self.clone();
+        state.on_rescan_library(move || {
+            if !handle.is_importing.get() {
+                handle.synchronize_library(Vec::new());
+            }
+        });
+        let handle = self.clone();
+        state.on_remove_library_folder(move |index| {
+            if let Ok(index) = usize::try_from(index) {
+                handle.remove_library_folder(index);
+            }
+        });
         self.connect_queue(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
@@ -478,6 +502,45 @@ impl UiBridge {
         }
     }
 
+    /// Shows the remembered library folders on the settings page.
+    fn show_library_folders(&self) {
+        let (Some(window), Some(database)) = (self.window.upgrade(), &self.library_database) else {
+            return;
+        };
+        let Ok(store) = LibraryStore::open(database) else {
+            return;
+        };
+        let folders: Vec<SharedString> = store
+            .roots()
+            .unwrap_or_default()
+            .iter()
+            .map(|root| root.display().to_string().into())
+            .collect();
+        window
+            .global::<AppState>()
+            .set_library_folders(ModelRc::new(VecModel::from(folders)));
+    }
+
+    /// Forgets a library folder (its files stay on disk), then reloads the library.
+    fn remove_library_folder(&self, index: usize) {
+        let Some(database) = &self.library_database else {
+            return;
+        };
+        let Some(root) = LibraryStore::open(database)
+            .ok()
+            .and_then(|store| store.roots().ok())
+            .and_then(|roots| roots.get(index).cloned())
+        else {
+            return;
+        };
+        if self
+            .with_library(|store| store.remove_root(&root))
+            .is_some()
+        {
+            self.synchronize_library(Vec::new());
+        }
+    }
+
     fn apply_library_update(&self, update: LibraryUpdate) {
         if update.is_final {
             self.is_importing.set(false);
@@ -485,6 +548,7 @@ impl UiBridge {
         if let Some(snapshot) = update.snapshot {
             self.replace_albums(snapshot);
         }
+        self.show_library_folders();
         if let Some(window) = self.window.upgrade() {
             let albums = self.albums.borrow();
             let count: usize = albums.iter().map(|album| album.tracks.len()).sum();
@@ -1127,6 +1191,11 @@ impl UiBridge {
                 *self.pending_playlist_tracks.borrow_mut() = paths;
                 self.open_add_to_playlist(subject);
             }
+            TrackAction::RevealInFileManager => {
+                if let Some(path) = paths.first() {
+                    reveal_in_file_manager(path);
+                }
+            }
             TrackAction::RemoveFromPlaylist => {}
         }
     }
@@ -1245,14 +1314,28 @@ impl UiBridge {
         let state = window.global::<AppState>();
         match message {
             UpdateMessage::Checked(Some(update)) => {
+                state.set_update_check_status(
+                    format!(
+                        "La version {} est disponible : cliquez sur la pastille verte.",
+                        update.version
+                    )
+                    .into(),
+                );
                 state.set_update_version(update.version.as_str().into());
                 state.set_update_notes(update.notes.as_str().into());
                 state.set_update_status("".into());
                 state.set_is_update_available(true);
                 *self.available_update.borrow_mut() = Some(update);
             }
-            // No newer release, or no network: try again at the next interval, silently.
-            UpdateMessage::Checked(None) | UpdateMessage::CheckFailed => {}
+            // No newer release, or no network: the settings page says so, nothing else does.
+            UpdateMessage::Checked(None) => {
+                state.set_update_check_status("Pistolame est à jour.".into());
+            }
+            UpdateMessage::CheckFailed => {
+                state.set_update_check_status(
+                    "Impossible de joindre GitHub. Nouvel essai plus tard.".into(),
+                );
+            }
             UpdateMessage::Installed(installed) => {
                 state.set_update_status("Redémarrage…".into());
                 self.engine.send(EngineCommand::Stop);
@@ -2101,4 +2184,36 @@ fn decode_artwork(bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
 fn edited_value(field: &str, tag_value: &str) -> Option<String> {
     let trimmed = field.trim();
     (!trimmed.is_empty() && trimmed != tag_value).then(|| trimmed.to_owned())
+}
+
+/// The file manager's name for "show this file", in each system's own words.
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Afficher dans le Finder"
+    } else if cfg!(windows) {
+        "Afficher dans l’Explorateur"
+    } else {
+        "Ouvrir le dossier"
+    }
+}
+
+/// Opens the system file manager with `path` selected (its folder on Linux, where file managers
+/// have no common "select" option). Best effort: nothing to report if it cannot start.
+fn reveal_in_file_manager(path: &std::path::Path) {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("explorer");
+        let mut argument = std::ffi::OsString::from("/select,");
+        argument.push(path);
+        command.arg(argument);
+        command
+    } else {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(path.parent().unwrap_or(path));
+        command
+    };
+    let _ = command.spawn();
 }
