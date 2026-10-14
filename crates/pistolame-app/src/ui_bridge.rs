@@ -131,6 +131,8 @@ pub(crate) struct UiBridge {
     last_folder_change: Cell<Option<std::time::Instant>>,
     /// Files and folders dropped on the window, imported together at the next tick.
     dropped_paths: crate::file_drop::DroppedPaths,
+    /// The archive being downloaded and its announced size, to show the progress.
+    update_download: RefCell<Option<(PathBuf, u64)>>,
     /// Nyquist's analysis of the current track, off the UI thread.
     analysis_worker: Option<crate::analysis_worker::AnalysisWorker>,
     /// The latest analyses, newest last, so going back to a track shows it at once.
@@ -215,6 +217,7 @@ impl UiBridge {
             folder_changes,
             last_folder_change: Cell::new(None),
             dropped_paths: Rc::default(),
+            update_download: RefCell::new(None),
             analysis_worker: crate::analysis_worker::AnalysisWorker::start(),
             analyses: RefCell::new(std::collections::VecDeque::new()),
             artist_photo_worker: library_database
@@ -1942,13 +1945,15 @@ impl UiBridge {
             return;
         };
         state.set_is_updating(true);
-        state.set_update_status("Téléchargement et vérification de la signature…".into());
+        state.set_update_status("Connexion…".into());
         self.is_update_worker_busy.set(true);
+        let work_folder = std::env::temp_dir().join("pistolame-update");
+        *self.update_download.borrow_mut() = crate::updater::download_path(&update, &work_folder)
+            .map(|path| (path, update.asset.size));
         let sender = self.update_sender.clone();
         let spawned = std::thread::Builder::new()
             .name("pistolame-update-install".into())
             .spawn(move || {
-                let work_folder = std::env::temp_dir().join("pistolame-update");
                 let result = crate::updater::download_and_verify(&update, &work_folder)
                     .and_then(|archive| crate::updater::install(&archive, &work_folder));
                 let _ = sender.send(match result {
@@ -1962,7 +1967,40 @@ impl UiBridge {
         }
     }
 
+    /// "Téléchargement… 12,3 / 22,4 Mo" while the archive grows, then the verification step.
+    fn show_update_progress(&self) {
+        let Some((path, size)) = self.update_download.borrow().clone() else {
+            return;
+        };
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let received = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        if received == 0 {
+            return;
+        }
+        let megabytes = |bytes: u64| format!("{:.1}", bytes as f64 / 1_000_000.0).replace('.', ",");
+        let text = if size > 0 && received >= size {
+            "Vérification de la signature et installation…".to_owned()
+        } else if size > 0 {
+            format!(
+                "Téléchargement… {} / {} Mo",
+                megabytes(received),
+                megabytes(size)
+            )
+        } else {
+            format!("Téléchargement… {} Mo", megabytes(received))
+        };
+        window.global::<AppState>().set_update_status(text.into());
+    }
+
     fn apply_update_message(&self, message: UpdateMessage) {
+        if matches!(
+            message,
+            UpdateMessage::Installed(_) | UpdateMessage::InstallFailed(_)
+        ) {
+            *self.update_download.borrow_mut() = None;
+        }
         self.is_update_worker_busy.set(false);
         let Some(window) = self.window.upgrade() else {
             return;
@@ -2944,6 +2982,7 @@ impl UiBridge {
         for message in self.update_messages.try_iter() {
             self.apply_update_message(message);
         }
+        self.show_update_progress();
         if !self.is_update_worker_busy.get()
             && std::time::Instant::now() >= self.next_update_check.get()
         {

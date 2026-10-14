@@ -12,6 +12,7 @@ mod m3u;
 mod media_controls;
 mod play_queue;
 mod presentation;
+mod process;
 mod search;
 mod session;
 mod settings;

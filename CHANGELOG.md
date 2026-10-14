@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+### Fixes
+- updates no longer give up after five minutes on a slow connection: a download stops only when it stalls, resumes where it left off, and shows its progress
+- no console window flashes on Windows while downloading updates or artist photos
+
 ## 0.3.0
 
 ### Features

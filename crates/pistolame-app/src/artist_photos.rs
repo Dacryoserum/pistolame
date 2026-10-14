@@ -151,22 +151,10 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     command
         .args(["-fsSL", "--max-time", REQUEST_TIMEOUT_SECONDS])
         .arg(url);
-    hide_console_window(&mut command);
+    crate::process::hide_console_window(&mut command);
     let output = command.output().ok()?;
     output.status.success().then_some(output.stdout)
 }
-
-/// Keeps Windows from flashing a console for each curl (the app has no console of its own).
-#[cfg(windows)]
-fn hide_console_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    /// `CREATE_NO_WINDOW`, from the Windows process creation flags.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_console_window(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

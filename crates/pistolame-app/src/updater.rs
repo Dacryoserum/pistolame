@@ -29,8 +29,17 @@ const MANIFEST_ASSET_NAME: &str = "latest.json";
 /// Public half of the release signing key (ed25519, 32 bytes, base64). The private half is the
 /// `UPDATE_SIGNING_KEY` secret of the release workflow.
 const UPDATE_PUBLIC_KEY_BASE64: &str = "7yP+K5HmqFT4mFXHnwmuMkSb0rood3JzLnnXZT5qpS4=";
-/// Longest time one HTTP request may take, in seconds (archives are ~10 MB).
-const DOWNLOAD_TIMEOUT_SECONDS: &str = "300";
+/// A download is abandoned only when it stalls: under `STALL_BYTES_PER_SECOND` for
+/// `STALL_SECONDS` (curl's --speed-limit / --speed-time). No cap on the total time, so a slow
+/// connection still gets there.
+const STALL_BYTES_PER_SECOND: &str = "500";
+const STALL_SECONDS: &str = "60";
+/// Seconds allowed to open the connection.
+const CONNECT_TIMEOUT_SECONDS: &str = "30";
+/// Attempts before giving up; each resumes where the previous one stopped.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+/// Pause between two attempts.
+const PAUSE_BETWEEN_ATTEMPTS: std::time::Duration = std::time::Duration::from_secs(3);
 /// Suffix of the previous copy kept until the new one has started.
 const PREVIOUS_COPY_SUFFIX: &str = "old";
 
@@ -65,6 +74,10 @@ pub(crate) struct UpdateAsset {
     pub(crate) sha256: String,
     /// Base64 ed25519 signature of the archive bytes.
     pub(crate) signature: String,
+    /// Archive size in bytes, for the progress shown while downloading. Manifests before
+    /// 0.3.1 do not carry it (then 0).
+    #[serde(default)]
+    pub(crate) size: u64,
 }
 
 /// A newer version this platform can install.
@@ -152,14 +165,53 @@ pub(crate) fn download_and_verify(
         .filter(|name| !name.is_empty() && !name.contains(['\\', ':']))
         .context("adresse de téléchargement invalide")?;
     let archive = folder.join(file_name);
-    run(Command::new("curl")
-        .args(["-fsSL", "--max-time", DOWNLOAD_TIMEOUT_SECONDS, "-o"])
-        .arg(&archive)
-        .arg(&update.asset.url))
-    .context("téléchargement impossible")?;
+    download_resuming(&update.asset, &archive)?;
     let bytes = std::fs::read(&archive)?;
     verify_archive(&bytes, &update.asset, UPDATE_PUBLIC_KEY_BASE64)?;
     Ok(archive)
+}
+
+/// Where the archive of `update` is downloaded, so the UI can follow its size.
+pub(crate) fn download_path(update: &AvailableUpdate, folder: &Path) -> Option<PathBuf> {
+    update
+        .asset
+        .url
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty() && !name.contains(['\\', ':']))
+        .map(|name| folder.join(name))
+}
+
+/// Downloads `asset` to `archive`, resuming a partial file left by an earlier attempt (or an
+/// earlier click on "Mettre à jour"). A file already larger than announced is started over.
+fn download_resuming(asset: &UpdateAsset, archive: &Path) -> anyhow::Result<()> {
+    let existing = std::fs::metadata(archive).map_or(0, |metadata| metadata.len());
+    if asset.size > 0 && existing > asset.size {
+        std::fs::remove_file(archive)?;
+    }
+    if asset.size > 0 && existing == asset.size {
+        return Ok(());
+    }
+    let mut last_error = None;
+    for attempt in 0..DOWNLOAD_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(PAUSE_BETWEEN_ATTEMPTS);
+        }
+        let mut command = Command::new("curl");
+        command
+            .args(["-fsSL", "--connect-timeout", CONNECT_TIMEOUT_SECONDS])
+            .args(["--speed-limit", STALL_BYTES_PER_SECOND])
+            .args(["--speed-time", STALL_SECONDS])
+            .args(["-C", "-", "-o"])
+            .arg(archive)
+            .arg(&asset.url);
+        match run(&mut command) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("aucune tentative")))
+        .context("téléchargement interrompu (connexion lente ou coupée) ; un nouvel essai reprendra où il s’est arrêté")
 }
 
 /// Checks the SHA-256 and the ed25519 signature of an archive.
@@ -356,7 +408,9 @@ fn find(root: &Path, predicate: impl Fn(&Path) -> bool + Copy) -> Option<PathBuf
 
 /// The bytes of `url`, through the system's curl.
 fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
-    let output = Command::new("curl")
+    let mut command = Command::new("curl");
+    crate::process::hide_console_window(&mut command);
+    let output = command
         .args([
             "-fsSL",
             "--max-time",
@@ -372,6 +426,7 @@ fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 fn run(command: &mut Command) -> anyhow::Result<()> {
+    crate::process::hide_console_window(command);
     let status = command.status().context("commande introuvable")?;
     ensure!(status.success(), "la commande a échoué ({status})");
     Ok(())
@@ -418,6 +473,20 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_earlier_download_is_not_fetched_again() {
+        let folder =
+            std::env::temp_dir().join(format!("pistolame-update-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let archive = folder.join("Pistolame.zip");
+        std::fs::write(&archive, b"complete").unwrap();
+        let (mut asset, _) = signed_asset(b"complete");
+        // An unreachable address: reaching curl would fail the test.
+        asset.url = "https://invalid.invalid/Pistolame.zip".into();
+        assert!(download_resuming(&asset, &archive).is_ok());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
     fn a_manifest_without_this_platform_offers_nothing() {
         let manifest: UpdateManifest = serde_json::from_str(
             r#"{"version":"0.1.0-preview.4","notes":"Notes","assets":{"linux-x64":{"url":"u","sha256":"s","signature":"g"}}}"#,
@@ -444,6 +513,7 @@ mod tests {
                 .map(|b| format!("{b:02x}"))
                 .collect(),
             signature: engine.encode(key.sign(bytes).to_bytes()),
+            size: bytes.len() as u64,
         };
         (asset, engine.encode(key.verifying_key().to_bytes()))
     }
