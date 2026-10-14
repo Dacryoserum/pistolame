@@ -100,6 +100,10 @@ export component AppWindow inherits Window {
                 if !root.is-modal-sheet-open() { AppState.navigate-forward(); }
                 return accept;
             }
+            // PopupWindow menus (sort, "+", "…") never reach this branch: in Slint 1.18 `show()`
+            // takes the window's keyboard focus away until the popup closes, so Escape finds no
+            // focused item and falls back to closing the topmost popup, then focus goes back to
+            // the item that had it (this scope). No menu flag is needed here.
             if event.text == Key.Escape {
                 if !root.close-topmost-overlay() && AppState.is-sub-page {
                     AppState.navigate-back();
