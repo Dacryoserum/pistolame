@@ -62,6 +62,7 @@ def main() -> None:
                 "url": f"https://github.com/{repository}/releases/download/{tag}/{archive.name}",
                 "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                 "signature": sign(archive, key_file),
+                "size": archive.stat().st_size,
             }
     if len(assets) != 3:
         raise SystemExit(f"expected 3 platform archives, found {sorted(assets)}")

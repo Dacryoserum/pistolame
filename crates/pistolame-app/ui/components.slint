@@ -2545,7 +2545,7 @@ export component UpdatePanel inherits Rectangle {
     PillButton {
         x: root.width - 20px - 132px; y: root.height - 48px; width: 132px;
         is-primary: true;
-        label: AppState.is-updating ? "Installation…" : "Mettre à jour";
+        label: AppState.is-updating ? "En cours…" : "Mettre à jour";
         clicked => {
             if !AppState.is-updating {
                 AppState.start-update();
