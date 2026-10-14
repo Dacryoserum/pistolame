@@ -2,7 +2,9 @@
 //! engine does not change if the UI toolkit does. `EngineHandle` belongs to a later task.
 
 use crate::decoder::SourceStreamInfo;
-use crate::output_contract::{OutputDeviceId, OutputDeviceInfo, OutputModePreference};
+use crate::output_contract::{
+    OutputDeviceId, OutputDeviceInfo, OutputDeviceSelection, OutputModePreference,
+};
 use crate::playback_ring::TrackId;
 use crate::signal_path::SignalPathAssessment;
 use crate::verification::VerificationStatus;
@@ -12,10 +14,12 @@ use crate::verification::VerificationStatus;
 pub enum EngineCommand {
     /// Re-read the list of output devices.
     RefreshDeviceList,
-    /// Use another output device.
+    /// Use another output device, or follow the system default. Applies at once: if a track is
+    /// playing on another device, the stream closes with `PlayOut` and reopens on the new one at
+    /// the first unplayed frame.
     SelectOutputDevice {
-        /// Device to use.
-        device_id: OutputDeviceId,
+        /// The user's choice.
+        selection: OutputDeviceSelection,
     },
     /// The "Mode exclusif" toggle. Applies at once: if a track is playing, the stream closes
     /// with `PlayOut` and reopens with the new policy at the first unplayed frame.
@@ -54,9 +58,10 @@ pub enum EngineCommand {
 pub struct EngineStartOptions {
     /// Access-mode preference to start with.
     pub output_mode_preference: OutputModePreference,
-    /// Last device the user chose. If absent at start-up the engine selects the system default
-    /// and emits `PreferredDeviceUnavailable`.
-    pub preferred_device_id: Option<OutputDeviceId>,
+    /// The user's device choice (system default unless a device was picked). A specific device
+    /// absent at start-up makes the engine use the system default and emit
+    /// `PreferredDeviceUnavailable`.
+    pub device_selection: OutputDeviceSelection,
     /// Shared-mode volume to start with.
     pub shared_mode_volume: crate::volume::SharedModeVolume,
 }
@@ -64,11 +69,13 @@ pub struct EngineStartOptions {
 /// Notifications from the engine to the UI.
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
-    /// The device list changed or the selection changed.
+    /// The device list, the user's choice or the device it resolves to changed.
     DeviceListChanged {
         /// Devices currently available.
         devices: Vec<OutputDeviceInfo>,
-        /// Device currently selected, if any.
+        /// The user's choice.
+        selection: OutputDeviceSelection,
+        /// The device the choice resolves to now (the next stream opens on it), if any.
         selected: Option<OutputDeviceId>,
     },
     /// The remembered device is not present; the system default is used instead (B13.1 Q9).

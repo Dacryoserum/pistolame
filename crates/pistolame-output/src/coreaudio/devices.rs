@@ -18,7 +18,7 @@ use super::properties::{
 use crate::{OutputDeviceId, OutputDeviceInfo, OutputError};
 
 /// The audio system object, root of the device list.
-const SYSTEM_OBJECT: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
+pub(crate) const SYSTEM_OBJECT: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
 
 /// Value of `kAudioDevicePropertyHogMode` when no process holds the device ("-1 if the device
 /// is not currently in hog mode", `AudioHardware.h`).

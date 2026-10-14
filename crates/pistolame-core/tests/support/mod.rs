@@ -53,7 +53,7 @@ pub fn start_engine(
         config,
         EngineStartOptions {
             output_mode_preference: preference,
-            preferred_device_id: None,
+            device_selection: Default::default(),
             shared_mode_volume: Default::default(),
         },
         tuning,

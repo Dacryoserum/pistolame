@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, never, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, never, select, unbounded};
 
 use super::decode_thread::DecodeEvent;
 use super::decode_thread::SegmentFailure;
@@ -27,8 +27,9 @@ use crate::engine::{
     PlaybackState,
 };
 use crate::output_contract::{
-    AudioOutput, OpenPolicy, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError,
-    OutputFailure, OutputModePreference, OutputStream, OutputStreamStatus, QueuedAudioOnClose,
+    AudioOutput, OpenPolicy, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo,
+    OutputDeviceSelection, OutputError, OutputFailure, OutputModePreference, OutputStream,
+    OutputStreamStatus, QueuedAudioOnClose,
 };
 use crate::playback_ring::TrackId;
 use crate::signal_path::{ProcessingState, assess_signal_path};
@@ -41,6 +42,10 @@ const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 /// Detail of the internal failure raised when the feeder stops at a format boundary inside one
 /// file (B5.7: only a bug can cause it while M1 plays one file per pipeline).
 const FORMAT_BOUNDARY_DETAIL: &str = "format boundary inside one file";
+
+/// Pending device-change wake-ups the backend can post. One is enough: on waking, the engine
+/// re-reads the whole device list, so further notifications in between add nothing.
+const DEVICE_CHANGE_WAKE_UP_CAPACITY: usize = 1;
 
 /// Everything the engine thread is started with.
 pub(crate) struct EngineThreadSetup {
@@ -63,9 +68,17 @@ pub(crate) struct EngineThread {
     events: Sender<EngineEvent>,
     verification_update_sender: Sender<VerificationUpdate>,
     verification_updates: Receiver<VerificationUpdate>,
-    preferred_device_id: Option<OutputDeviceId>,
+    /// The user's choice: the system default or a specific device.
+    device_selection: OutputDeviceSelection,
     devices: Vec<OutputDeviceInfo>,
+    /// The device `device_selection` resolves to in `devices`: the next stream opens on it.
     selected_device_id: Option<OutputDeviceId>,
+    /// Handed to the backend once, in `start_up`, to post device-change wake-ups.
+    device_change_sender: Option<Sender<()>>,
+    device_changes: Receiver<()>,
+    /// Whether the backend notifies device changes; without it, the devices are re-read
+    /// before each stream opens.
+    is_watching_device_changes: bool,
     preference: OutputModePreference,
     shared_mode_volume: crate::volume::SharedModeVolume,
     state: PlaybackState,
@@ -96,6 +109,7 @@ impl OpenFailure {
 impl EngineThread {
     pub(crate) fn new(setup: EngineThreadSetup) -> Self {
         let (verification_update_sender, verification_updates) = unbounded();
+        let (device_change_sender, device_changes) = bounded(DEVICE_CHANGE_WAKE_UP_CAPACITY);
         Self {
             output: setup.output,
             decoders: setup.decoders,
@@ -105,9 +119,12 @@ impl EngineThread {
             events: setup.events,
             verification_update_sender,
             verification_updates,
-            preferred_device_id: setup.options.preferred_device_id,
+            device_selection: setup.options.device_selection,
             devices: Vec::new(),
             selected_device_id: None,
+            device_change_sender: Some(device_change_sender),
+            device_changes,
+            is_watching_device_changes: false,
             preference: setup.options.output_mode_preference,
             shared_mode_volume: setup.options.shared_mode_volume,
             state: PlaybackState::Stopped,
@@ -120,8 +137,8 @@ impl EngineThread {
         }
     }
 
-    /// The loop: one wake per UI command, decode event or verifier update, and at least every
-    /// `ENGINE_POLL_INTERVAL`; `poll` after every wake.
+    /// The loop: one wake per UI command, decode event, verifier update or device change, and
+    /// at least every `ENGINE_POLL_INTERVAL`; `poll` after every wake.
     pub(crate) fn run(mut self) {
         self.start_up();
         while !self.is_shutting_down {
@@ -129,6 +146,11 @@ impl EngineThread {
                 .pipeline
                 .as_ref()
                 .map_or_else(never, |pipeline| pipeline.decode_events.clone());
+            let device_changes = if self.is_watching_device_changes {
+                self.device_changes.clone()
+            } else {
+                never()
+            };
             select! {
                 recv(self.commands) -> command => {
                     self.handle_command(command.unwrap_or(EngineCommand::Shutdown));
@@ -142,38 +164,60 @@ impl EngineThread {
                         self.forward_verification_update(update);
                     }
                 }
+                recv(device_changes) -> notification => match notification {
+                    Ok(()) => self.on_system_devices_changed(),
+                    // The backend dropped its listener: fall back to re-reading at each open.
+                    Err(_) => self.is_watching_device_changes = false,
+                },
                 default(ENGINE_POLL_INTERVAL) => {}
             }
             self.poll();
         }
     }
 
-    /// Lists the devices and selects the remembered one if listed, else the system default
-    /// with `PreferredDeviceUnavailable` (B8, B13.1 Q9).
+    /// Starts watching device changes, lists the devices and resolves the user's choice: the
+    /// remembered device if listed, else the system default, with `PreferredDeviceUnavailable`
+    /// when a remembered device is missing (B8, B13.1 Q9).
     pub(crate) fn start_up(&mut self) {
+        self.watch_device_changes();
         if !self.list_devices() {
-            self.selected_device_id = self.preferred_device_id.clone();
+            self.selected_device_id = match &self.device_selection {
+                OutputDeviceSelection::Specific(device_id) => Some(device_id.clone()),
+                OutputDeviceSelection::SystemDefault => None,
+            };
             self.emit_device_list();
             return;
         }
-        self.selected_device_id = match self.preferred_device_id.clone() {
-            Some(device_id) if self.is_device_listed(&device_id) => Some(device_id),
-            Some(device_id) => {
-                self.emit(EngineEvent::PreferredDeviceUnavailable { device_id });
-                self.system_default_device_id()
-            }
-            None => self.system_default_device_id(),
-        };
+        if let OutputDeviceSelection::Specific(device_id) = &self.device_selection
+            && !self.is_device_listed(device_id)
+        {
+            self.emit(EngineEvent::PreferredDeviceUnavailable {
+                device_id: device_id.clone(),
+            });
+        }
+        self.selected_device_id = self.device_selection.resolve(&self.devices);
         self.emit_device_list();
+    }
+
+    /// Gives the backend a listener that posts a wake-up to the engine loop. `try_send` never
+    /// blocks the platform's notification thread; a full channel already holds a wake-up.
+    fn watch_device_changes(&mut self) {
+        let Some(sender) = self.device_change_sender.take() else {
+            return;
+        };
+        self.is_watching_device_changes = self.output.watch_device_changes(Box::new(move || {
+            let _ = sender.try_send(());
+        }));
     }
 
     pub(crate) fn handle_command(&mut self, command: EngineCommand) {
         match command {
             EngineCommand::RefreshDeviceList => self.refresh_device_list(),
-            EngineCommand::SelectOutputDevice { device_id } => {
-                self.selected_device_id = Some(device_id);
+            EngineCommand::SelectOutputDevice { selection } => {
+                self.device_selection = selection;
+                self.selected_device_id = self.device_selection.resolve(&self.devices);
                 self.emit_device_list();
-                self.reopen_if_playing();
+                self.move_stream_to_selected_device();
             }
             EngineCommand::SetOutputModePreference { preference } => {
                 self.preference = preference;
@@ -366,6 +410,10 @@ impl EngineThread {
 
     /// Opens a stream on the selected device with the kept render source and starts it.
     fn open_stream_and_play(&mut self) {
+        if !self.is_watching_device_changes && self.pipeline.is_some() {
+            // No notification tells this backend's engine that the default moved: look now.
+            self.reread_devices();
+        }
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
         };
@@ -571,11 +619,57 @@ impl EngineThread {
         outcome.segment_failure
     }
 
+    /// The "Actualiser" button and the refresh after a device failure: re-lists, re-resolves
+    /// and always tells the UI.
     fn refresh_device_list(&mut self) {
-        if self.list_devices() && self.selected_device_id.is_none() {
-            self.selected_device_id = self.system_default_device_id();
+        if self.list_devices() {
+            self.selected_device_id = self.device_selection.resolve(&self.devices);
         }
         self.emit_device_list();
+        self.move_stream_to_selected_device();
+    }
+
+    /// The backend reported a new default device or a device added or removed: re-resolve the
+    /// choice and, when it now names another device, move the playing stream there.
+    pub(crate) fn on_system_devices_changed(&mut self) {
+        self.reread_devices();
+        self.move_stream_to_selected_device();
+    }
+
+    /// Re-lists the devices and re-resolves the choice, telling the UI only when something
+    /// changed. A listing failure keeps the previous list: it is not a playback failure, and
+    /// the next notification or open reads the list again.
+    fn reread_devices(&mut self) {
+        let Ok(devices) = self.output.list_devices() else {
+            return;
+        };
+        let selected_device_id = self.device_selection.resolve(&devices);
+        if devices != self.devices || selected_device_id != self.selected_device_id {
+            self.devices = devices;
+            self.selected_device_id = selected_device_id;
+            self.emit_device_list();
+        }
+    }
+
+    /// While playing on a device that is still present but is no longer the one the choice
+    /// resolves to: play out, then reopen on the selected device at the first unplayed frame,
+    /// with the same access-mode policy (`reopen_if_playing`). A device that disappeared is left
+    /// to the stream-failure path, so unplugging headphones stops playback instead of moving it
+    /// to the speakers (B8: no automatic re-activation).
+    fn move_stream_to_selected_device(&mut self) {
+        let Some(device_in_use) = self
+            .stream
+            .as_ref()
+            .map(|stream| stream.negotiated().device.id.clone())
+        else {
+            return;
+        };
+        let Some(selected_device_id) = self.selected_device_id.as_ref() else {
+            return;
+        };
+        if *selected_device_id != device_in_use && self.is_device_listed(&device_in_use) {
+            self.reopen_if_playing();
+        }
     }
 
     /// `false` (and a `PlaybackFailed`) when the backend cannot list its devices.
@@ -597,16 +691,10 @@ impl EngineThread {
         self.devices.iter().any(|device| &device.id == device_id)
     }
 
-    fn system_default_device_id(&self) -> Option<OutputDeviceId> {
-        self.devices
-            .iter()
-            .find(|device| device.is_system_default)
-            .map(|device| device.id.clone())
-    }
-
     fn emit_device_list(&self) {
         self.emit(EngineEvent::DeviceListChanged {
             devices: self.devices.clone(),
+            selection: self.device_selection.clone(),
             selected: self.selected_device_id.clone(),
         });
     }
@@ -706,7 +794,7 @@ mod tests {
             decoders: DecoderRegistry::with_default_providers(),
             options: EngineStartOptions {
                 output_mode_preference: OutputModePreference::Exclusive,
-                preferred_device_id: None,
+                device_selection: OutputDeviceSelection::SystemDefault,
                 shared_mode_volume: Default::default(),
             },
             tuning,

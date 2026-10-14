@@ -345,7 +345,7 @@ impl HardwareEngine {
             pistolame_core::DecoderRegistry::with_default_providers(),
             pistolame_core::EngineStartOptions {
                 output_mode_preference: preference,
-                preferred_device_id: Some(device_id),
+                device_selection: pistolame_core::OutputDeviceSelection::Specific(device_id),
                 shared_mode_volume: Default::default(),
             },
         )

@@ -30,6 +30,8 @@ windows = { workspace = true, features = [
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",
 ] }
+# `#[implement]` for the endpoint-notification client (wasapi/device_watch.rs).
+windows-core.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Features needed by the CoreAudio backend (docs/plans/coreaudio.md §0, §3.1).

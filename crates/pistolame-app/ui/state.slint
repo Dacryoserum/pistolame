@@ -150,7 +150,12 @@ export struct PlaylistTrackRow {
 
 export global AppState {
     in property <[string]> device-names;
+    // Index in device-names of the chosen device; -1 when "Sortie du système" is chosen.
     in property <int> selected-device-index: -1;
+    // "Sortie du système": follow the system default output (the default choice).
+    in property <bool> is-system-output-selected: true;
+    // Name of the device the system output currently resolves to.
+    in property <string> system-output-device-name;
     in property <bool> exclusive;
     in property <bool> show-exclusive-notice;
     in property <string> transmission-text;
@@ -166,6 +171,7 @@ export global AppState {
     callback import-folder();
     callback stop();
     callback select-device(int);
+    callback select-system-output();
     callback refresh-devices();
     callback set-exclusive(bool);
     callback dismiss-notice();
@@ -326,7 +332,6 @@ export global AppState {
     in property <string> signal-description;
     in property <string> md5-label;
     in property <[PathStep]> path-steps;
-    in property <[float]> equalizer-levels;
     in property <int> playing-album-index;
     in property <int> playing-track-index;
     in property <int> detail-album-index;

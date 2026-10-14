@@ -386,10 +386,19 @@ export component SignalPath inherits Rectangle {
 export component EqualizerBars inherits Rectangle {
     width: 24px;
     height: 16px;
-    for level[index] in AppState.equalizer-levels: Rectangle {
+    // Idle heights while paused; while playing each bar follows a sine with its own
+    // angular speed (rad/s) and phase, driven by the animation clock. The clock is only
+    // read while playing, so a paused window does not redraw continuously.
+    property <[float]> idle-levels: [0.3, 0.6, 0.4];
+    property <[float]> angular-speeds: [7.0, 9.0, 6.0];
+    property <[float]> phases: [0.0, 1.0, 2.0];
+    for idle-level[index] in root.idle-levels: Rectangle {
+        property <float> level: AppState.is-playing
+            ? 0.5 + 0.5 * Math.sin((animation-tick() / 1s * root.angular-speeds[index] + root.phases[index]) * 1rad)
+            : idle-level;
         x: 11px + index * 5px;
         width: 3px;
-        height: Math.round(3 + 9 * level) * 1px;
+        height: Math.round(3 + 9 * self.level) * 1px;
         y: 14px - self.height;
         border-radius: 1px;
         background: Tokens.accent;
@@ -1594,6 +1603,8 @@ component SettingsCard inherits Rectangle {
 
 component DeviceRow inherits Rectangle {
     in property <string> name;
+    // Secondary text after the name, e.g. the device "Sortie du système" resolves to.
+    in property <string> detail;
     in property <bool> is-selected;
     in property <bool> has-separator;
     callback clicked();
@@ -1601,14 +1612,25 @@ component DeviceRow inherits Rectangle {
     border-radius: 8px;
     background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
     accessible-role: button;
-    accessible-label: root.name;
+    accessible-label: root.detail == "" ? root.name : root.name + " · " + root.detail;
     accessible-action-default => { root.clicked(); }
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
         Icon { width: 16px; source: Icons.speaker-hifi; colorize: Tokens.text-secondary; }
-        Txt { height: root.height; text: root.name; vertical-alignment: center; }
+        HorizontalLayout {
+            spacing: 6px;
+            Txt { height: root.height; text: root.name; vertical-alignment: center; horizontal-stretch: 0; }
+            if root.detail != "": Txt {
+                height: root.height;
+                text: "· " + root.detail;
+                color: Tokens.text-secondary;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
         Icon { width: 16px; source: Icons.check; colorize: Tokens.accent; opacity: root.is-selected ? 1 : 0; }
     }
     if root.has-separator: Rectangle {
@@ -1667,9 +1689,16 @@ export component OutputSettings inherits Rectangle {
             SettingsCard {
                 VerticalLayout {
                     padding: 4px;
+                    if AppState.device-names.length > 0: DeviceRow {
+                        name: "Sortie du système";
+                        detail: AppState.system-output-device-name;
+                        is-selected: AppState.is-system-output-selected;
+                        has-separator: true;
+                        clicked => { AppState.select-system-output(); }
+                    }
                     for name[index] in AppState.device-names: DeviceRow {
                         name: name;
-                        is-selected: index == AppState.selected-device-index;
+                        is-selected: !AppState.is-system-output-selected && index == AppState.selected-device-index;
                         has-separator: index < AppState.device-names.length - 1;
                         clicked => { AppState.select-device(index); }
                     }

@@ -9,6 +9,7 @@
 
 mod buffer_fill_rule;
 mod com_apartment;
+mod device_watch;
 mod devices;
 mod hresult_mapping;
 mod mmcss;
@@ -26,6 +27,7 @@ use std::sync::Arc;
 use windows::Win32::Media::Audio::{AUDCLNT_SHAREMODE_EXCLUSIVE, IAudioClient};
 
 use self::com_apartment::ComApartment;
+use self::device_watch::EndpointWatch;
 use self::devices::{DeviceEnumerator, activate_audio_client};
 use self::hresult_mapping::NameWasapiCall;
 pub use self::negotiation::ExclusiveCandidateProbe;
@@ -35,9 +37,9 @@ use self::shared_mode::read_system_mix_format;
 use self::stream_control::WasapiDiagnosticCounters;
 pub use self::stream_control::WasapiDiagnostics;
 use crate::{
-    AudioOutput, DeviceAccessMode, DeviceSampleFormat, FormatProbeResult, OpenStreamError,
-    OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError, OutputStream, RenderSource,
-    SystemMixFormat,
+    AudioOutput, DeviceAccessMode, DeviceChangeListener, DeviceSampleFormat, FormatProbeResult,
+    OpenStreamError, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError,
+    OutputStream, RenderSource, SystemMixFormat,
 };
 
 /// Name reported by `backend_name` and carried in every `NegotiatedOutput` of this backend.
@@ -54,10 +56,12 @@ pub struct DevicePeriods {
 }
 
 /// The WASAPI output backend. Holds no COM object between calls, so it can move between
-/// threads; each call initializes COM for its own thread (B5.3).
+/// threads; each call initializes COM for its own thread (B5.3). The endpoint notifications
+/// registered by `watch_device_changes` live on their own thread.
 #[derive(Debug, Default)]
 pub struct WasapiOutput {
     diagnostics: Arc<WasapiDiagnosticCounters>,
+    endpoint_watch: Option<EndpointWatch>,
 }
 
 impl WasapiOutput {
@@ -181,5 +185,11 @@ impl AudioOutput for WasapiOutput {
         render_source: Box<dyn RenderSource>,
     ) -> Result<Box<dyn OutputStream>, OpenStreamError> {
         open_wasapi_stream(request, render_source, Arc::clone(&self.diagnostics))
+    }
+
+    /// Registers an `IMMNotificationClient` for default-device and device-state changes.
+    fn watch_device_changes(&mut self, on_change: DeviceChangeListener) -> bool {
+        self.endpoint_watch = EndpointWatch::start(on_change);
+        self.endpoint_watch.is_some()
     }
 }

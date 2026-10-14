@@ -115,7 +115,6 @@ pub(crate) struct UiBridge {
     underrun_baseline: Cell<u64>,
     selected_track: Cell<Option<(usize, usize)>>,
     detail_album: Cell<usize>,
-    animation_started: std::time::Instant,
     stream_end_baseline: Cell<u64>,
     should_advance: Cell<bool>,
     shuffle_seed: Cell<u64>,
@@ -157,6 +156,10 @@ pub(crate) struct UiBridge {
 }
 
 /// How often the session (queue, position) is written while the app runs.
+/// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
+/// progress bar does not move by a visible pixel, so the write only costs an accessibility rebuild.
+const PROGRESS_MINIMUM_VISIBLE_CHANGE: f32 = 0.0005;
+
 const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 impl UiBridge {
@@ -209,7 +212,6 @@ impl UiBridge {
             underrun_baseline: Cell::new(0),
             selected_track: Cell::new(None),
             detail_album: Cell::new(0),
-            animation_started: std::time::Instant::now(),
             stream_end_baseline: Cell::new(0),
             should_advance: Cell::new(false),
             shuffle_seed: Cell::new(
@@ -245,7 +247,6 @@ impl UiBridge {
         state.set_signal_description(
             "Choisissez un morceau pour inspecter le chemin du signal.".into(),
         );
-        state.set_equalizer_levels(ModelRc::new(VecModel::from(vec![0.3, 0.6, 0.4])));
         state.set_path_steps(Self::inactive_path());
         state.set_lcd_title("Pistolame".into());
         state.set_lcd_subtitle("Choisissez un morceau".into());
@@ -524,6 +525,8 @@ impl UiBridge {
         let handle = self.clone();
         state.on_select_device(move |index| handle.select_device(index));
         let handle = self.clone();
+        state.on_select_system_output(move || handle.select_system_output());
+        let handle = self.clone();
         state.on_set_exclusive(move |enabled| handle.set_exclusive(enabled));
         let handle = self.clone();
         state.on_dismiss_notice(move || {
@@ -620,12 +623,26 @@ impl UiBridge {
             return;
         };
         if let Some(device) = self.devices.borrow().get(index) {
+            let selection = OutputDeviceSelection::Specific(device.id.clone());
             self.engine.send(EngineCommand::SelectOutputDevice {
-                device_id: device.id.clone(),
+                selection: selection.clone(),
             });
             let mut settings = self.settings.borrow_mut();
-            settings.output_device_id = Some(device.id.clone());
+            settings.output_device = selection;
             settings.output_device_name = Some(device.display_name.clone());
+        }
+        self.save_settings();
+    }
+
+    /// "Sortie du système": follow the system default output from now on.
+    fn select_system_output(&self) {
+        self.engine.send(EngineCommand::SelectOutputDevice {
+            selection: OutputDeviceSelection::SystemDefault,
+        });
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.output_device = OutputDeviceSelection::SystemDefault;
+            settings.output_device_name = None;
         }
         self.save_settings();
     }
@@ -1967,7 +1984,11 @@ impl UiBridge {
         } else {
             format!("Téléchargement… {} Mo", megabytes(received))
         };
-        window.global::<AppState>().set_update_status(text.into());
+        let state = window.global::<AppState>();
+        let status: SharedString = text.into();
+        if state.get_update_status() != status {
+            state.set_update_status(status);
+        }
     }
 
     fn apply_update_message(&self, message: UpdateMessage) {
@@ -2976,39 +2997,40 @@ impl UiBridge {
             self.should_advance.set(false);
             self.advance_after_end();
         }
-        let time = self.animation_started.elapsed().as_secs_f32();
-        let levels = if state.get_is_playing() {
-            vec![
-                0.5 + 0.5 * (time * 7.0).sin(),
-                0.5 + 0.5 * (time * 9.0 + 1.0).sin(),
-                0.5 + 0.5 * (time * 6.0 + 2.0).sin(),
-            ]
-        } else {
-            vec![0.3, 0.6, 0.4]
-        };
-        state.set_equalizer_levels(ModelRc::new(VecModel::from(levels)));
         let rate = u64::from(self.sample_rate_hz.get().max(1));
         let frames_in_track = self
             .resume_position_seconds
             .get()
             .map_or(counters.frames_rendered_in_track, |seconds| seconds * rate);
-        state.set_elapsed_label(presentation::clock(frames_in_track / rate).into());
+        // Every setter below invalidates bindings, and Slint rebuilds the window's
+        // accessibility tree after each change: only write values that really changed.
+        let elapsed_label: SharedString = presentation::clock(frames_in_track / rate).into();
+        if state.get_elapsed_label() != elapsed_label {
+            state.set_elapsed_label(elapsed_label);
+        }
         let remaining_seconds = self.total_frames.get().saturating_sub(frames_in_track) / rate;
-        state.set_remaining_label(presentation::remaining_clock(remaining_seconds).into());
-        state.set_progress(if self.total_frames.get() == 0 {
+        let remaining_label: SharedString = presentation::remaining_clock(remaining_seconds).into();
+        if state.get_remaining_label() != remaining_label {
+            state.set_remaining_label(remaining_label);
+        }
+        let progress = if self.total_frames.get() == 0 {
             0.0
         } else {
             (frames_in_track as f64 / self.total_frames.get() as f64).clamp(0.0, 1.0) as f32
-        });
-        state.set_underrun_label(
-            format!(
-                "Coupures : {}",
-                counters
-                    .underrun_events
-                    .saturating_sub(self.underrun_baseline.get())
-            )
-            .into(),
-        );
+        };
+        if (state.get_progress() - progress).abs() >= PROGRESS_MINIMUM_VISIBLE_CHANGE {
+            state.set_progress(progress);
+        }
+        let underrun_label: SharedString = format!(
+            "Coupures : {}",
+            counters
+                .underrun_events
+                .saturating_sub(self.underrun_baseline.get())
+        )
+        .into();
+        if state.get_underrun_label() != underrun_label {
+            state.set_underrun_label(underrun_label);
+        }
     }
 
     fn handle_event(&self, event: EngineEvent) {
@@ -3017,16 +3039,21 @@ impl UiBridge {
         };
         let state = window.global::<AppState>();
         match event {
-            EngineEvent::DeviceListChanged { devices, selected } => {
-                let index = devices
+            EngineEvent::DeviceListChanged {
+                devices,
+                selection,
+                selected,
+            } => {
+                let view = presentation::device_list_view(&devices, &selection, selected.as_ref());
+                let names: Vec<SharedString> = view
+                    .device_names
                     .iter()
-                    .position(|device| Some(&device.id) == selected.as_ref());
-                let names: Vec<SharedString> = devices
-                    .iter()
-                    .map(|device| device.display_name.as_str().into())
+                    .map(|name| name.as_str().into())
                     .collect();
                 state.set_device_names(ModelRc::new(VecModel::from(names)));
-                state.set_selected_device_index(index.map_or(-1, |index| index as i32));
+                state.set_selected_device_index(view.selected_device_index);
+                state.set_is_system_output_selected(view.is_system_output_selected);
+                state.set_system_output_device_name(view.system_output_device_name.into());
                 *self.devices.borrow_mut() = devices;
             }
             EngineEvent::PreferredDeviceUnavailable { .. } => {

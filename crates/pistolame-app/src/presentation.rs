@@ -363,9 +363,113 @@ pub(crate) fn track_info_cells(
     cells
 }
 
+/// What the output device list shows: a "Sortie du système" row naming the current system
+/// default, then every device, with the user's choice checked.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DeviceListView {
+    /// Display name of each device, in the engine's order.
+    pub(crate) device_names: Vec<String>,
+    /// Index in `device_names` of the checked device; -1 when "Sortie du système" is checked.
+    pub(crate) selected_device_index: i32,
+    /// Whether "Sortie du système" is checked.
+    pub(crate) is_system_output_selected: bool,
+    /// The device the system output plays to now; empty when the system has no default.
+    pub(crate) system_output_device_name: String,
+}
+
+/// A specific choice checks the device the engine resolved it to (the system default while the
+/// chosen device is absent, as the engine plays there).
+pub(crate) fn device_list_view(
+    devices: &[OutputDeviceInfo],
+    selection: &OutputDeviceSelection,
+    selected: Option<&OutputDeviceId>,
+) -> DeviceListView {
+    let is_system_output_selected = *selection == OutputDeviceSelection::SystemDefault;
+    let selected_device_index = if is_system_output_selected {
+        None
+    } else {
+        devices
+            .iter()
+            .position(|device| Some(&device.id) == selected)
+    };
+    DeviceListView {
+        device_names: devices
+            .iter()
+            .map(|device| device.display_name.clone())
+            .collect(),
+        selected_device_index: selected_device_index
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(-1),
+        is_system_output_selected,
+        system_output_device_name: devices
+            .iter()
+            .find(|device| device.is_system_default)
+            .map(|device| device.display_name.clone())
+            .unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn speakers_and_headphones() -> Vec<OutputDeviceInfo> {
+        vec![
+            OutputDeviceInfo {
+                id: OutputDeviceId("BuiltInSpeakerDevice".into()),
+                display_name: "Haut-parleurs MacBook Air".into(),
+                is_system_default: false,
+            },
+            OutputDeviceInfo {
+                id: OutputDeviceId("BuiltInHeadphoneOutputDevice".into()),
+                display_name: "Écouteurs externes".into(),
+                is_system_default: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_system_output_row_names_the_current_default() {
+        let devices = speakers_and_headphones();
+        let view = device_list_view(
+            &devices,
+            &OutputDeviceSelection::SystemDefault,
+            Some(&devices[1].id),
+        );
+        assert_eq!(
+            view,
+            DeviceListView {
+                device_names: vec![
+                    "Haut-parleurs MacBook Air".into(),
+                    "Écouteurs externes".into()
+                ],
+                selected_device_index: -1,
+                is_system_output_selected: true,
+                system_output_device_name: "Écouteurs externes".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_specific_choice_checks_its_device() {
+        let devices = speakers_and_headphones();
+        let view = device_list_view(
+            &devices,
+            &OutputDeviceSelection::Specific(devices[0].id.clone()),
+            Some(&devices[0].id),
+        );
+        assert!(!view.is_system_output_selected);
+        assert_eq!(view.selected_device_index, 0);
+        assert_eq!(view.system_output_device_name, "Écouteurs externes");
+    }
+
+    #[test]
+    fn no_default_leaves_the_system_output_name_empty() {
+        let mut devices = speakers_and_headphones();
+        devices[1].is_system_default = false;
+        let view = device_list_view(&devices, &OutputDeviceSelection::SystemDefault, None);
+        assert_eq!(view.system_output_device_name, "");
+    }
     #[test]
     fn missing_signature_never_means_verified() {
         let line = integrity(&FileIntegrityStatus::NoEmbeddedSignature { computed_md5: None });
