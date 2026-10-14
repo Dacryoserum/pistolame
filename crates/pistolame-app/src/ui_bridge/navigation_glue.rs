@@ -332,6 +332,9 @@ impl UiBridge {
     /// Stores the library section shown, so the next launch opens on it. Settings, playlists
     /// and sub-pages are never stored: opening on them would surprise.
     fn remember_start_section(&self, route: &Route) {
+        if !self.should_remember_start_section.get() {
+            return;
+        }
         let is_library_section_page = matches!(
             route.page,
             Page::RecentlyAdded | Page::Artists | Page::Tracks
@@ -357,10 +360,11 @@ impl UiBridge {
                 .iter()
                 .any(|candidate| candidate.key == *album),
             Page::Playlist { playlist_id } => self.playlist_index_of(*playlist_id) >= 0,
-            Page::NowPlaying => self
-                .window
-                .upgrade()
-                .is_some_and(|window| window.global::<AppState>().get_has_current_track()),
+            // Bridge state, not the `has-current-track` UI flag, which flickers to false at each
+            // TrackLoaded.
+            Page::NowPlaying => {
+                self.selected_track.get().is_some() || self.track_id.get().is_some()
+            }
             Page::RecentlyAdded
             | Page::Artists
             | Page::Albums { .. }

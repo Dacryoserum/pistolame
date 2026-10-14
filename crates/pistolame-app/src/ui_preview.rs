@@ -17,6 +17,8 @@ mod tests {
         let window = AppWindow::new()?;
         let bridge = ui_bridge::UiBridge::with_library_database(&window, Some(database))?;
         bridge.connect(&window);
+        // Screenshots must never change the user's saved start section.
+        bridge.disable_remembering_start_section();
         if std::env::var_os("PISTOLAME_PREVIEW_LIGHT").is_some() {
             window.global::<AppState>().invoke_toggle_theme();
         }
@@ -48,15 +50,15 @@ mod tests {
             });
         }
         // Sidebar item to show (1 = Artistes, 3 = Morceaux, 6 = Réglages…).
-        if let Some(section) = std::env::var("PISTOLAME_PREVIEW_ITEM")
+        // Albums when unset, so screenshots do not depend on the user's saved start section.
+        let preview_section = std::env::var("PISTOLAME_PREVIEW_ITEM")
             .ok()
             .and_then(|item| item.parse::<i32>().ok())
             .and_then(navigation::SidebarSection::from_legacy_debug_index)
-        {
-            window
-                .global::<AppState>()
-                .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(section));
-        }
+            .unwrap_or(navigation::SidebarSection::Albums);
+        window
+            .global::<AppState>()
+            .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(preview_section));
         if std::env::var_os("PISTOLAME_PREVIEW_POPOVER").is_some() {
             window.global::<AppState>().set_is_popover_open(true);
         }

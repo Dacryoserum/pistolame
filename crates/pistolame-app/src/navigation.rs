@@ -216,6 +216,7 @@ impl NavigationHistory {
         self.current.page = page;
         self.current.content_y_logical_pixels = 0.0;
         self.forward.clear();
+        self.collapse_duplicate_entries();
     }
 
     /// The route to show after Back, or None when there is nowhere to go.
@@ -273,10 +274,53 @@ impl NavigationHistory {
         }
     }
 
-    /// Drops routes whose page fails `is_available` from both stacks (playlist deleted).
+    /// Drops routes whose page fails `is_available` from both stacks (playlist deleted), moves
+    /// routes opened from a deleted playlist to the Albums section, and removes the duplicate
+    /// entries the pruning may leave.
     pub(crate) fn remove_unavailable(&mut self, is_available: impl Fn(&Page) -> bool) {
         self.back.retain(|route| is_available(&route.page));
         self.forward.retain(|route| is_available(&route.page));
+        self.remap_sections_of_deleted_playlists(&is_available);
+        self.collapse_duplicate_entries();
+    }
+
+    /// Album and now-playing routes keep the section of the playlist they were opened from;
+    /// once that playlist is gone nothing would be highlighted, so they fall back to Albums.
+    fn remap_sections_of_deleted_playlists(&mut self, is_available: &impl Fn(&Page) -> bool) {
+        let routes = std::iter::once(&mut self.current)
+            .chain(self.back.iter_mut())
+            .chain(self.forward.iter_mut());
+        for route in routes {
+            if let SidebarSection::Playlist(playlist_id) = route.section
+                && !is_available(&Page::Playlist { playlist_id })
+            {
+                route.section = SidebarSection::Albums;
+            }
+        }
+    }
+
+    /// Collapses adjacent entries showing the same page in each stack, and drops the back and
+    /// forward tops that show the current page: Back/Forward must always change what is shown.
+    /// Pages are compared, not scroll offsets.
+    fn collapse_duplicate_entries(&mut self) {
+        self.back
+            .dedup_by(|later, earlier| later.page == earlier.page);
+        self.forward
+            .dedup_by(|later, earlier| later.page == earlier.page);
+        while self
+            .back
+            .last()
+            .is_some_and(|route| route.page == self.current.page)
+        {
+            self.back.pop();
+        }
+        while self
+            .forward
+            .last()
+            .is_some_and(|route| route.page == self.current.page)
+        {
+            self.forward.pop();
+        }
     }
 }
 
@@ -483,6 +527,62 @@ mod tests {
         assert_eq!(history.current().content_y_logical_pixels, 0.0);
         assert_eq!(history.back.len(), 1);
         assert_eq!(history.back_destination(), Some(Page::Tracks));
+    }
+
+    #[test]
+    fn clearing_a_search_does_not_leave_a_duplicate_back_entry() {
+        let mut history = NavigationHistory::new(albums_grid());
+        history.push(search_results("x"), -40.0);
+        history.replace_current(albums_grid());
+        assert_eq!(history.current().page, albums_grid());
+        assert!(!history.can_go_back());
+        assert!(history.go_back(0.0, always_available).is_none());
+    }
+
+    #[test]
+    fn pruning_collapses_adjacent_duplicates() {
+        let mut history = NavigationHistory::new(Page::Tracks);
+        history.push(Page::Playlist { playlist_id: 1 }, 0.0);
+        history.push(Page::Artists, 0.0);
+        history.push(Page::Playlist { playlist_id: 1 }, 0.0);
+        history.push(Page::Artists, 0.0);
+        history.push(Page::Tracks, 0.0);
+        // back: [Tracks, P1, Artists, P1, Artists], current: Tracks
+        history.remove_unavailable(|page| *page != Page::Playlist { playlist_id: 1 });
+        // back: [Tracks, Artists, Artists] collapses to [Tracks, Artists], and the top is not
+        // the current page.
+        let back_pages: Vec<Page> = history
+            .back
+            .iter()
+            .map(|route| route.page.clone())
+            .collect();
+        assert_eq!(back_pages, vec![Page::Tracks, Page::Artists]);
+
+        let mut history = NavigationHistory::new(Page::Tracks);
+        history.push(Page::Playlist { playlist_id: 1 }, 0.0);
+        history.push(Page::Tracks, 0.0);
+        history.remove_unavailable(|page| *page != Page::Playlist { playlist_id: 1 });
+        // back: [Tracks], current: Tracks -> the equal top is dropped.
+        assert!(history.back.is_empty());
+    }
+
+    #[test]
+    fn routes_opened_from_a_deleted_playlist_fall_back_to_albums_section() {
+        let mut history = NavigationHistory::new(Page::Playlist { playlist_id: 7 });
+        history.push(album_detail("A"), 0.0);
+        history.push(Page::NowPlaying, 0.0);
+        history.remove_unavailable(|page| *page != Page::Playlist { playlist_id: 7 });
+        assert_eq!(history.current().section, SidebarSection::Albums);
+        assert!(
+            history
+                .back
+                .iter()
+                .all(|route| route.section != SidebarSection::Playlist(7))
+        );
+        assert_eq!(
+            history.back.last().map(|r| r.section),
+            Some(SidebarSection::Albums)
+        );
     }
 
     #[test]

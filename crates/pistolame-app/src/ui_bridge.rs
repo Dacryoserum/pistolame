@@ -108,6 +108,8 @@ pub(crate) struct UiBridge {
     last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
+    /// False for debug and preview runs, which must not overwrite the user's saved start section.
+    should_remember_start_section: Cell<bool>,
     sample_rate_hz: Cell<u32>,
     total_frames: Cell<u64>,
     underrun_baseline: Cell<u64>,
@@ -201,6 +203,7 @@ impl UiBridge {
             pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
+            should_remember_start_section: Cell::new(true),
             sample_rate_hz: Cell::new(0),
             total_frames: Cell::new(0),
             underrun_baseline: Cell::new(0),
@@ -259,6 +262,11 @@ impl UiBridge {
         state
             .set_exclusive(bridge.settings.borrow().output_mode == OutputModePreference::Exclusive);
         Ok(bridge)
+    }
+
+    /// Stops navigation from saving the start section (debug and preview runs).
+    pub(crate) fn disable_remembering_start_section(&self) {
+        self.should_remember_start_section.set(false);
     }
 
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {

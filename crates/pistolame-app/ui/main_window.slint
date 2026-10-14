@@ -92,11 +92,11 @@ export component AppWindow inherits Window {
             }
             // Back and Forward come before the Escape test: Ctrl+[ arrives as ASCII ESC ("\u{1b}") and
             // Ctrl+] as "\u{1d}" on Windows and Linux. Slint reports Command as `control` on macOS.
-            if (event.modifiers.control && (event.text == "[" || event.text == "\u{1b}")) || (event.modifiers.alt && event.text == Key.LeftArrow) {
+            if (event.modifiers.control && (event.text == "[" || event.text == "\u{1b}")) || (event.modifiers.alt && !event.modifiers.control && event.text == Key.LeftArrow) {
                 if !root.is-modal-sheet-open() { AppState.navigate-back(); }
                 return accept;
             }
-            if (event.modifiers.control && (event.text == "]" || event.text == "\u{1d}")) || (event.modifiers.alt && event.text == Key.RightArrow) {
+            if (event.modifiers.control && (event.text == "]" || event.text == "\u{1d}")) || (event.modifiers.alt && !event.modifiers.control && event.text == Key.RightArrow) {
                 if !root.is-modal-sheet-open() { AppState.navigate-forward(); }
                 return accept;
             }
@@ -484,7 +484,9 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Items whose row would reach the version label (bottom left) are not drawn.
             for item[index] in AppState.playlists: SidebarItem {
+                visible: 264px + 28px * (index + 1) <= parent.height - 40px;
                 y: 264px + 28px * index;
                 icon: Icons.playlist;
                 artwork: item.artwork;

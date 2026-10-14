@@ -44,6 +44,11 @@ fn main() -> anyhow::Result<()> {
     let window = AppWindow::new()?;
     let bridge = ui_bridge::UiBridge::new(&window)?;
     bridge.connect(&window);
+    // A debug run must not overwrite the start section the user saved.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("PISTOLAME_DEBUG_START_ITEM").is_some() {
+        bridge.disable_remembering_start_section();
+    }
     // Shows the stored library, then rescans it; paths given on the command line are added.
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
