@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+### Features
+- navigation history: Back returns to the page you came from, with its filter, search and scroll; Forward re-applies it
+- back and forward with Cmd/Ctrl+[ ], Alt+arrows and the mouse side buttons
+- Escape closes the topmost panel first, then goes back
+- the sidebar always highlights where you are; reopen on the last library section
+- add music from the Albums page (+), version shown in the sidebar corner
+
+### Changes
+- the unfinished Authenticité and Spectrogrammes entries leave the sidebar (the analysis stays on the current-track page)
+
 ## 0.3.1
 
 ### Fixes
