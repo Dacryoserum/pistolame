@@ -1124,6 +1124,38 @@ export component AlbumsGrid inherits Rectangle {
         sort-touch := TouchArea { mouse-cursor: pointer; clicked => { sort-menu.show(); } }
     }
 
+    // "+" next to the sort menu: add music once the library is no longer empty.
+    add-button := IconButton {
+        x: sort-button.x - 8px - self.width;
+        y: 26px;
+        width: 28px;
+        height: 28px;
+        icon: Icons.plus;
+        icon-color: Tokens.accent;
+        label: "Ajouter de la musique";
+        clicked => { add-menu.show(); }
+    }
+
+    add-menu := PopupWindow {
+        x: add-button.x + add-button.width - 220px;
+        y: 58px;
+        width: 220px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                MenuRow { icon: Icons.vinyl-record; label: "Ajouter un dossier…"; clicked => { AppState.import-folder(); } }
+                MenuRow { icon: Icons.music-note; label: "Ajouter des fichiers…"; clicked => { AppState.import-files(); } }
+            }
+        }
+    }
+
     sort-menu := PopupWindow {
         x: root.width - 32px - 220px;
         y: 58px;
