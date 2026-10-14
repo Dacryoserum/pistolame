@@ -283,8 +283,10 @@ pub trait AudioOutput: Send {
     ) -> Result<Box<dyn OutputStream>, OpenStreamError>;
     /// Starts calling `on_change` whenever the system default output device or the set of
     /// output devices changes, until the backend is dropped. Called at most once. Returns
-    /// `false` when the backend cannot watch the system; the engine then re-reads the default
-    /// device each time it opens a stream instead. The default watches nothing.
+    /// `false` when the backend cannot watch the system. Notifications only matter while a
+    /// stream plays: the engine re-reads the devices before every open regardless, because a
+    /// registered listener is no proof that notifications are delivered. The default watches
+    /// nothing.
     fn watch_device_changes(&mut self, _on_change: DeviceChangeListener) -> bool {
         false
     }
@@ -310,6 +312,13 @@ pub trait OutputStream: Send {
     /// shared streams apply it; exclusive streams ignore it so the device receives the samples
     /// unchanged. The default does nothing, for backends without a mixer stage.
     fn set_shared_mode_volume(&mut self, _linear_gain: f32) {}
+    /// Whether the device this stream plays to still exists, asked by the engine (slow path,
+    /// may query the platform) before it moves the stream to another device after a system
+    /// change. `false` on any doubt: the engine then leaves the stream to the failure path. The
+    /// default answers `true`, for backends whose `status()` reports a lost device promptly.
+    fn is_device_still_present(&self) -> bool {
+        true
+    }
     /// Stops, releases the device and returns the render source so the ring and the feeder's
     /// position survive a reopen (pause/resume, mode switch, gapless format change later).
     /// Blocks the caller (the engine thread) for at most `QUEUED_AUDIO_PLAY_OUT_TIMEOUT` with

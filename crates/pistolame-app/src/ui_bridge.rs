@@ -155,11 +155,12 @@ pub(crate) struct UiBridge {
     route_generation: Rc<Cell<u64>>,
 }
 
-/// How often the session (queue, position) is written while the app runs.
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
 /// progress bar does not move by a visible pixel, so the write only costs an accessibility rebuild.
+/// The ends (0 and 1) are always written, so the bar never stops just short of them.
 const PROGRESS_MINIMUM_VISIBLE_CHANGE: f32 = 0.0005;
 
+/// How often the session (queue, position) is written while the app runs.
 const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 impl UiBridge {
@@ -3018,7 +3019,7 @@ impl UiBridge {
         } else {
             (frames_in_track as f64 / self.total_frames.get() as f64).clamp(0.0, 1.0) as f32
         };
-        if (state.get_progress() - progress).abs() >= PROGRESS_MINIMUM_VISIBLE_CHANGE {
+        if should_write_progress(state.get_progress(), progress) {
             state.set_progress(progress);
         }
         let underrun_label: SharedString = format!(
@@ -3277,6 +3278,12 @@ fn sort_keys_of(album: &Album) -> crate::album_sort::AlbumSortKeys {
     }
 }
 
+/// Whether the progress bar must be updated: a visible change, or reaching either end.
+fn should_write_progress(shown: f32, new: f32) -> bool {
+    let is_at_an_end = new == 0.0 || new == 1.0;
+    (is_at_an_end && shown != new) || (shown - new).abs() >= PROGRESS_MINIMUM_VISIBLE_CHANGE
+}
+
 /// The album's year: the earliest year of its tracks.
 fn album_year(album: &Album) -> Option<u32> {
     album.sort_keys.year
@@ -3394,4 +3401,23 @@ fn artist_cards(
             artwork: photos.get(name).cloned().unwrap_or(entry.artwork),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::should_write_progress;
+
+    #[test]
+    fn a_tiny_change_is_skipped() {
+        assert!(!should_write_progress(0.5, 0.5001));
+        assert!(should_write_progress(0.5, 0.501));
+    }
+
+    #[test]
+    fn the_ends_are_always_written() {
+        assert!(should_write_progress(0.9999, 1.0));
+        assert!(should_write_progress(0.0001, 0.0));
+        assert!(!should_write_progress(1.0, 1.0));
+        assert!(!should_write_progress(0.0, 0.0));
+    }
 }

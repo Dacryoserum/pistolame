@@ -111,15 +111,16 @@ fn opened_device_ids(run: &EngineRun) -> Vec<String> {
         .collect()
 }
 
-/// The user's bug: playing on the speakers under "Sortie du système", headphones get plugged
-/// in and become the default. The stream plays out on the speakers and reopens on the
-/// headphones at the first unplayed frame, in the same mode; nothing is lost or played twice.
-fn follow_the_new_default_mid_track(preference: OutputModePreference) {
+/// The user's bug: playing on the speakers under "Sortie du système" in shared mode, headphones
+/// get plugged in and become the default. The stream plays out on the speakers and reopens on
+/// the headphones at the first unplayed frame; nothing is lost or played twice.
+#[test]
+fn a_new_system_default_mid_track_moves_a_shared_stream_to_it() {
     let fixture = generate_fixture(&CD_STEREO);
     let mut run = start(
         config(SPEAKERS, true),
         OutputDeviceSelection::SystemDefault,
-        preference,
+        OutputModePreference::Shared,
     );
     run.controller
         .hold_after_more_render_calls(RENDER_CALLS_BEFORE_THE_CHANGE);
@@ -139,17 +140,31 @@ fn follow_the_new_default_mid_track(preference: OutputModePreference) {
     let moved = run.wait_for_stream();
     assert_eq!(moved.negotiated.device.id, device_id(HEADPHONES));
     assert_eq!(moved.negotiated.device.display_name, "Écouteurs externes");
-    let expected_mode = match preference {
-        OutputModePreference::Exclusive => DeviceAccessMode::Exclusive,
-        OutputModePreference::Shared => DeviceAccessMode::SharedThroughSystemMixer,
-    };
-    assert_eq!(moved.negotiated.access_mode, expected_mode);
+    assert_eq!(
+        moved.negotiated.access_mode,
+        DeviceAccessMode::SharedThroughSystemMixer
+    );
 
     run.controller.release();
     run.wait_for_state(PlaybackState::Stopped);
     assert_eq!(opened_device_ids(&run), vec![SPEAKERS, HEADPHONES]);
+    assert_whole_track_played_exactly(&run, &fixture);
+    assert_eq!(
+        run.final_status(track_id).transmission,
+        TransmissionStatus::NotApplicableInSharedMode
+    );
+}
+
+fn assert_whole_track_played_exactly(
+    run: &EngineRun,
+    fixture: &pistolame_core::testing::GeneratedFixture,
+) {
     let streams = run.controller.negotiated_streams();
-    assert_eq!(streams[0].render_format, streams[1].render_format);
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.render_format == streams[0].render_format)
+    );
     assert_played_exactly(
         &run.controller.played_bytes(),
         &packed(
@@ -158,26 +173,113 @@ fn follow_the_new_default_mid_track(preference: OutputModePreference) {
             &streams[0].render_format,
         ),
     );
+}
+
+/// An exclusive stream holds its device: a new default does not move it mid-track (the system
+/// may move its default away from a device we hold). The next open (here a resume) uses the
+/// new default, still exclusive and still bit-perfect.
+#[test]
+fn an_exclusive_stream_stays_and_the_next_open_uses_the_new_default() {
+    let fixture = generate_fixture(&CD_STEREO);
+    let mut run = start(
+        config(SPEAKERS, true),
+        OutputDeviceSelection::SystemDefault,
+        OutputModePreference::Exclusive,
+    );
+    run.controller
+        .hold_after_more_render_calls(RENDER_CALLS_BEFORE_THE_CHANGE);
+    let track_id = run.open(&fixture.path);
+    run.wait_for_stream();
+    wait_until_held(&run);
+
+    assert!(
+        run.controller
+            .change_devices(|devices| make_default(devices, HEADPHONES))
+    );
+    wait_for_selected(&mut run, HEADPHONES);
+    run.send(EngineCommand::Pause);
+    run.wait_for_state(PlaybackState::Paused);
+    assert_eq!(
+        opened_device_ids(&run),
+        vec![SPEAKERS],
+        "not moved mid-track"
+    );
+
+    run.controller.release();
+    run.send(EngineCommand::Play);
+    let resumed = run.wait_for_stream();
+    assert_eq!(resumed.negotiated.device.id, device_id(HEADPHONES));
+    assert_eq!(resumed.negotiated.access_mode, DeviceAccessMode::Exclusive);
+    run.wait_for_state(PlaybackState::Stopped);
+    assert_whole_track_played_exactly(&run, &fixture);
     let transmission = run.final_status(track_id).transmission;
-    match preference {
-        OutputModePreference::Exclusive => assert!(
-            matches!(transmission, TransmissionStatus::Verified { .. }),
-            "bit-perfect across the device move: {transmission:?}"
-        ),
-        OutputModePreference::Shared => {
-            assert_eq!(transmission, TransmissionStatus::NotApplicableInSharedMode)
-        }
-    }
+    assert!(
+        matches!(transmission, TransmissionStatus::Verified { .. }),
+        "bit-perfect across the device change: {transmission:?}"
+    );
 }
 
+/// A system that moves its default away from the device we just took exclusively: the stream
+/// stays on that device, with no reopen loop.
 #[test]
-fn a_new_system_default_mid_track_moves_a_shared_stream_to_it() {
-    follow_the_new_default_mid_track(OutputModePreference::Shared);
+fn a_default_moved_away_by_our_exclusive_open_does_not_make_the_stream_bounce() {
+    let fixture = generate_fixture(&CD_STEREO);
+    let mut run = start(
+        FakeOutputConfig {
+            exclusive_open_moves_default_to: Some(device_id(HEADPHONES)),
+            ..config(SPEAKERS, true)
+        },
+        OutputDeviceSelection::SystemDefault,
+        OutputModePreference::Exclusive,
+    );
+    run.controller
+        .hold_after_more_render_calls(RENDER_CALLS_BEFORE_THE_CHANGE);
+    run.open(&fixture.path);
+    assert_eq!(
+        run.wait_for_stream().negotiated.device.id,
+        device_id(SPEAKERS)
+    );
+    wait_for_selected(&mut run, HEADPHONES);
+    wait_until_held(&run);
+    run.controller.release();
+    run.wait_for_state(PlaybackState::Stopped);
+    assert_eq!(opened_device_ids(&run), vec![SPEAKERS]);
+    assert_whole_track_played_exactly(&run, &fixture);
 }
 
+/// After an automatic move, a default that flips straight back does not move the stream back
+/// within `AUTOMATIC_MOVE_BACK_GUARD`.
 #[test]
-fn a_new_system_default_mid_track_moves_an_exclusive_stream_to_it() {
-    follow_the_new_default_mid_track(OutputModePreference::Exclusive);
+fn an_automatic_move_does_not_go_straight_back() {
+    let fixture = generate_fixture(&CD_STEREO);
+    let mut run = start(
+        config(SPEAKERS, true),
+        OutputDeviceSelection::SystemDefault,
+        OutputModePreference::Shared,
+    );
+    run.controller
+        .hold_after_more_render_calls(RENDER_CALLS_BEFORE_THE_CHANGE);
+    run.open(&fixture.path);
+    run.wait_for_stream();
+    wait_until_held(&run);
+    assert!(
+        run.controller
+            .change_devices(|devices| make_default(devices, HEADPHONES))
+    );
+    assert_eq!(
+        run.wait_for_stream().negotiated.device.id,
+        device_id(HEADPHONES)
+    );
+
+    assert!(
+        run.controller
+            .change_devices(|devices| make_default(devices, SPEAKERS))
+    );
+    wait_for_selected(&mut run, SPEAKERS);
+    // Commands are handled after the notification, so the stop proves no reopen happened.
+    run.send(EngineCommand::Stop);
+    run.wait_for_state(PlaybackState::Stopped);
+    assert_eq!(opened_device_ids(&run), vec![SPEAKERS, HEADPHONES]);
 }
 
 #[test]

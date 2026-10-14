@@ -27,7 +27,7 @@ use crate::engine::{
     PlaybackState,
 };
 use crate::output_contract::{
-    AudioOutput, OpenPolicy, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo,
+    AudioOutput, DeviceAccessMode, OpenPolicy, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo,
     OutputDeviceSelection, OutputError, OutputFailure, OutputModePreference, OutputStream,
     OutputStreamStatus, QueuedAudioOnClose,
 };
@@ -42,6 +42,21 @@ const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
 /// Detail of the internal failure raised when the feeder stops at a format boundary inside one
 /// file (B5.7: only a bug can cause it while M1 plays one file per pipeline).
 const FORMAT_BOUNDARY_DETAIL: &str = "format boundary inside one file";
+
+/// How long an automatic move never goes back to the device it just left. Some systems move
+/// their default away from a device another process takes and back once it is released; without
+/// this guard such a system and the engine could keep moving the stream between two devices.
+const AUTOMATIC_MOVE_BACK_GUARD: Duration = Duration::from_secs(5);
+
+/// Why the engine considers moving the playing stream to the selected device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceMoveCause {
+    /// The user picked a device or "Sortie du système": always applied.
+    UserChoice,
+    /// The system default or the device list changed: applied only when safe (see
+    /// `move_stream_to_selected_device`).
+    SystemChange,
+}
 
 /// Pending device-change wake-ups the backend can post. One is enough: on waking, the engine
 /// re-reads the whole device list, so further notifications in between add nothing.
@@ -76,9 +91,11 @@ pub(crate) struct EngineThread {
     /// Handed to the backend once, in `start_up`, to post device-change wake-ups.
     device_change_sender: Option<Sender<()>>,
     device_changes: Receiver<()>,
-    /// Whether the backend notifies device changes; without it, the devices are re-read
-    /// before each stream opens.
+    /// Whether the backend notifies device changes while a stream plays. The devices are
+    /// re-read before each stream opens either way.
     is_watching_device_changes: bool,
+    /// The device the last automatic move left, and when (`AUTOMATIC_MOVE_BACK_GUARD`).
+    last_device_left: Option<(OutputDeviceId, Instant)>,
     preference: OutputModePreference,
     shared_mode_volume: crate::volume::SharedModeVolume,
     state: PlaybackState,
@@ -125,6 +142,7 @@ impl EngineThread {
             device_change_sender: Some(device_change_sender),
             device_changes,
             is_watching_device_changes: false,
+            last_device_left: None,
             preference: setup.options.output_mode_preference,
             shared_mode_volume: setup.options.shared_mode_volume,
             state: PlaybackState::Stopped,
@@ -217,7 +235,7 @@ impl EngineThread {
                 self.device_selection = selection;
                 self.selected_device_id = self.device_selection.resolve(&self.devices);
                 self.emit_device_list();
-                self.move_stream_to_selected_device();
+                self.move_stream_to_selected_device(DeviceMoveCause::UserChoice);
             }
             EngineCommand::SetOutputModePreference { preference } => {
                 self.preference = preference;
@@ -410,8 +428,10 @@ impl EngineThread {
 
     /// Opens a stream on the selected device with the kept render source and starts it.
     fn open_stream_and_play(&mut self) {
-        if !self.is_watching_device_changes && self.pipeline.is_some() {
-            // No notification tells this backend's engine that the default moved: look now.
+        if self.pipeline.is_some() {
+            // Always look, even with notifications: they may not be delivered (CoreAudio sends
+            // them on the main run loop, which a command-line tool does not run) or may still
+            // be on their way. Listing is cheap next to opening a device.
             self.reread_devices();
         }
         let Some(pipeline) = self.pipeline.as_mut() else {
@@ -626,14 +646,17 @@ impl EngineThread {
             self.selected_device_id = self.device_selection.resolve(&self.devices);
         }
         self.emit_device_list();
-        self.move_stream_to_selected_device();
+        self.move_stream_to_selected_device(DeviceMoveCause::SystemChange);
     }
 
     /// The backend reported a new default device or a device added or removed: re-resolve the
-    /// choice and, when it now names another device, move the playing stream there.
+    /// choice and, when it now names another device, move the playing stream there. The stream
+    /// is polled first, so a device that already failed (unplugged) goes through the failure
+    /// path, which stops playback, instead of being moved.
     pub(crate) fn on_system_devices_changed(&mut self) {
+        self.poll();
         self.reread_devices();
-        self.move_stream_to_selected_device();
+        self.move_stream_to_selected_device(DeviceMoveCause::SystemChange);
     }
 
     /// Re-lists the devices and re-resolves the choice, telling the UI only when something
@@ -651,25 +674,51 @@ impl EngineThread {
         }
     }
 
-    /// While playing on a device that is still present but is no longer the one the choice
-    /// resolves to: play out, then reopen on the selected device at the first unplayed frame,
-    /// with the same access-mode policy (`reopen_if_playing`). A device that disappeared is left
-    /// to the stream-failure path, so unplugging headphones stops playback instead of moving it
-    /// to the speakers (B8: no automatic re-activation).
-    fn move_stream_to_selected_device(&mut self) {
-        let Some(device_in_use) = self
-            .stream
-            .as_ref()
-            .map(|stream| stream.negotiated().device.id.clone())
-        else {
+    /// While playing on a device that is no longer the one the choice resolves to: play out,
+    /// then reopen on the selected device at the first unplayed frame, with the same
+    /// access-mode policy (`reopen_if_playing`).
+    ///
+    /// Never moves a stream whose device failed, is unlisted or is reported gone by the backend:
+    /// the stream-failure path stops playback instead, so unplugging headphones never sends the
+    /// music to the speakers (B8: no automatic re-activation). A `SystemChange` also leaves an
+    /// exclusive stream where it is (the system may move its default away from a device we
+    /// hold, and following it would release that device and invite the default back), and never
+    /// returns to the device an automatic move left less than `AUTOMATIC_MOVE_BACK_GUARD` ago.
+    /// Such a stream picks up the new default at its next open (resume, next track).
+    fn move_stream_to_selected_device(&mut self, cause: DeviceMoveCause) {
+        let Some(stream) = self.stream.as_ref() else {
             return;
         };
-        let Some(selected_device_id) = self.selected_device_id.as_ref() else {
+        let Some(selected_device_id) = self.selected_device_id.clone() else {
             return;
         };
-        if *selected_device_id != device_in_use && self.is_device_listed(&device_in_use) {
-            self.reopen_if_playing();
+        let device_in_use = stream.negotiated().device.id.clone();
+        if selected_device_id == device_in_use
+            || matches!(stream.status(), OutputStreamStatus::Failed(_))
+            || !self.is_device_listed(&device_in_use)
+        {
+            return;
         }
+        if cause == DeviceMoveCause::SystemChange {
+            let is_exclusive = stream.negotiated().access_mode == DeviceAccessMode::Exclusive;
+            let is_going_back = self
+                .last_device_left
+                .as_ref()
+                .is_some_and(|(left, left_at)| {
+                    *left == selected_device_id && left_at.elapsed() < AUTOMATIC_MOVE_BACK_GUARD
+                });
+            if is_exclusive || is_going_back {
+                return;
+            }
+        }
+        // Slow path, asked last: may query the platform.
+        if !stream.is_device_still_present() {
+            return;
+        }
+        if cause == DeviceMoveCause::SystemChange {
+            self.last_device_left = Some((device_in_use, Instant::now()));
+        }
+        self.reopen_if_playing();
     }
 
     /// `false` (and a `PlaybackFailed`) when the backend cannot list its devices.
@@ -785,6 +834,14 @@ mod tests {
     }
 
     fn manual_engine(config: FakeOutputConfig, tuning: EngineTuning) -> ManualEngine {
+        manual_engine_with_preference(config, tuning, OutputModePreference::Exclusive)
+    }
+
+    fn manual_engine_with_preference(
+        config: FakeOutputConfig,
+        tuning: EngineTuning,
+        preference: OutputModePreference,
+    ) -> ManualEngine {
         let (output, controller) = FakeOutput::new(config);
         let (_command_sender, commands) = unbounded();
         let (events, event_receiver) = unbounded();
@@ -793,7 +850,7 @@ mod tests {
             output: Box::new(output),
             decoders: DecoderRegistry::with_default_providers(),
             options: EngineStartOptions {
-                output_mode_preference: OutputModePreference::Exclusive,
+                output_mode_preference: preference,
                 device_selection: OutputDeviceSelection::SystemDefault,
                 shared_mode_volume: Default::default(),
             },
@@ -963,5 +1020,93 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// Built-in speakers (the system default) and headphones, shared mode, playing on the
+    /// speakers and held right after the prefill. Nothing polls unless the test does.
+    fn manual_engine_playing_on_the_speakers() -> ManualEngine {
+        let device = |id: &str, is_system_default: bool| OutputDeviceInfo {
+            id: OutputDeviceId(id.to_owned()),
+            display_name: id.to_owned(),
+            is_system_default,
+        };
+        let config = FakeOutputConfig {
+            devices: vec![device("speakers", true), device("headphones", false)],
+            ..FakeOutputConfig::default()
+        };
+        let mut manual = manual_engine_with_preference(
+            config,
+            EngineTuning::default(),
+            OutputModePreference::Shared,
+        );
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&generate_fixture(&CD_STEREO).path);
+        manual
+    }
+
+    fn make_the_headphones_the_default(manual: &ManualEngine) {
+        manual.controller.change_devices(|devices| {
+            for device in devices {
+                device.is_system_default = device.id.0 == "headphones";
+            }
+        });
+    }
+
+    /// Unplugging headphones: the default-change notification is handled before any poll saw
+    /// the stream fail. The failure wins: playback stops, nothing moves to another device (B8).
+    #[test]
+    fn a_failed_stream_stops_instead_of_moving_when_the_default_changes() {
+        let mut manual = manual_engine_playing_on_the_speakers();
+        manual
+            .controller
+            .fail_stream(OutputFailure::DeviceInvalidated);
+        make_the_headphones_the_default(&manual);
+
+        manual.engine.on_system_devices_changed();
+
+        assert_eq!(manual.engine.state, PlaybackState::Stopped);
+        assert_eq!(manual.controller.negotiated_streams().len(), 1);
+        assert!(manual.emitted().iter().any(|event| matches!(
+            event,
+            EngineEvent::PlaybackFailed {
+                kind: PlaybackFailureKind::DeviceUnplugged,
+                ..
+            }
+        )));
+    }
+
+    /// The device in use is dying (the backend says it is gone) but still listed and its stream
+    /// has not failed yet: the stream is not moved; the failure path will stop it.
+    #[test]
+    fn a_device_reported_gone_is_not_left_for_another() {
+        let mut manual = manual_engine_playing_on_the_speakers();
+        manual.controller.mark_stream_device_gone();
+        make_the_headphones_the_default(&manual);
+
+        manual.engine.on_system_devices_changed();
+
+        assert_eq!(manual.engine.state, PlaybackState::Playing);
+        assert_eq!(
+            manual.engine.selected_device_id,
+            Some(OutputDeviceId("headphones".to_owned()))
+        );
+        assert_eq!(manual.controller.negotiated_streams().len(), 1);
+    }
+
+    /// Control: the same change with a healthy device moves the stream.
+    #[test]
+    fn a_healthy_shared_stream_moves_to_the_new_default() {
+        let mut manual = manual_engine_playing_on_the_speakers();
+        make_the_headphones_the_default(&manual);
+
+        manual.engine.on_system_devices_changed();
+
+        let opened: Vec<String> = manual
+            .controller
+            .negotiated_streams()
+            .into_iter()
+            .map(|negotiated| negotiated.device.id.0)
+            .collect();
+        assert_eq!(opened, vec!["speakers", "headphones"]);
     }
 }

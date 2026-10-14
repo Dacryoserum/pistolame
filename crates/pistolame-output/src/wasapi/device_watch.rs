@@ -14,6 +14,7 @@
 //! unregisters it ("the client must call UnregisterEndpointNotificationCallback ... before
 //! releasing the IMMNotificationClient", RegisterEndpointNotificationCallback remarks).
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -43,17 +44,17 @@ impl IMMNotificationClient_Impl for EndpointChangeClient_Impl {
         _device_id: &PCWSTR,
         _new_state: DEVICE_STATE,
     ) -> windows::core::Result<()> {
-        (self.on_change)();
+        notify(&self.on_change);
         Ok(())
     }
 
     fn OnDeviceAdded(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        (self.on_change)();
+        notify(&self.on_change);
         Ok(())
     }
 
     fn OnDeviceRemoved(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        (self.on_change)();
+        notify(&self.on_change);
         Ok(())
     }
 
@@ -64,7 +65,7 @@ impl IMMNotificationClient_Impl for EndpointChangeClient_Impl {
         _default_device_id: &PCWSTR,
     ) -> windows::core::Result<()> {
         if flow == eRender && role == eConsole {
-            (self.on_change)();
+            notify(&self.on_change);
         }
         Ok(())
     }
@@ -77,6 +78,13 @@ impl IMMNotificationClient_Impl for EndpointChangeClient_Impl {
     ) -> windows::core::Result<()> {
         Ok(())
     }
+}
+
+/// Calls the engine's listener. A panic must not unwind through the COM `extern "system"`
+/// callback, where it would abort the process: it is caught and dropped (the listener only posts
+/// a wake-up, so losing one notification costs at most a late device switch).
+fn notify(on_change: &DeviceChangeListener) {
+    let _ = catch_unwind(AssertUnwindSafe(on_change));
 }
 
 /// The running registration; unregistered when dropped.

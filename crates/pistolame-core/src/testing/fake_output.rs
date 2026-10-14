@@ -119,6 +119,10 @@ pub struct FakeOutputConfig {
     /// Whether `watch_device_changes` accepts a listener (like CoreAudio and WASAPI) or
     /// refuses it (like a backend without notifications). Read once, when the engine starts.
     pub can_watch_device_changes: bool,
+    /// After each successful exclusive open, the system default moves to this device and the
+    /// listener is called, like a system that moves its default away from a device another
+    /// process holds.
+    pub exclusive_open_moves_default_to: Option<OutputDeviceId>,
 }
 
 /// The single device of the default configuration.
@@ -148,6 +152,7 @@ impl Default for FakeOutputConfig {
             queued_frame_capacity: 882,
             play_out_should_time_out: false,
             can_watch_device_changes: true,
+            exclusive_open_moves_default_to: None,
         }
     }
 }
@@ -174,6 +179,7 @@ struct FakeState {
     injected_failure: Option<OutputFailure>,
     stream_request: StreamRequest,
     device_change_listener: Option<Arc<dyn Fn() + Send + Sync>>,
+    is_stream_device_gone: bool,
 }
 
 struct FakeShared {
@@ -222,6 +228,7 @@ impl FakeOutput {
                 injected_failure: None,
                 stream_request: StreamRequest::NotStarted,
                 device_change_listener: None,
+                is_stream_device_gone: false,
             }),
             changed: Condvar::new(),
         });
@@ -238,6 +245,13 @@ impl FakeOutputController {
     /// Changes the configuration; it applies from the next open.
     pub fn update_config(&self, change: impl FnOnce(&mut FakeOutputConfig)) {
         self.shared.update(|state| change(&mut state.config));
+    }
+
+    /// The open stream's `is_device_still_present` answers `false` from now on (the device is
+    /// dying but still listed and its stream has not failed yet). Reset by the next open.
+    pub fn mark_stream_device_gone(&self) {
+        self.shared
+            .update(|state| state.is_stream_device_gone = true);
     }
 
     /// Changes the device list (for example which device is the system default), then calls
@@ -371,7 +385,20 @@ impl AudioOutput for FakeOutput {
             state.negotiated_streams.push(negotiated.clone());
             state.injected_failure = None;
             state.stream_request = StreamRequest::NotStarted;
+            state.is_stream_device_gone = false;
         });
+        if negotiated.access_mode == DeviceAccessMode::Exclusive
+            && let Some(new_default) = config.exclusive_open_moves_default_to.clone()
+        {
+            let controller = FakeOutputController {
+                shared: Arc::clone(&self.shared),
+            };
+            controller.change_devices(|devices| {
+                for device in devices {
+                    device.is_system_default = device.id == new_default;
+                }
+            });
+        }
         let mut device = FakeDevice::new(&config, &negotiated);
         device.render_buffer(render_source.as_mut(), &self.shared);
         let shared = Arc::clone(&self.shared);
@@ -727,6 +754,10 @@ impl OutputStream for FakeStream {
         self.shared
             .update(|state| state.stream_request = StreamRequest::Run);
         Ok(())
+    }
+
+    fn is_device_still_present(&self) -> bool {
+        !self.shared.lock().is_stream_device_gone
     }
 
     fn status(&self) -> OutputStreamStatus {

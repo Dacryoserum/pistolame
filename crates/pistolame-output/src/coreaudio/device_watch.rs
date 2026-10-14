@@ -6,6 +6,13 @@
 //! delivered on the process's main run loop ("In 10.6 and later, the HAL will use the process's
 //! run loop (as defined by CFRunLoopGetMain())", `kAudioHardwarePropertyRunLoop` in
 //! `AudioHardwareDeprecated.h`), which the app's UI runs. They never reach the real-time thread.
+//!
+//! In a process that never runs its main run loop (the `play_file` example) they are not
+//! delivered. We deliberately do not set `kAudioHardwarePropertyRunLoop` to NULL to force the
+//! HAL's own thread: it is a process-wide setting that would also move every other HAL
+//! notification of the process (the stream listeners, the libraries the UI uses). Instead the
+//! engine re-reads the devices before every stream open, so such a process still opens on the
+//! current default; it only misses a change while a stream plays.
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
