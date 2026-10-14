@@ -1,23 +1,21 @@
-# Pistolame 0.3.0
+# Pistolame 0.3.1
 
-Is this file really what it claims to be? Pistolame now answers on the current-track page.
+- **Reliable updates on slow connections.** The download used to give up after five minutes
+  and showed no progress, which looked like an endless "Installation…". It now only stops
+  when nothing arrives for a minute, retries, resumes where it left off, and shows
+  "Téléchargement… 12,3 / 22,4 Mo".
+- **Windows**: no console window flashes while downloading updates or artist photos.
 
-- **Authenticity**, with the analysis engine of Nyquist (same author): a four-state verdict on
-  lossy-to-lossless transcodes, always with its evidence, plus padded bit depth ("24-bit"
-  files holding 16-bit audio), limited bandwidth, clipping, DR, loudness (LUFS), true peak and
-  a spectrogram. "Indéterminé" is the honest default: nothing is claimed without evidence. For
-  the full report, open the file in Nyquist.
-- **A cleaner current-track page**: the track, then every fact about its file (format,
-  resolution, rate, bitrate, size, channels, samples, MD5, path), then the signal path,
-  authenticity and spectrogram as you scroll.
-- **Several artists per album**: a "Various Artists" compilation can list its real artists
-  (suggested from its tracks) and shows up under each of them.
-- **Artist photos** in the Artists view, found on Deezer (only artist names are sent) and kept
-  in the library. Can be turned off in Réglages.
-
-Known limits: no gapless playback yet; Linux has no audio backend. Windows builds are unsigned.
+This fix applies to updates *from* 0.3.1 onwards. If an update to 0.3.1 stalls on a slow
+connection, try again later or download it from this page.
 
 # Changelog
+
+## 0.3.1
+
+### Fixes
+- updates no longer give up after five minutes on a slow connection: a download stops only when it stalls, resumes where it left off, and shows its progress
+- no console window flashes on Windows while downloading updates or artist photos
 
 ## 0.3.0
 
