@@ -1584,37 +1584,6 @@ export component AlbumDetail inherits Rectangle {
     }
 }
 
-export component PlaceholderView inherits Rectangle {
-    in property <string> title;
-    in property <image> icon;
-    Txt {
-        role: TextRole.display;
-        x: 32px;
-        y: 24px;
-        width: root.width - 64px;
-        text: root.title;
-    }
-
-    VerticalLayout {
-        y: 172px;
-        height: 80px;
-        spacing: 12px;
-        alignment: start;
-        Icon {
-            height: 32px;
-            source: root.icon;
-            colorize: Tokens.text-tertiary;
-        }
-
-        Txt {
-            text: "Cette fonctionnalité n'est pas encore disponible.";
-            horizontal-alignment: center;
-            color: Tokens.text-secondary;
-        }
-    }
-}
-
-
 // A grouped list in the style of the system settings: rounded card, hairline separators.
 component SettingsCard inherits Rectangle {
     background: Tokens.fill-row-zebra;
@@ -1836,6 +1805,7 @@ export component OutputSettings inherits Rectangle {
                         { keys: AppState.shortcut-modifier + "L", action: "Morceau en cours" },
                         { keys: AppState.shortcut-modifier + "1 à " + AppState.shortcut-modifier + "4", action: "Ajouts récents, Artistes, Albums, Morceaux" },
                         { keys: AppState.shortcut-modifier + ",", action: "Réglages" },
+                        { keys: AppState.shortcut-modifier + "[  /  " + AppState.shortcut-modifier + "]", action: "Page précédente / suivante (souris : boutons 4 et 5)" },
                         { keys: AppState.shortcut-modifier + "O  /  " + AppState.shortcut-modifier + "⇧O", action: "Ajouter des fichiers / un dossier" },
                         { keys: "Échap", action: "Revenir en arrière" },
                     ]: HorizontalLayout {

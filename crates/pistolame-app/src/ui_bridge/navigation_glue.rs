@@ -140,12 +140,23 @@ impl UiBridge {
         }
     }
 
+    /// True while a modal sheet (album editor, playlist editor, add-to-playlist) is open: Back
+    /// and Forward from keys or mouse buttons must not change the page behind it.
+    fn is_modal_sheet_open(state: &AppState<'_>) -> bool {
+        state.get_is_album_editor_open()
+            || state.get_is_playlist_editor_open()
+            || state.get_is_add_to_playlist_open()
+    }
+
     /// Returns to the previous available page, restoring its state and scroll.
     pub(super) fn navigate_back(&self) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
         let state = window.global::<AppState>();
+        if Self::is_modal_sheet_open(&state) {
+            return;
+        }
         let leaving_content_y =
             Self::read_content_y(&state, &self.navigation.borrow().current().page);
         let has_moved = self
@@ -165,6 +176,9 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
+        if Self::is_modal_sheet_open(&state) {
+            return;
+        }
         let leaving_content_y =
             Self::read_content_y(&state, &self.navigation.borrow().current().page);
         let has_moved = self

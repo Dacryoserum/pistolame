@@ -263,7 +263,7 @@ impl UiBridge {
 
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {
         self.show_volume();
-        crate::file_drop::install(window, self.dropped_paths.clone());
+        crate::window_events::install(window, self.dropped_paths.clone());
         let state = window.global::<AppState>();
         let handle = self.clone();
         state.on_import_files(move || {

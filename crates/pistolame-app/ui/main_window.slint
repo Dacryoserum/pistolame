@@ -32,8 +32,6 @@ export component AppWindow inherits Window {
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
-    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Réglages", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
-    property <[image]> item-icons: [Icons.clock-counter-clockwise, Icons.microphone-stage, Icons.vinyl-record, Icons.music-note, Icons.seal-check, Icons.waveform, Icons.speaker-hifi, Icons.playlist, Icons.playlist, Icons.playlist];
 
     // The std widgets (scrollbars) follow the theme through the Palette global.
     changed is-dark => {
@@ -52,12 +50,38 @@ export component AppWindow inherits Window {
         }
     }
 
-    function close-popover-or-go-back() {
+    // Closes the topmost open overlay, in z-order; false when nothing was open.
+    function close-topmost-overlay() -> bool {
         if AppState.is-popover-open {
             AppState.is-popover-open = false;
-        } else if AppState.view == ViewKind.detail || AppState.view == ViewKind.now-playing {
-            AppState.navigate-back();
+            return true;
         }
+        if AppState.is-album-editor-open {
+            AppState.cancel-album-edit();
+            return true;
+        }
+        if AppState.is-add-to-playlist-open {
+            AppState.is-add-to-playlist-open = false;
+            return true;
+        }
+        if AppState.is-playlist-editor-open {
+            AppState.is-playlist-editor-open = false;
+            return true;
+        }
+        if AppState.is-queue-open {
+            AppState.is-queue-open = false;
+            return true;
+        }
+        if AppState.is-update-panel-open {
+            AppState.is-update-panel-open = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Back and Forward are ignored while a modal sheet is open (the Rust side guards too).
+    function is-modal-sheet-open() -> bool {
+        AppState.is-album-editor-open || AppState.is-playlist-editor-open || AppState.is-add-to-playlist-open
     }
 
     key-scope := FocusScope {
@@ -66,8 +90,20 @@ export component AppWindow inherits Window {
                 AppState.toggle-play();
                 return accept;
             }
+            // Back and Forward come before the Escape test: Ctrl+[ arrives as ASCII ESC ("\u{1b}") and
+            // Ctrl+] as "\u{1d}" on Windows and Linux. Slint reports Command as `control` on macOS.
+            if (event.modifiers.control && (event.text == "[" || event.text == "\u{1b}")) || (event.modifiers.alt && event.text == Key.LeftArrow) {
+                if !root.is-modal-sheet-open() { AppState.navigate-back(); }
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "]" || event.text == "\u{1d}")) || (event.modifiers.alt && event.text == Key.RightArrow) {
+                if !root.is-modal-sheet-open() { AppState.navigate-forward(); }
+                return accept;
+            }
             if event.text == Key.Escape {
-                root.close-popover-or-go-back();
+                if !root.close-topmost-overlay() && AppState.is-sub-page {
+                    AppState.navigate-back();
+                }
                 return accept;
             }
             if event.modifiers.control && (event.text == "t" || event.text == "T" || event.text == "\u{14}") {
@@ -413,39 +449,8 @@ export component AppWindow inherits Window {
                 }
             }
 
-            SidebarHeader {
-                y: 212px;
-                text: "Analyse";
-            }
-
             SidebarItem {
-                y: 236px;
-                icon: Icons.seal-check;
-                label: "Authenticité";
-                // No page of its own any more (T4 removes the entry): the analysis lives in the
-                // current-track page.
-                is-selected: false;
-                clicked => {
-                    AppState.show-now-playing();
-                    key-scope.focus();
-                }
-            }
-
-            SidebarItem {
-                y: 264px;
-                icon: Icons.waveform;
-                label: "Spectrogrammes";
-                // No page of its own any more (T4 removes the entry): the analysis lives in the
-                // current-track page.
-                is-selected: false;
-                clicked => {
-                    AppState.show-now-playing();
-                    key-scope.focus();
-                }
-            }
-
-            SidebarItem {
-                y: 292px;
+                y: 196px;
                 icon: Icons.sliders-horizontal;
                 label: "Réglages";
                 is-selected: AppState.section == SidebarSection.settings;
@@ -456,13 +461,13 @@ export component AppWindow inherits Window {
             }
 
             SidebarHeader {
-                y: 336px;
+                y: 240px;
                 text: "Playlists";
             }
 
             IconButton {
                 x: 196px;
-                y: 332px;
+                y: 236px;
                 width: 24px;
                 height: 24px;
                 icon: Icons.plus;
@@ -476,7 +481,7 @@ export component AppWindow inherits Window {
             }
 
             for item[index] in AppState.playlists: SidebarItem {
-                y: 360px + 28px * index;
+                y: 264px + 28px * index;
                 icon: Icons.playlist;
                 artwork: item.artwork;
                 label: item.name;

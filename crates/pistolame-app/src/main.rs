@@ -23,6 +23,7 @@ mod ui_bridge;
 #[cfg(test)]
 mod ui_preview;
 mod updater;
+mod window_events;
 
 #[allow(
     missing_docs,
