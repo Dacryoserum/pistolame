@@ -1,15 +1,35 @@
-# Pistolame 0.3.1
+# Pistolame 0.4.0
 
-- **Reliable updates on slow connections.** The download used to give up after five minutes
-  and showed no progress, which looked like an endless "Installation…". It now only stops
-  when nothing arrives for a minute, retries, resumes where it left off, and shows
-  "Téléchargement… 12,3 / 22,4 Mo".
-- **Windows**: no console window flashes while downloading updates or artist photos.
+Getting around, the way you expect.
 
-This fix applies to updates *from* 0.3.1 onwards. If an update to 0.3.1 stalls on a slow
-connection, try again later or download it from this page.
+- **Back takes you back.** Open an album from Artistes, Morceaux, a search, Ajouts récents, a
+  playlist or the current-track page: Back returns there, with the same filter, search and
+  scroll position. Chains unwind step by step (album → artist → album, Back, Back), and Forward
+  re-applies what you left.
+- **Shortcuts**: Cmd+[ / Cmd+] (Ctrl elsewhere), Alt+← / Alt+→, and the side buttons of your
+  mouse.
+- **Escape** closes what is open first (menu, album editor, queue panel…), then goes back.
+- **The sidebar always shows where you are**, and Pistolame reopens on your last library section.
+- **Add music from the Albums page** with the new + button. The version now shows, small, in the
+  sidebar corner.
+- The unfinished Authenticité and Spectrogrammes entries leave the sidebar; the analysis stays on
+  the current-track page.
+
+Known limits: no gapless playback yet; Linux has no audio backend. Windows builds are unsigned.
 
 # Changelog
+
+## 0.4.0
+
+### Features
+- navigation history: Back returns to the page you came from, with its filter, search and scroll; Forward re-applies it
+- back and forward with Cmd/Ctrl+[ ], Alt+arrows and the mouse side buttons
+- Escape closes the topmost panel first, then goes back
+- the sidebar always highlights where you are; reopen on the last library section
+- add music from the Albums page (+), version shown in the sidebar corner
+
+### Changes
+- the unfinished Authenticité and Spectrogrammes entries leave the sidebar (the analysis stays on the current-track page)
 
 ## 0.3.1
 

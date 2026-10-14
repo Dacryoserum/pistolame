@@ -48,11 +48,26 @@ export struct DetailInfo {
     cells: [DataCell],
 }
 
+// The page shown in the content area. Rust owns navigation and sets it (see `navigation.rs`).
 export enum ViewKind {
+    // The album grid: all albums, one artist's albums or search results.
     grid,
     detail,
-    placeholder,
     now-playing,
+    playlist,
+    recently-added,
+    artists,
+    tracks,
+    settings,
+}
+
+// The sidebar entry highlighted for the page shown (`selected-playlist` says which playlist).
+export enum SidebarSection {
+    recently-added,
+    artists,
+    albums,
+    tracks,
+    settings,
     playlist,
 }
 
@@ -161,7 +176,6 @@ export global AppState {
     in property <string> current-format;
     in property <string> current-duration;
     in property <string> current-filename;
-    in-out property <ViewKind> previous-view: ViewKind.grid;
     callback open-current-album();
     // "Modifier l'album" sheet: title, artist and cover shown in the app, stored in the
     // library; the music files are never modified.
@@ -178,6 +192,7 @@ export global AppState {
     in property <bool> editor-has-custom-artwork;
     // Playlists (stored in the library).
     in property <[PlaylistItem]> playlists;
+    // Index of the highlighted playlist while `section` is `playlist`, else -1.
     in-out property <int> selected-playlist: -1;
     in property <string> playlist-title;
     in property <string> playlist-meta;
@@ -280,7 +295,6 @@ export global AppState {
     in property <bool> is-favorites-only;
     callback toggle-favorites-only();
     callback play-library-track(int);
-    callback show-all-albums();
     // Tracks matching the search, listed under the matching albums.
     in property <[PlaylistTrackRow]> search-tracks;
     callback play-search-result(int);
@@ -290,13 +304,8 @@ export global AppState {
     callback save-album-edit();
     callback cancel-album-edit();
 
-    public function show-now-playing() {
-        if has-current-track && view != ViewKind.now-playing {
-            previous-view = view;
-            is-popover-open = false;
-            view = ViewKind.now-playing;
-        }
-    }
+    // Opens the current-track page (LCD title, Cmd+L); Rust ignores it when nothing plays.
+    callback show-now-playing();
 
     // Filled by Rust.
     in property <[AlbumCard]> albums;
@@ -335,14 +344,32 @@ export global AppState {
     in property <bool> is-volume-muted;
     in property <string> volume-label: "0 dB";
     in property <string> volume-description;
-    in-out property <int> selected-item: 2;
     in-out property <ViewKind> view: ViewKind.grid;
+    in property <SidebarSection> section: SidebarSection.albums;
     in-out property <bool> is-popover-open;
     in-out property <bool> is-shuffle-on;
     in-out property <bool> is-repeat-on;
+    // Scroll offset of each page (content-y, <= 0), two-way bound in its component so Rust can
+    // store it when the page is left and restore it on Back/Forward.
     in-out property <length> grid-scroll-y;
     in-out property <length> detail-scroll-y;
+    in-out property <length> artists-scroll-y;
+    in-out property <length> tracks-scroll-y;
+    in-out property <length> recent-scroll-y;
+    in-out property <length> playlist-scroll-y;
+    in-out property <length> now-playing-scroll-y;
+    in-out property <length> settings-scroll-y;
     in-out property <string> query;
+
+    // Navigation history, owned by Rust: Back/Forward availability, whether the page is a
+    // sub-page (Escape goes back from it) and the name of the page Back returns to.
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in property <bool> is-sub-page;
+    in property <string> back-label;
+    callback navigate-to-section(SidebarSection);
+    callback navigate-back();
+    callback navigate-forward();
 
     // Events handled by Rust.
     callback search-changed(string);
@@ -358,33 +385,4 @@ export global AppState {
     callback toggle-theme();
     // "⌘" on macOS, "Ctrl+" elsewhere, for the shortcut list.
     in property <string> shortcut-modifier: "Ctrl+";
-
-    public function select-item(item: int) {
-        selected-item = item;
-        is-popover-open = false;
-        view = item == 2 ? ViewKind.grid : ViewKind.placeholder;
-        if item == 2 && artist-filter != "" {
-            artist-filter = "";
-            show-all-albums();
-        }
-    }
-
-    public function show-album(catalog-index: int) {
-        view = ViewKind.detail;
-        detail-scroll-y = 0px;
-        open-album(catalog-index);
-    }
-
-    public function go-back() {
-        view = view == ViewKind.now-playing ? previous-view : ViewKind.grid;
-    }
-
-    public function edit-query(text: string) {
-        query = text;
-        artist-filter = "";
-        selected-item = 2;
-        view = ViewKind.grid;
-        grid-scroll-y = 0px;
-        search-changed(text);
-    }
 }

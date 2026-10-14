@@ -223,8 +223,10 @@ export component SearchField inherits Rectangle {
         selection-background-color: Tokens.accent.with-alpha(0.35);
         selection-foreground-color: Tokens.text-primary;
         accessible-label: "Rechercher";
+        // Two-way: a route that changes the query (Back, "Aller à l'artiste") updates the field.
+        text <=> AppState.query;
         edited => {
-            AppState.edit-query(self.text);
+            AppState.search-changed(self.text);
         }
     }
 }
@@ -1081,8 +1083,8 @@ export component AlbumsGrid inherits Rectangle {
     if AppState.artist-filter != "": IconButton {
         x: 26px; y: 26px; width: 28px; height: 28px;
         icon: Icons.caret-left; icon-color: Tokens.accent;
-        label: "Retour aux artistes";
-        clicked => { AppState.select-item(1); }
+        label: "Retour : " + AppState.back-label;
+        clicked => { AppState.navigate-back(); }
     }
     Txt {
         role: TextRole.display;
@@ -1124,6 +1126,38 @@ export component AlbumsGrid inherits Rectangle {
         sort-touch := TouchArea { mouse-cursor: pointer; clicked => { sort-menu.show(); } }
     }
 
+    // "+" next to the sort menu: add music once the library is no longer empty.
+    add-button := IconButton {
+        x: sort-button.x - 8px - self.width;
+        y: 26px;
+        width: 28px;
+        height: 28px;
+        icon: Icons.plus;
+        icon-color: Tokens.accent;
+        label: "Ajouter de la musique";
+        clicked => { add-menu.show(); }
+    }
+
+    add-menu := PopupWindow {
+        x: add-button.x + add-button.width - 220px;
+        y: 58px;
+        width: 220px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                MenuRow { icon: Icons.vinyl-record; label: "Ajouter un dossier…"; clicked => { AppState.import-folder(); } }
+                MenuRow { icon: Icons.music-note; label: "Ajouter des fichiers…"; clicked => { AppState.import-files(); } }
+            }
+        }
+    }
+
     sort-menu := PopupWindow {
         x: root.width - 32px - 220px;
         y: 58px;
@@ -1163,7 +1197,7 @@ export component AlbumsGrid inherits Rectangle {
                         tile: root.tile;
                         album: AppState.albums[item-index * root.columns + column];
                         open => {
-                            AppState.show-album(self.album.catalog-index);
+                            AppState.open-album(self.album.catalog-index);
                         }
                         play => {
                             AppState.play-track(self.album.catalog-index, 0);
@@ -1257,9 +1291,9 @@ export component AlbumDetail inherits Rectangle {
             border-radius: 6px;
             background: back-touch.pressed ? Tokens.fill-row-pressed : back-touch.has-hover ? Tokens.fill-row-hover : transparent;
             accessible-role: button;
-            accessible-label: "Retour aux albums";
+            accessible-label: "Retour : " + AppState.back-label;
             accessible-action-default => {
-                AppState.go-back();
+                AppState.navigate-back();
             }
             back-row := HorizontalLayout {
                 padding-left: 6px;
@@ -1274,14 +1308,14 @@ export component AlbumDetail inherits Rectangle {
                 Txt {
                     role: TextRole.body-medium;
                     height: 28px;
-                    text: "Albums";
+                    text: AppState.back-label;
                     color: Tokens.accent;
                 }
             }
 
             back-touch := TouchArea {
                 clicked => {
-                    AppState.go-back();
+                    AppState.navigate-back();
                 }
             }
         }
@@ -1550,37 +1584,6 @@ export component AlbumDetail inherits Rectangle {
     }
 }
 
-export component PlaceholderView inherits Rectangle {
-    in property <string> title;
-    in property <image> icon;
-    Txt {
-        role: TextRole.display;
-        x: 32px;
-        y: 24px;
-        width: root.width - 64px;
-        text: root.title;
-    }
-
-    VerticalLayout {
-        y: 172px;
-        height: 80px;
-        spacing: 12px;
-        alignment: start;
-        Icon {
-            height: 32px;
-            source: root.icon;
-            colorize: Tokens.text-tertiary;
-        }
-
-        Txt {
-            text: "Cette fonctionnalité n'est pas encore disponible.";
-            horizontal-alignment: center;
-            color: Tokens.text-secondary;
-        }
-    }
-}
-
-
 // A grouped list in the style of the system settings: rounded card, hairline separators.
 component SettingsCard inherits Rectangle {
     background: Tokens.fill-row-zebra;
@@ -1641,6 +1644,7 @@ component FolderRow inherits Rectangle {
 
 export component OutputSettings inherits Rectangle {
     ScrollView {
+        content-y <=> AppState.settings-scroll-y;
         VerticalLayout {
             alignment: start;
             spacing: 12px;
@@ -1801,6 +1805,7 @@ export component OutputSettings inherits Rectangle {
                         { keys: AppState.shortcut-modifier + "L", action: "Morceau en cours" },
                         { keys: AppState.shortcut-modifier + "1 à " + AppState.shortcut-modifier + "4", action: "Ajouts récents, Artistes, Albums, Morceaux" },
                         { keys: AppState.shortcut-modifier + ",", action: "Réglages" },
+                        { keys: AppState.shortcut-modifier + "[  /  " + AppState.shortcut-modifier + "]", action: "Page précédente / suivante (souris : boutons 4 et 5)" },
                         { keys: AppState.shortcut-modifier + "O  /  " + AppState.shortcut-modifier + "⇧O", action: "Ajouter des fichiers / un dossier" },
                         { keys: "Échap", action: "Revenir en arrière" },
                     ]: HorizontalLayout {
@@ -1878,6 +1883,7 @@ component VerdictPill inherits Rectangle {
 // analysis) and spectrogram.
 export component NowPlaying inherits Rectangle {
     ScrollView {
+        content-y <=> AppState.now-playing-scroll-y;
         VerticalLayout {
             alignment: start;
             padding-left: 32px;
@@ -1893,7 +1899,7 @@ export component NowPlaying inherits Rectangle {
                     width: 28px; height: 28px;
                     icon: Icons.caret-left; icon-color: Tokens.accent;
                     label: "Retour à la vue précédente";
-                    clicked => { AppState.go-back(); }
+                    clicked => { AppState.navigate-back(); }
                 }
                 Txt { height: 28px; vertical-alignment: center; text: "À l'écoute"; color: Tokens.text-secondary; }
             }
@@ -2180,6 +2186,7 @@ export component AlbumEditor inherits Rectangle {
 export component PlaylistView inherits Rectangle {
     property <length> list-width: root.width - 64px;
     ScrollView {
+        content-y <=> AppState.playlist-scroll-y;
         content-height: 150px + 36px * AppState.playlist-tracks.length + 32px;
         Rectangle {
             x: 32px; y: 24px; width: 56px; height: 56px;
@@ -2592,6 +2599,7 @@ export component ArtistsView inherits Rectangle {
     ListView {
         y: 76px;
         height: root.height - 76px;
+        content-y <=> AppState.artists-scroll-y;
         for row-index in root.row-count: Rectangle {
             height: root.tile + 76px;
             for column in root.columns: Rectangle {
@@ -2765,6 +2773,7 @@ export component TracksView inherits Rectangle {
         y: 116px;
         width: root.width - 64px;
         height: root.height - 116px;
+        content-y <=> AppState.tracks-scroll-y;
         for track[index] in AppState.library-tracks: LibraryTrackLine {
             track: track;
             is-odd: Math.mod(index, 2) == 1;
@@ -2803,7 +2812,7 @@ component AlbumShelf inherits Rectangle {
         y: Math.floor(index / root.columns) * root.pitch;
         tile: root.tile;
         album: album;
-        open => { AppState.show-album(album.catalog-index); }
+        open => { AppState.open-album(album.catalog-index); }
         play => { AppState.play-track(album.catalog-index, 0); }
     }
 }
@@ -2817,6 +2826,7 @@ export component RecentView inherits Rectangle {
     Flickable {
         y: 76px;
         height: root.height - 76px;
+        content-y <=> AppState.recent-scroll-y;
         // Same top margin as the album grid's first row.
         content-height: 12px + added.height + (AppState.recently-played-albums.length > 0 ? 56px + played.height : 0px) + 32px;
         added := AlbumShelf {

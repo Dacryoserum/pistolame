@@ -2,7 +2,6 @@
 use crate::{
     AlbumCard, AppState, AppWindow, ArtistCard, DetailInfo, LibraryTrackRow, PathStep,
     PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget,
-    ViewKind,
 };
 use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -15,6 +14,9 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+
+mod navigation_glue;
+pub(crate) use navigation_glue::slint_sidebar_section;
 
 struct Album {
     key: AlbumKey,
@@ -106,6 +108,8 @@ pub(crate) struct UiBridge {
     last_assessment: RefCell<Option<SignalPathAssessment>>,
     state: Cell<PlaybackState>,
     track_id: Cell<Option<TrackId>>,
+    /// False for debug and preview runs, which must not overwrite the user's saved start section.
+    should_remember_start_section: Cell<bool>,
     sample_rate_hz: Cell<u32>,
     total_frames: Cell<u64>,
     underrun_baseline: Cell<u64>,
@@ -146,6 +150,10 @@ pub(crate) struct UiBridge {
     is_session_restored: Cell<bool>,
     last_saved_session: RefCell<Option<crate::session::Session>>,
     next_session_save: Cell<std::time::Instant>,
+    /// Back/Forward history of the pages shown (see `navigation_glue`).
+    navigation: RefCell<crate::navigation::NavigationHistory>,
+    /// Counts the routes shown, so a delayed scroll restore never lands on a newer route.
+    route_generation: Rc<Cell<u64>>,
 }
 
 /// How often the session (queue, position) is written while the app runs.
@@ -162,6 +170,7 @@ impl UiBridge {
         library_database: Option<PathBuf>,
     ) -> anyhow::Result<Rc<Self>> {
         let settings = AppSettings::load();
+        let start_page = navigation_glue::start_page(&settings);
         let engine = EngineHandle::start(
             pistolame_output::platform_default_output(),
             DecoderRegistry::default(),
@@ -194,6 +203,7 @@ impl UiBridge {
             pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
+            should_remember_start_section: Cell::new(true),
             sample_rate_hz: Cell::new(0),
             total_frames: Cell::new(0),
             underrun_baseline: Cell::new(0),
@@ -227,6 +237,8 @@ impl UiBridge {
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
             next_session_save: Cell::new(std::time::Instant::now()),
+            navigation: RefCell::new(crate::navigation::NavigationHistory::new(start_page)),
+            route_generation: Rc::new(Cell::new(0)),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -252,9 +264,14 @@ impl UiBridge {
         Ok(bridge)
     }
 
+    /// Stops navigation from saving the start section (debug and preview runs).
+    pub(crate) fn disable_remembering_start_section(&self) {
+        self.should_remember_start_section.set(false);
+    }
+
     pub(crate) fn connect(self: &Rc<Self>, window: &AppWindow) {
         self.show_volume();
-        crate::file_drop::install(window, self.dropped_paths.clone());
+        crate::window_events::install(window, self.dropped_paths.clone());
         let state = window.global::<AppState>();
         let handle = self.clone();
         state.on_import_files(move || {
@@ -275,8 +292,6 @@ impl UiBridge {
             }
         });
         let handle = self.clone();
-        state.on_search_changed(move |query| handle.update_grid(query.as_str()));
-        let handle = self.clone();
         state.on_volume_changed(move |decibels, is_muted| {
             handle.set_shared_mode_volume(SharedModeVolume {
                 is_muted,
@@ -284,6 +299,7 @@ impl UiBridge {
             });
         });
         self.connect_playlists(&state);
+        self.connect_navigation(&state);
         state.set_album_sort_labels(ModelRc::new(VecModel::from(
             crate::album_sort::AlbumSort::ALL
                 .iter()
@@ -344,14 +360,6 @@ impl UiBridge {
             if let Ok(index) = usize::try_from(index) {
                 let paths = handle.library_tracks.borrow().clone();
                 handle.play_context(paths, index, "Morceaux".into());
-            }
-        });
-        let handle = self.clone();
-        state.on_open_artist(move |index| handle.open_artist(index));
-        let handle = self.clone();
-        state.on_show_all_albums(move || {
-            if let Some(window) = handle.window.upgrade() {
-                handle.update_grid(window.global::<AppState>().get_query().as_str());
             }
         });
         let handle = self.clone();
@@ -457,23 +465,6 @@ impl UiBridge {
         let handle = self.clone();
         state.on_cancel_album_edit(move || handle.close_album_editor());
         let handle = self.clone();
-        state.on_open_current_album(move || {
-            if let Some((album, _)) = handle.selected_track.get() {
-                handle.show_album(album);
-                if let Some(window) = handle.window.upgrade() {
-                    let state = window.global::<AppState>();
-                    state.set_detail_scroll_y(0.0);
-                    state.set_view(crate::ViewKind::Detail);
-                }
-            }
-        });
-        let handle = self.clone();
-        state.on_open_album(move |album| {
-            if let Ok(album) = usize::try_from(album) {
-                handle.show_album(album);
-            }
-        });
-        let handle = self.clone();
         state.on_play_track(move |album, track| {
             if let (Ok(album), Ok(track)) = (usize::try_from(album), usize::try_from(track)) {
                 handle.play_track(album, track);
@@ -542,6 +533,8 @@ impl UiBridge {
                 window.global::<AppState>().set_show_exclusive_notice(false);
             }
         });
+        // Opens on the remembered library section (`start_section` in the settings).
+        self.apply_current_route();
     }
 
     fn save_settings(&self) {
@@ -896,6 +889,8 @@ impl UiBridge {
             state.set_playing_album_index(album);
             state.set_playing_track_index(track);
         }
+        // Before the playlists are redrawn: the open playlist's index may have moved.
+        self.synchronize_navigation_with_library();
         self.show_playlists();
         self.show_artists();
         self.show_library_tracks();
@@ -1369,21 +1364,6 @@ impl UiBridge {
         self.open_artist_named(&artist.name);
     }
 
-    /// Shows the albums of `artist` (an album artist, as displayed) in the grid.
-    fn open_artist_named(&self, artist: &str) {
-        let Some(window) = self.window.upgrade() else {
-            return;
-        };
-        let state = window.global::<AppState>();
-        state.set_is_popover_open(false);
-        state.set_query("".into());
-        state.set_artist_filter(artist.into());
-        state.set_selected_item(2);
-        state.set_grid_scroll_y(0.0);
-        state.set_view(ViewKind::Grid);
-        self.update_grid("");
-    }
-
     /// The file playing now, if any.
     fn current_path(&self) -> Option<PathBuf> {
         self.selected_track.get().and_then(|(album, track)| {
@@ -1763,11 +1743,7 @@ impl UiBridge {
                     return;
                 };
                 if action == TrackAction::GoToAlbum {
-                    if let Some(window) = self.window.upgrade() {
-                        window
-                            .global::<AppState>()
-                            .invoke_show_album(album_index as i32);
-                    }
+                    self.open_album_at(album_index);
                 } else {
                     let artist = self
                         .albums
@@ -2132,12 +2108,6 @@ impl UiBridge {
         let handle = self.clone();
         state.on_create_playlist(move || handle.create_playlist(Vec::new(), true));
         let handle = self.clone();
-        state.on_open_playlist(move |index| {
-            if let Ok(index) = usize::try_from(index) {
-                handle.open_playlist(index);
-            }
-        });
-        let handle = self.clone();
         state.on_play_playlist_row(move |row| {
             if let Ok(row) = usize::try_from(row) {
                 handle.play_playlist_row(row);
@@ -2217,17 +2187,6 @@ impl UiBridge {
         let window = self.window.upgrade()?;
         let index = usize::try_from(window.global::<AppState>().get_selected_playlist()).ok()?;
         (index < self.playlists.borrow().len()).then_some(index)
-    }
-
-    fn open_playlist(&self, index: usize) {
-        let Some(window) = self.window.upgrade() else {
-            return;
-        };
-        let state = window.global::<AppState>();
-        state.set_selected_playlist(index as i32);
-        state.set_is_popover_open(false);
-        state.set_view(ViewKind::Playlist);
-        self.refresh_playlist_view();
     }
 
     /// The entries of playlist `index` still in the library, with their position among all
@@ -2507,8 +2466,8 @@ impl UiBridge {
         }
         self.playlists.borrow_mut().remove(index);
         state.set_is_playlist_editor_open(false);
-        state.set_selected_playlist(-1);
-        state.invoke_select_item(2);
+        // Leaves the deleted playlist (Back, else the album grid) and forgets it in the history.
+        self.synchronize_navigation_with_library();
         self.show_playlists();
     }
 

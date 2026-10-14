@@ -21,18 +21,9 @@ mod tests {
         window
             .window()
             .set_size(slint::LogicalSize::new(width, height));
-        state.set_has_current_track(false);
-        state.invoke_show_now_playing();
-        assert_eq!(state.get_view(), ViewKind::Grid);
+        // Navigation (now playing, Back) is owned by Rust and tested in `navigation.rs`; this
+        // fixture only sets the view it renders.
         state.set_has_current_track(true);
-        for view in [ViewKind::Grid, ViewKind::Detail, ViewKind::Placeholder] {
-            state.set_view(view);
-            state.invoke_show_now_playing();
-            assert_eq!(state.get_view(), ViewKind::NowPlaying);
-            state.invoke_show_now_playing();
-            state.invoke_go_back();
-            assert_eq!(state.get_view(), view);
-        }
         state.set_view(ViewKind::Grid);
         let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(32, 32);
         for (index, pixel) in pixels.make_mut_slice().iter_mut().enumerate() {
@@ -94,7 +85,7 @@ mod tests {
             state.set_current_filename("02 - Morceau témoin.flac".into());
             state.set_transmission_text("Transmission : aucune lecture".into());
             state.set_integrity_text("Fichier : aucune lecture".into());
-            state.invoke_show_now_playing();
+            state.set_view(ViewKind::NowPlaying);
             state.set_path_steps(ModelRc::new(VecModel::from(
                 ["Source", "Décodage", "Volume", "Sortie", "DAC"]
                     .map(|label| PathStep {

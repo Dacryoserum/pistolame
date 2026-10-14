@@ -3,11 +3,11 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, PlaceholderView, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
-import { AppState, ViewKind } from "state.slint";
+import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
+import { AppState, SidebarSection, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export { AlbumCard, AppState, ArtistCard, LibraryTrackRow, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, ViewKind } from "state.slint";
+export { AlbumCard, AppState, ArtistCard, LibraryTrackRow, DataCell, DetailInfo, PathStep, PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget, SidebarSection, ViewKind } from "state.slint";
 export { Tokens } from "tokens.slint";
 
 export component AppWindow inherits Window {
@@ -32,8 +32,6 @@ export component AppWindow inherits Window {
     property <length> side-gap: (root.toolbar-width - 20px - 172px - root.right-group-width - 20px - root.lcd-width) / 2;
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
-    property <[string]> item-labels: ["Ajouts récents", "Artistes", "Albums", "Morceaux", "Authenticité", "Spectrogrammes", "Réglages", "Écoute critique", "Hi-Res 24/192", "Vinyles numérisés"];
-    property <[image]> item-icons: [Icons.clock-counter-clockwise, Icons.microphone-stage, Icons.vinyl-record, Icons.music-note, Icons.seal-check, Icons.waveform, Icons.speaker-hifi, Icons.playlist, Icons.playlist, Icons.playlist];
 
     // The std widgets (scrollbars) follow the theme through the Palette global.
     changed is-dark => {
@@ -52,12 +50,38 @@ export component AppWindow inherits Window {
         }
     }
 
-    function close-popover-or-go-back() {
+    // Closes the topmost open overlay, in z-order; false when nothing was open.
+    function close-topmost-overlay() -> bool {
         if AppState.is-popover-open {
             AppState.is-popover-open = false;
-        } else if AppState.view == ViewKind.detail || AppState.view == ViewKind.now-playing {
-            AppState.go-back();
+            return true;
         }
+        if AppState.is-album-editor-open {
+            AppState.cancel-album-edit();
+            return true;
+        }
+        if AppState.is-add-to-playlist-open {
+            AppState.is-add-to-playlist-open = false;
+            return true;
+        }
+        if AppState.is-playlist-editor-open {
+            AppState.is-playlist-editor-open = false;
+            return true;
+        }
+        if AppState.is-queue-open {
+            AppState.is-queue-open = false;
+            return true;
+        }
+        if AppState.is-update-panel-open {
+            AppState.is-update-panel-open = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Back and Forward are ignored while a modal sheet is open (the Rust side guards too).
+    function is-modal-sheet-open() -> bool {
+        AppState.is-album-editor-open || AppState.is-playlist-editor-open || AppState.is-add-to-playlist-open
     }
 
     key-scope := FocusScope {
@@ -66,8 +90,24 @@ export component AppWindow inherits Window {
                 AppState.toggle-play();
                 return accept;
             }
+            // Back and Forward come before the Escape test: Ctrl+[ arrives as ASCII ESC ("\u{1b}") and
+            // Ctrl+] as "\u{1d}" on Windows and Linux. Slint reports Command as `control` on macOS.
+            if (event.modifiers.control && (event.text == "[" || event.text == "\u{1b}")) || (event.modifiers.alt && !event.modifiers.control && event.text == Key.LeftArrow) {
+                if !root.is-modal-sheet-open() { AppState.navigate-back(); }
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "]" || event.text == "\u{1d}")) || (event.modifiers.alt && !event.modifiers.control && event.text == Key.RightArrow) {
+                if !root.is-modal-sheet-open() { AppState.navigate-forward(); }
+                return accept;
+            }
+            // PopupWindow menus (sort, "+", "…") never reach this branch: in Slint 1.18 `show()`
+            // takes the window's keyboard focus away until the popup closes, so Escape finds no
+            // focused item and falls back to closing the topmost popup, then focus goes back to
+            // the item that had it (this scope). No menu flag is needed here.
             if event.text == Key.Escape {
-                root.close-popover-or-go-back();
+                if !root.close-topmost-overlay() && AppState.is-sub-page {
+                    AppState.navigate-back();
+                }
                 return accept;
             }
             if event.modifiers.control && (event.text == "t" || event.text == "T" || event.text == "\u{14}") {
@@ -86,11 +126,11 @@ export component AppWindow inherits Window {
             if event.modifiers.control && event.text == Key.UpArrow { root.step-volume(1); return accept; }
             if event.modifiers.control && event.text == Key.DownArrow { root.step-volume(-1); return accept; }
             if event.modifiers.control && (event.text == "l" || event.text == "L") { AppState.show-now-playing(); return accept; }
-            if event.modifiers.control && event.text == "," { AppState.select-item(6); return accept; }
-            if event.modifiers.control && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4") {
-                AppState.select-item(event.text.to-float() - 1);
-                return accept;
-            }
+            if event.modifiers.control && event.text == "," { AppState.navigate-to-section(SidebarSection.settings); return accept; }
+            if event.modifiers.control && event.text == "1" { AppState.navigate-to-section(SidebarSection.recently-added); return accept; }
+            if event.modifiers.control && event.text == "2" { AppState.navigate-to-section(SidebarSection.artists); return accept; }
+            if event.modifiers.control && event.text == "3" { AppState.navigate-to-section(SidebarSection.albums); return accept; }
+            if event.modifiers.control && event.text == "4" { AppState.navigate-to-section(SidebarSection.tracks); return accept; }
             return reject;
         }
 
@@ -121,19 +161,13 @@ export component AppWindow inherits Window {
 
             PlaylistView { visible: AppState.view == ViewKind.playlist; }
 
-            ArtistsView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 1; }
-            TracksView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 3; }
-            RecentView { visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 0; }
-
-            PlaceholderView {
-                visible: AppState.view == ViewKind.placeholder && AppState.selected-item > 3 && AppState.selected-item != 6;
-                title: root.item-labels[AppState.selected-item];
-                icon: root.item-icons[AppState.selected-item];
-            }
+            ArtistsView { visible: AppState.view == ViewKind.artists; }
+            TracksView { visible: AppState.view == ViewKind.tracks; }
+            RecentView { visible: AppState.view == ViewKind.recently-added; }
         }
 
         OutputSettings {
-            visible: AppState.view == ViewKind.placeholder && AppState.selected-item == 6;
+            visible: AppState.view == ViewKind.settings;
             x: 272px; y: 84px; width: root.width - 304px; height: root.height - 116px;
         }
         // Toolbar.
@@ -355,6 +389,16 @@ export component AppWindow inherits Window {
                 background: Tokens.separator-chrome;
             }
 
+            // The running version, small and quiet, bottom left.
+            Txt {
+                x: 20px;
+                y: parent.height - 26px;
+                role: TextRole.caption;
+                text: "v" + AppState.current-version;
+                color: Tokens.text-tertiary;
+                accessible-label: "Version " + AppState.current-version;
+            }
+
             search := SearchField {
                 x: 12px;
                 y: 16px;
@@ -369,9 +413,9 @@ export component AppWindow inherits Window {
                 y: 84px;
                 icon: Icons.clock-counter-clockwise;
                 label: "Ajouts récents";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 0;
+                is-selected: AppState.section == SidebarSection.recently-added;
                 clicked => {
-                    AppState.select-item(0);
+                    AppState.navigate-to-section(SidebarSection.recently-added);
                     key-scope.focus();
                 }
             }
@@ -380,9 +424,9 @@ export component AppWindow inherits Window {
                 y: 112px;
                 icon: Icons.microphone-stage;
                 label: "Artistes";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 1;
+                is-selected: AppState.section == SidebarSection.artists;
                 clicked => {
-                    AppState.select-item(1);
+                    AppState.navigate-to-section(SidebarSection.artists);
                     key-scope.focus();
                 }
             }
@@ -391,9 +435,9 @@ export component AppWindow inherits Window {
                 y: 140px;
                 icon: Icons.vinyl-record;
                 label: "Albums";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 2;
+                is-selected: AppState.section == SidebarSection.albums;
                 clicked => {
-                    AppState.select-item(2);
+                    AppState.navigate-to-section(SidebarSection.albums);
                     key-scope.focus();
                 }
             }
@@ -402,59 +446,32 @@ export component AppWindow inherits Window {
                 y: 168px;
                 icon: Icons.music-note;
                 label: "Morceaux";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 3;
+                is-selected: AppState.section == SidebarSection.tracks;
                 clicked => {
-                    AppState.select-item(3);
-                    key-scope.focus();
-                }
-            }
-
-            SidebarHeader {
-                y: 212px;
-                text: "Analyse";
-            }
-
-            SidebarItem {
-                y: 236px;
-                icon: Icons.seal-check;
-                label: "Authenticité";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 4;
-                clicked => {
-                    AppState.select-item(4);
+                    AppState.navigate-to-section(SidebarSection.tracks);
                     key-scope.focus();
                 }
             }
 
             SidebarItem {
-                y: 264px;
-                icon: Icons.waveform;
-                label: "Spectrogrammes";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 5;
-                clicked => {
-                    AppState.select-item(5);
-                    key-scope.focus();
-                }
-            }
-
-            SidebarItem {
-                y: 292px;
+                y: 196px;
                 icon: Icons.sliders-horizontal;
                 label: "Réglages";
-                is-selected: AppState.view != ViewKind.playlist && AppState.selected-item == 6;
+                is-selected: AppState.section == SidebarSection.settings;
                 clicked => {
-                    AppState.select-item(6);
+                    AppState.navigate-to-section(SidebarSection.settings);
                     key-scope.focus();
                 }
             }
 
             SidebarHeader {
-                y: 336px;
+                y: 240px;
                 text: "Playlists";
             }
 
             IconButton {
                 x: 196px;
-                y: 332px;
+                y: 236px;
                 width: 24px;
                 height: 24px;
                 icon: Icons.plus;
@@ -467,12 +484,14 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Items whose row would reach the version label (bottom left) are not drawn.
             for item[index] in AppState.playlists: SidebarItem {
-                y: 360px + 28px * index;
+                visible: 264px + 28px * (index + 1) <= parent.height - 40px;
+                y: 264px + 28px * index;
                 icon: Icons.playlist;
                 artwork: item.artwork;
                 label: item.name;
-                is-selected: AppState.view == ViewKind.playlist && AppState.selected-playlist == index;
+                is-selected: AppState.section == SidebarSection.playlist && AppState.selected-playlist == index;
                 clicked => {
                     AppState.open-playlist(index);
                     key-scope.focus();
