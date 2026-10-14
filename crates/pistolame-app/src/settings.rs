@@ -20,6 +20,7 @@ const SHARED_VOLUME_DECIBELS_KEY: &str = "shared_volume_db";
 const SHARED_VOLUME_MUTED_KEY: &str = "shared_volume_muted";
 const ALBUM_SORT_KEY: &str = "album_sort";
 const ARTIST_PHOTOS_KEY: &str = "artist_photos";
+const START_SECTION_KEY: &str = "start_section";
 /// Volume is stored in tenths of a decibel, so the settings stay exact integers.
 const TENTHS_PER_DECIBEL: f32 = 10.0;
 
@@ -66,6 +67,8 @@ pub struct AppSettings {
     /// Whether the user turned off artist photos (looked up online by artist name; on by
     /// default).
     pub are_artist_photos_off: bool,
+    /// Last library section shown (`SidebarSection::settings_key`), `None` for the default.
+    pub start_section: Option<String>,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
 }
@@ -199,6 +202,9 @@ impl AppSettings {
         if self.are_artist_photos_off {
             push_entry(&mut text, ARTIST_PHOTOS_KEY, FALSE_VALUE)?;
         }
+        if let Some(section) = &self.start_section {
+            push_entry(&mut text, START_SECTION_KEY, section)?;
+        }
         Ok(text)
     }
 
@@ -273,6 +279,13 @@ impl AppSettings {
 
         if let Some(value) = entries.get(ARTIST_PHOTOS_KEY) {
             settings.are_artist_photos_off = *value == FALSE_VALUE;
+        }
+
+        if let Some(value) = entries
+            .get(START_SECTION_KEY)
+            .filter(|value| !value.is_empty())
+        {
+            settings.start_section = Some((*value).to_owned());
         }
         settings.load_problem = first_problem;
         settings
@@ -382,6 +395,7 @@ mod tests {
             is_shared_volume_muted: false,
             album_sort: Some("year".to_owned()),
             are_artist_photos_off: true,
+            start_section: Some("artists".to_owned()),
             load_problem: None,
         };
         saved.save_to(&path).unwrap();
@@ -510,5 +524,22 @@ mod tests {
         assert_eq!(parsed.shared_volume_tenths_of_decibel, -125);
         assert!(parsed.is_shared_volume_muted);
         assert_eq!(parsed.shared_mode_volume().decibels, -12.5);
+    }
+
+    #[test]
+    fn start_section_round_trips() {
+        let settings = AppSettings {
+            start_section: Some("tracks".to_owned()),
+            ..AppSettings::default()
+        };
+        let parsed = AppSettings::parse(&settings.serialize().unwrap());
+        assert_eq!(parsed.start_section.as_deref(), Some("tracks"));
+    }
+
+    #[test]
+    fn empty_start_section_is_ignored() {
+        let settings = AppSettings::parse("start_section =\n");
+        assert_eq!(settings.start_section, None);
+        assert_eq!(settings.load_problem, None);
     }
 }

@@ -10,6 +10,9 @@ mod authenticity;
 mod file_drop;
 mod m3u;
 mod media_controls;
+// T3 wires the navigation module into the UI bridge; until then only tests use it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod navigation;
 mod play_queue;
 mod presentation;
 mod process;
