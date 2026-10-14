@@ -40,7 +40,7 @@ mod tests {
             let weak = window.as_weak();
             slint::Timer::single_shot(Duration::from_secs(1), move || {
                 if let Some(window) = weak.upgrade() {
-                    window.global::<AppState>().invoke_show_album(0);
+                    window.global::<AppState>().invoke_open_album(0);
                     if std::env::var_os("PISTOLAME_PREVIEW_QUALITY").is_some() {
                         window.global::<AppState>().set_detail_scroll_y(-1100.0);
                     }
@@ -48,11 +48,14 @@ mod tests {
             });
         }
         // Sidebar item to show (1 = Artistes, 3 = Morceaux, 6 = Réglages…).
-        if let Some(item) = std::env::var("PISTOLAME_PREVIEW_ITEM")
+        if let Some(section) = std::env::var("PISTOLAME_PREVIEW_ITEM")
             .ok()
             .and_then(|item| item.parse::<i32>().ok())
+            .and_then(navigation::SidebarSection::from_legacy_debug_index)
         {
-            window.global::<AppState>().invoke_select_item(item);
+            window
+                .global::<AppState>()
+                .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(section));
         }
         if std::env::var_os("PISTOLAME_PREVIEW_POPOVER").is_some() {
             window.global::<AppState>().set_is_popover_open(true);

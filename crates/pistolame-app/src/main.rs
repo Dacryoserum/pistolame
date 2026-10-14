@@ -10,8 +10,6 @@ mod authenticity;
 mod file_drop;
 mod m3u;
 mod media_controls;
-// T3 wires the navigation module into the UI bridge; until then only tests use it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod navigation;
 mod play_queue;
 mod presentation;
@@ -69,8 +67,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             });
-        } else {
-            window.global::<AppState>().invoke_select_item(item);
+        } else if let Some(section) = navigation::SidebarSection::from_legacy_debug_index(item) {
+            window
+                .global::<AppState>()
+                .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(section));
         }
     }
     let timer = slint::Timer::default();
