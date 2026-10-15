@@ -42,6 +42,14 @@ impl UiBridge {
         }
         if has_new_photo {
             self.show_artists();
+            // An artist's page shown meanwhile takes its photo too.
+            if let Some(window) = self.window.upgrade() {
+                let state = window.global::<AppState>();
+                let artist = state.get_artist_filter();
+                if !artist.is_empty() {
+                    self.show_artist_header(&state, &artist);
+                }
+            }
         }
     }
 

@@ -110,6 +110,8 @@ enum UpdateMessage {
 
 /// Most tracks listed under a search; enough to find anything without a huge list.
 const MAXIMUM_SEARCH_TRACKS: usize = 200;
+/// Tracks listed under "Les plus écoutés" on an artist's page.
+const ARTIST_TOP_TRACK_COUNT: usize = 5;
 /// How long a confirmation ("ajouté aux favoris") stays on screen: long enough to read two
 /// short lines, short enough not to cover the content.
 const NOTICE_DISPLAY_DURATION: Duration = Duration::from_secs(4);
@@ -462,6 +464,8 @@ impl UiBridge {
             }
         });
         let handle = self.clone();
+        state.on_play_artist(move |is_shuffled| handle.play_artist(is_shuffled));
+        let handle = self.clone();
         state.on_play_search_result(move |index| {
             let paths = handle.search_results.borrow().clone();
             if let Ok(index) = usize::try_from(index) {
@@ -469,7 +473,12 @@ impl UiBridge {
                     .window
                     .upgrade()
                     .map(|window| {
-                        format!("Recherche « {} »", window.global::<AppState>().get_query())
+                        let state = window.global::<AppState>();
+                        if state.get_query().is_empty() {
+                            format!("{} — Les plus écoutés", state.get_artist_filter())
+                        } else {
+                            format!("Recherche « {} »", state.get_query())
+                        }
                     })
                     .unwrap_or_default();
                 handle.play_context(paths, index, name);

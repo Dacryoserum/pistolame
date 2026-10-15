@@ -1316,15 +1316,19 @@ export component AlbumsGrid inherits Rectangle {
     property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
     property <length> pitch: root.tile + 64px;
     property <int> row-count: Math.ceil(AppState.albums.length / root.columns);
-    // While searching: the "Morceaux" heading plus one row per matching track.
-    property <int> search-row-count: AppState.query != "" && AppState.search-tracks.length > 0 ? AppState.search-tracks.length + 1 : 0;
+    // One artist's albums, not searching: the artist's page (photo, "Tout lire", the albums from
+    // the newest, then "Les plus écoutés").
+    property <bool> is-artist-page: AppState.artist-filter != "" && AppState.query == "";
+    property <length> header-height: root.is-artist-page ? 200px : 88px;
+    // While searching (or on an artist's page): a heading plus one row per listed track.
+    property <int> search-row-count: (AppState.query != "" || root.is-artist-page) && AppState.search-tracks.length > 0 ? AppState.search-tracks.length + 1 : 0;
     if AppState.artist-filter != "": IconButton {
         x: 26px; y: 26px; width: 28px; height: 28px;
         icon: Icons.caret-left; icon-color: Tokens.accent;
         label: "Retour : " + AppState.back-label;
         clicked => { AppState.navigate-back(); }
     }
-    Txt {
+    if !root.is-artist-page: Txt {
         role: TextRole.display;
         x: AppState.artist-filter != "" ? 60px : 32px;
         y: 24px;
@@ -1332,7 +1336,7 @@ export component AlbumsGrid inherits Rectangle {
         text: AppState.artist-filter != "" ? AppState.artist-filter : "Albums";
         overflow: elide;
     }
-    Txt {
+    if !root.is-artist-page: Txt {
         x: AppState.artist-filter != "" ? 60px : 32px;
         y: 58px;
         role: TextRole.callout;
@@ -1340,9 +1344,32 @@ export component AlbumsGrid inherits Rectangle {
         visible: AppState.albums.length > 0;
         text: AppState.albums.length + (AppState.albums.length == 1 ? " album" : " albums");
     }
+    if root.is-artist-page: Rectangle {
+        x: 60px; y: 24px; width: 148px; height: 148px;
+        border-radius: 74px;
+        clip: true;
+        background: Tokens.surface-field;
+        Image { width: parent.width; height: parent.height; source: AppState.artist-page-photo; image-fit: cover; }
+    }
+    if root.is-artist-page: VerticalLayout {
+        x: 236px; y: 24px; width: root.width - 236px - 32px; height: 148px;
+        alignment: center;
+        spacing: 8px;
+        Txt { role: TextRole.label; text: "ARTISTE"; color: Tokens.text-secondary; }
+        Txt { role: TextRole.display; text: AppState.artist-filter; overflow: elide; }
+        Txt { role: TextRole.callout; text: AppState.artist-page-detail; color: Tokens.text-secondary; }
+        Rectangle { height: 6px; }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            PillButton { label: "Tout lire"; icon: Icons.play-fill; is-primary: true; clicked => { AppState.play-artist(false); } }
+            PillButton { label: "Aléatoire"; icon: Icons.shuffle; clicked => { AppState.play-artist(true); } }
+        }
+    }
 
     // "Trier par" menu, right-aligned with the grid.
     sort-button := HeaderButton {
+        visible: !root.is-artist-page;
         x: root.width - 32px - self.width;
         y: 26px;
         label: "Trier par : " + AppState.album-sort-labels[AppState.album-sort-index];
@@ -1353,6 +1380,7 @@ export component AlbumsGrid inherits Rectangle {
 
     // "+" next to the sort menu: add music once the library is no longer empty.
     add-button := HeaderButton {
+        visible: !root.is-artist-page;
         x: sort-button.x - 8px - self.width;
         y: 26px;
         icon: Icons.plus;
@@ -1404,8 +1432,8 @@ export component AlbumsGrid inherits Rectangle {
     }
 
     ListView {
-        y: 88px;
-        height: root.height - 88px;
+        y: root.header-height;
+        height: root.height - root.header-height;
         content-y <=> AppState.grid-scroll-y;
         // One repeater (a ListView allows only one): album grid rows, then, while searching, a
         // "Morceaux" heading and the matching tracks.
@@ -1427,7 +1455,7 @@ export component AlbumsGrid inherits Rectangle {
                     }
                 }
             }
-            if item-index == root.row-count: Txt { x: 32px; y: 14px; role: TextRole.title-3; text: "Morceaux"; }
+            if item-index == root.row-count: Txt { x: 32px; y: 14px; role: TextRole.title-3; text: root.is-artist-page ? "Les plus écoutés" : "Morceaux"; }
             if item-index > root.row-count: TrackRow {
                 x: 32px;
                 width: root.width - 64px;

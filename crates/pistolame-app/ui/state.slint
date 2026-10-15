@@ -305,6 +305,11 @@ export global AppState {
     in property <[AlbumCard]> recently-added-albums;
     in property <[AlbumCard]> recently-played-albums;
     callback open-artist(int);
+    // An artist's page (the grid filtered on one artist): photo, counts, "Tout lire" and
+    // "Aléatoire" (true).
+    in property <image> artist-page-photo;
+    in property <string> artist-page-detail;
+    callback play-artist(bool);
     // Artist photos looked up online (Réglages).
     in property <bool> are-artist-photos-on: true;
     callback set-artist-photos(bool);

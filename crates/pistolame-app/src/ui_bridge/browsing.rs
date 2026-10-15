@@ -55,9 +55,10 @@ impl UiBridge {
         let state = window.global::<AppState>();
         let words = crate::search::query_words(query);
         let artist_filter = state.get_artist_filter().to_string();
+        let is_artist_page = !artist_filter.is_empty() && words.is_empty();
         let albums = self.albums.borrow();
         let labels = distinguishing_labels(&albums);
-        let cards: Vec<AlbumCard> = albums
+        let mut cards: Vec<(Option<u32>, AlbumCard)> = albums
             .iter()
             .enumerate()
             .filter(|(_, album)| artist_filter.is_empty() || album.artists.contains(&artist_filter))
@@ -73,12 +74,37 @@ impl UiBridge {
                 crate::search::matches(&words, &[&album.title, &album.artist, &year, &genre])
             })
             .map(|(index, album)| {
-                album_card(index, album, labels.get(index).and_then(Option::as_deref))
+                (
+                    album_year(album),
+                    album_card(index, album, labels.get(index).and_then(Option::as_deref)),
+                )
             })
             .collect();
+        if is_artist_page {
+            // An artist's page lists the newest albums first, undated ones last.
+            cards.sort_by(|left, right| right.0.cmp(&left.0));
+        }
+        let cards: Vec<AlbumCard> = cards.into_iter().map(|(_, card)| card).collect();
         let current_path = self.current_path();
         let mut results = Vec::new();
         let mut rows = Vec::new();
+        if is_artist_page {
+            // "Les plus écoutés": the artist's tracks played most often (local play counts).
+            let mut played: Vec<(&MusicFile, &Album)> = albums
+                .iter()
+                .filter(|album| album.artists.contains(&artist_filter))
+                .flat_map(|album| album.tracks.iter().map(move |track| (track, album)))
+                .filter(|(track, _)| track.play_count > 0)
+                .collect();
+            played.sort_by(|left, right| {
+                (right.0.play_count, right.0.last_played_seconds)
+                    .cmp(&(left.0.play_count, left.0.last_played_seconds))
+            });
+            for (file, album) in played.into_iter().take(ARTIST_TOP_TRACK_COUNT) {
+                rows.push(self.search_row(rows.len(), file, album, current_path.as_ref()));
+                results.push(file.path.clone());
+            }
+        }
         if !words.is_empty() {
             for album in albums.iter() {
                 for file in &album.tracks {
@@ -86,21 +112,7 @@ impl UiBridge {
                         break;
                     }
                     if crate::search::matches(&words, &[&file.title, &album.artist, &album.title]) {
-                        rows.push(PlaylistTrackRow {
-                            position: rows.len() as i32,
-                            number: rows.len() as i32 + 1,
-                            title: file.title.as_str().into(),
-                            subtitle: format!("{} — {}", album.artist, album.title).into(),
-                            format_label: presentation::audio_format(
-                                file.bits_per_sample,
-                                file.sample_rate_hz,
-                            )
-                            .into(),
-                            duration_label: presentation::clock(file.duration_seconds).into(),
-                            is_current: current_path.as_ref() == Some(&file.path),
-                            is_favorite: self.favorites.borrow().contains(&file.path),
-                            is_selected: false,
-                        });
+                        rows.push(self.search_row(rows.len(), file, album, current_path.as_ref()));
                         results.push(file.path.clone());
                     }
                 }
@@ -115,6 +127,93 @@ impl UiBridge {
         });
         state.set_search_tracks(ModelRc::new(VecModel::from(rows)));
         state.set_albums(ModelRc::new(VecModel::from(cards)));
+        if is_artist_page {
+            self.show_artist_header(&state, &artist_filter);
+        }
+    }
+
+    /// One row of the tracks listed under the grid (search results, "Les plus écoutés").
+    fn search_row(
+        &self,
+        row: usize,
+        file: &MusicFile,
+        album: &Album,
+        current_path: Option<&PathBuf>,
+    ) -> PlaylistTrackRow {
+        PlaylistTrackRow {
+            position: row as i32,
+            number: row as i32 + 1,
+            title: file.title.as_str().into(),
+            subtitle: format!("{} — {}", album.artist, album.title).into(),
+            format_label: presentation::audio_format(file.bits_per_sample, file.sample_rate_hz)
+                .into(),
+            duration_label: presentation::clock(file.duration_seconds).into(),
+            is_current: current_path == Some(&file.path),
+            is_favorite: self.favorites.borrow().contains(&file.path),
+            is_selected: false,
+        }
+    }
+
+    /// The header of an artist's page: photo (or newest cover) and counts.
+    pub(super) fn show_artist_header(&self, state: &AppState<'_>, artist: &str) {
+        let albums = self.albums.borrow();
+        let artist_albums: Vec<&Album> = albums
+            .iter()
+            .filter(|album| album.artists.iter().any(|name| name == artist))
+            .collect();
+        let track_count: usize = artist_albums.iter().map(|album| album.tracks.len()).sum();
+        let photo = self
+            .artist_photos
+            .borrow()
+            .get(artist)
+            .cloned()
+            .or_else(|| {
+                artist_albums
+                    .iter()
+                    .max_by_key(|album| album_year(album))
+                    .map(|album| album.artwork.clone())
+            });
+        state.set_artist_page_photo(photo.unwrap_or_default());
+        state.set_artist_page_detail(
+            format!(
+                "{} · {}",
+                presentation::count_label(artist_albums.len(), "album", "albums"),
+                presentation::count_label(track_count, "morceau", "morceaux"),
+            )
+            .into(),
+        );
+    }
+
+    /// "Tout lire" / "Aléatoire" on an artist's page: every track of the artist's albums, the
+    /// albums from the newest, as on the page.
+    pub(super) fn play_artist(&self, is_shuffled: bool) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let artist = state.get_artist_filter().to_string();
+        let paths: Vec<PathBuf> = {
+            let albums = self.albums.borrow();
+            let mut artist_albums: Vec<&Album> = albums
+                .iter()
+                .filter(|album| album.artists.contains(&artist))
+                .collect();
+            artist_albums.sort_by_key(|album| std::cmp::Reverse(album_year(album)));
+            artist_albums
+                .iter()
+                .flat_map(|album| album.tracks.iter().map(|track| track.path.clone()))
+                .collect()
+        };
+        if paths.is_empty() {
+            return;
+        }
+        state.set_is_shuffle_on(is_shuffled);
+        let start = if is_shuffled {
+            self.random_track(paths.len())
+        } else {
+            0
+        };
+        self.play_context(paths, start, artist);
     }
 
     /// One card per album artist, in natural order, with their newest album's cover.
