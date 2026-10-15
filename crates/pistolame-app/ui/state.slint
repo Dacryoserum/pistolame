@@ -17,6 +17,7 @@ export struct TrackRowData {
     // Index of the track in the album (rows and tracks differ when there are headings).
     track-index: int,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export struct PathStep {
@@ -122,6 +123,7 @@ export struct LibraryTrackRow {
     // File path, compared with `AppState.current-track-path` to mark the playing row.
     path: string,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export struct ArtistCard {
@@ -146,6 +148,7 @@ export struct PlaylistTrackRow {
     duration-label: string,
     is-current: bool,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export global AppState {
@@ -167,6 +170,9 @@ export global AppState {
     in-out property <string> message;
     // An error stays until closed; a notice (confirmation, information) leaves by itself.
     in property <bool> is-message-error;
+    // An action offered with the message ("Annuler" after a removal); empty for none.
+    in property <string> message-action-label;
+    callback message-action();
     in property <string> import-status;
     // macOS: the window draws under its transparent title bar; the sidebar keeps this much room
     // at the top for the window buttons. Zero where the system title bar stays.
@@ -190,6 +196,10 @@ export global AppState {
     in property <string> current-duration;
     in property <string> current-filename;
     callback open-current-album();
+    callback open-current-artist();
+    // The artists of the album page, each a link to its page.
+    in property <[string]> detail-artists;
+    callback open-artist-named(string);
     // "Modifier l'album" sheet: title, artist and cover shown in the app, stored in the
     // library; the music files are never modified.
     in-out property <bool> is-album-editor-open;
@@ -232,6 +242,17 @@ export global AppState {
     // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
     // playlist being played.
     callback track-action(TrackTarget, TrackAction);
+    // Multiple selection in the track lists: Ctrl/Cmd+click toggles a row, Shift+click selects
+    // the range from the last row clicked. A "…" action on a selected row applies to them all.
+    callback select-track(TrackTarget, bool /* is-toggle */, bool /* is-range */);
+    in property <int> selection-count;
+    // The selection is in a playlist: the bar offers "Retirer de la playlist".
+    in property <bool> can-remove-selection;
+    callback selection-action(TrackAction);
+    callback clear-selection();
+    // Réglages: a single click plays a track; otherwise it selects and a double click plays.
+    in property <bool> is-single-click-play;
+    callback set-single-click-play(bool);
     // "Afficher dans le Finder" / "Afficher dans l'Explorateur" / "Ouvrir le dossier".
     in property <string> reveal-label: "Afficher dans le Finder";
     in-out property <bool> is-queue-open;
@@ -240,8 +261,23 @@ export global AppState {
     in property <[QueueRow]> queue-up-next;
     in property <[QueueRow]> queue-upcoming;
     in property <string> queue-context-name;
+    // The tracks played before the current one, most recent first ("Lire à partir d'ici").
+    in property <[QueueRow]> queue-played;
+    // Tracks after the listed ones in each section (the panel lists a limited number).
+    in property <int> queue-up-next-hidden-count;
+    in property <int> queue-upcoming-hidden-count;
     callback queue-remove(int);
     callback queue-clear();
+    // Moves a queued track one place earlier (true) or later.
+    callback queue-move(int, bool);
+    callback queue-play-played(int);
+    // Minuteur de veille: "" when off, else "Fin du morceau" or the time left ("23 min").
+    in property <string> sleep-timer-label;
+    // -1 at the end of the track, 0 off, else minutes from now.
+    callback set-sleep-timer(int);
+    // Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z on the tracks queued by hand.
+    callback queue-undo();
+    callback queue-redo();
     callback queue-play-up-next(int);
     callback queue-play-upcoming(int);
     // Self-update: a newer release was found on GitHub.
@@ -270,6 +306,11 @@ export global AppState {
     in property <[AlbumCard]> recently-added-albums;
     in property <[AlbumCard]> recently-played-albums;
     callback open-artist(int);
+    // An artist's page (the grid filtered on one artist): photo, counts, "Tout lire" and
+    // "Aléatoire" (true).
+    in property <image> artist-page-photo;
+    in property <string> artist-page-detail;
+    callback play-artist(bool);
     // Artist photos looked up online (Réglages).
     in property <bool> are-artist-photos-on: true;
     callback set-artist-photos(bool);
@@ -388,6 +429,9 @@ export global AppState {
     callback open-album(int);
     callback play-track(int, int);
     callback play-detail-album();
+    // "Reprendre · piste 5, 3:12" when listening to the album page's album stopped midway.
+    in property <string> detail-resume-label;
+    callback resume-detail-album();
     callback shuffle-detail-album();
     callback toggle-play();
     callback previous-track();

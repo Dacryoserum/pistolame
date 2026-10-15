@@ -30,6 +30,13 @@ const SHARED_VOLUME_MUTED_KEY: &str = "shared_volume_muted";
 const ALBUM_SORT_KEY: &str = "album_sort";
 const ARTIST_PHOTOS_KEY: &str = "artist_photos";
 const START_SECTION_KEY: &str = "start_section";
+const SINGLE_CLICK_PLAY_KEY: &str = "single_click_play";
+const TRACK_SORT_KEY: &str = "track_sort";
+const TRACKS_FAVORITES_ONLY_KEY: &str = "tracks_favorites_only";
+const WINDOW_GEOMETRY_KEY: &str = "window_geometry";
+/// Words after the column number of `track_sort`.
+const ASCENDING_VALUE: &str = "ascending";
+const DESCENDING_VALUE: &str = "descending";
 /// Volume is stored in tenths of a decibel, so the settings stay exact integers.
 const TENTHS_PER_DECIBEL: f32 = 10.0;
 
@@ -78,8 +85,43 @@ pub struct AppSettings {
     pub are_artist_photos_off: bool,
     /// Last library section shown (`SidebarSection::settings_key`), `None` for the default.
     pub start_section: Option<String>,
+    /// A single click plays a track (otherwise it selects it and a double click plays).
+    pub is_single_click_play: bool,
+    /// Order of the "Morceaux" table: column number and whether it is descending.
+    pub track_sort: Option<(i32, bool)>,
+    /// Whether the "Morceaux" table shows only the favorites.
+    pub is_tracks_favorites_only: bool,
+    /// Window position and size at the last exit, to reopen it in the same place.
+    pub window_geometry: Option<WindowGeometry>,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
+}
+
+/// Position of the main window in physical pixels (one desktop space even with screens at
+/// different scales) and its size in logical pixels (see `window_geometry`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl WindowGeometry {
+    fn serialize(&self) -> String {
+        format!("{},{},{},{}", self.x, self.y, self.width, self.height)
+    }
+
+    fn parse(value: &str) -> Option<WindowGeometry> {
+        let mut numbers = value.split(',').map(|part| part.trim().parse::<i32>());
+        let geometry = WindowGeometry {
+            x: numbers.next()?.ok()?,
+            y: numbers.next()?.ok()?,
+            width: numbers.next()?.ok()?,
+            height: numbers.next()?.ok()?,
+        };
+        (numbers.next().is_none() && geometry.width > 0 && geometry.height > 0).then_some(geometry)
+    }
 }
 
 impl AppSettings {
@@ -214,6 +256,23 @@ impl AppSettings {
         if let Some(section) = &self.start_section {
             push_entry(&mut text, START_SECTION_KEY, section)?;
         }
+        if self.is_single_click_play {
+            push_entry(&mut text, SINGLE_CLICK_PLAY_KEY, TRUE_VALUE)?;
+        }
+        if let Some((column, is_descending)) = self.track_sort {
+            let direction = if is_descending {
+                DESCENDING_VALUE
+            } else {
+                ASCENDING_VALUE
+            };
+            push_entry(&mut text, TRACK_SORT_KEY, &format!("{column} {direction}"))?;
+        }
+        if self.is_tracks_favorites_only {
+            push_entry(&mut text, TRACKS_FAVORITES_ONLY_KEY, TRUE_VALUE)?;
+        }
+        if let Some(geometry) = &self.window_geometry {
+            push_entry(&mut text, WINDOW_GEOMETRY_KEY, &geometry.serialize())?;
+        }
         Ok(text)
     }
 
@@ -297,6 +356,21 @@ impl AppSettings {
         {
             settings.start_section = Some((*value).to_owned());
         }
+        settings.is_single_click_play = entries.get(SINGLE_CLICK_PLAY_KEY) == Some(&TRUE_VALUE);
+        settings.track_sort = entries.get(TRACK_SORT_KEY).and_then(|value| {
+            let (column, direction) = value.split_once(' ')?;
+            let is_descending = match direction.trim() {
+                DESCENDING_VALUE => true,
+                ASCENDING_VALUE => false,
+                _ => return None,
+            };
+            Some((column.trim().parse().ok()?, is_descending))
+        });
+        settings.is_tracks_favorites_only =
+            entries.get(TRACKS_FAVORITES_ONLY_KEY) == Some(&TRUE_VALUE);
+        settings.window_geometry = entries
+            .get(WINDOW_GEOMETRY_KEY)
+            .and_then(|value| WindowGeometry::parse(value));
         settings.load_problem = first_problem;
         settings
     }
@@ -408,6 +482,15 @@ mod tests {
             album_sort: Some("year".to_owned()),
             are_artist_photos_off: true,
             start_section: Some("artists".to_owned()),
+            is_single_click_play: true,
+            track_sort: Some((2, true)),
+            is_tracks_favorites_only: true,
+            window_geometry: Some(WindowGeometry {
+                x: -12,
+                y: 40,
+                width: 1280,
+                height: 820,
+            }),
             load_problem: None,
         };
         saved.save_to(&path).unwrap();
@@ -605,6 +688,19 @@ mod tests {
         };
         let parsed = AppSettings::parse(&settings.serialize().unwrap());
         assert_eq!(parsed.start_section.as_deref(), Some("tracks"));
+    }
+
+    #[test]
+    fn invalid_track_sort_and_window_geometry_are_ignored() {
+        let settings = AppSettings::parse(
+            "track_sort = 2 sideways
+window_geometry = 1,2,0,4
+single_click_play = maybe
+",
+        );
+        assert_eq!(settings.track_sort, None);
+        assert_eq!(settings.window_geometry, None);
+        assert!(!settings.is_single_click_play);
     }
 
     #[test]

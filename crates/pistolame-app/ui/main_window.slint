@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
+import { AddToPlaylistSheet, SelectionBar, Sheet, ShortcutList, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, SidebarSection, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -33,6 +33,79 @@ export component AppWindow inherits Window {
     property <length> lcd-x: 20px + 172px + root.side-gap;
     property <length> lcd-right-window: 240px + root.lcd-x + root.lcd-width;
 
+    // Cassette: clicking the LCD unfolds it downward into the current-track page; leaving the
+    // page folds it back. Only Slint animates it (no Rust writes per frame) and its elements
+    // exist only while it moves, so it costs nothing at rest. No shadow or blur: each animated
+    // frame stays a few plain rectangles and one already decoded image.
+    // 0 = the LCD, 1 = the whole content area. Rests at 1 on the current-track page.
+    property <float> cassette-progress: 0;
+    animate cassette-progress { duration: root.cassette-duration; easing: cubic-bezier(0.65, 0, 0.35, 1); }
+    property <duration> cassette-duration: 420ms;
+    // Opacity of the unfolded cassette over the page it reveals at the end of the opening.
+    property <float> cassette-cover-opacity: 1;
+    animate cassette-cover-opacity { duration: root.cassette-reveal-duration; easing: ease-out; }
+    property <duration> cassette-reveal-duration: 140ms;
+    property <bool> is-cassette-shown;
+    property <bool> is-cassette-opening;
+    property <bool> is-cassette-revealing;
+    // Where the artwork lands on the current-track page (its padding and back-button row).
+    property <length> cassette-artwork-end-x: 32px;
+    property <length> cassette-artwork-end-y: 58px;
+    property <length> cassette-artwork-end-size: 220px;
+    // Watches the page shown (set by Rust) to fold the cassette when the page is left.
+    property <ViewKind> shown-view: AppState.view;
+    property <bool> was-now-playing-shown;
+    changed shown-view => {
+        if root.is-cassette-opening && root.shown-view != ViewKind.now-playing {
+            // The user went elsewhere while it unfolded: drop it, never pull them back.
+            root.is-cassette-opening = false;
+            root.is-cassette-shown = false;
+            root.cassette-progress = 0;
+        } else if root.shown-view == ViewKind.now-playing {
+            // Reached without the animation (history): rest unfolded so leaving folds it.
+            root.cassette-progress = 1;
+        } else if root.was-now-playing-shown && !root.is-cassette-opening {
+            root.cassette-cover-opacity = 1;
+            root.is-cassette-revealing = false;
+            root.is-cassette-shown = true;
+            root.cassette-progress = 0;
+        }
+        root.was-now-playing-shown = root.shown-view == ViewKind.now-playing;
+    }
+
+    function open-cassette() {
+        if !AppState.has-current-track || AppState.view == ViewKind.now-playing || root.is-cassette-shown {
+            AppState.show-now-playing();
+            return;
+        }
+        root.cassette-cover-opacity = 1;
+        root.is-cassette-shown = true;
+        root.is-cassette-opening = true;
+        root.cassette-progress = 1;
+    }
+
+    // End of the unfolding: show the page under the cassette, then fade the cassette out.
+    Timer {
+        interval: root.cassette-duration;
+        running: root.is-cassette-opening;
+        triggered => {
+            root.is-cassette-opening = false;
+            AppState.show-now-playing();
+            root.is-cassette-revealing = true;
+            root.cassette-cover-opacity = 0;
+        }
+    }
+    // End of the fade, or of the folding: the cassette leaves the scene.
+    Timer {
+        interval: root.is-cassette-revealing ? root.cassette-reveal-duration : root.cassette-duration;
+        running: root.is-cassette-shown && !root.is-cassette-opening;
+        triggered => {
+            root.is-cassette-shown = false;
+            root.is-cassette-revealing = false;
+            root.cassette-cover-opacity = 1;
+        }
+    }
+
     // The std widgets (scrollbars) follow the theme through the Palette global.
     changed is-dark => {
         Palette.color-scheme = root.is-dark ? ColorScheme.dark : ColorScheme.light;
@@ -50,8 +123,15 @@ export component AppWindow inherits Window {
         }
     }
 
+    // The shortcut list ("?" or F1).
+    property <bool> is-help-open;
+
     // Closes the topmost open overlay, in z-order; false when nothing was open.
     function close-topmost-overlay() -> bool {
+        if root.is-help-open {
+            root.is-help-open = false;
+            return true;
+        }
         if AppState.is-popover-open {
             AppState.is-popover-open = false;
             return true;
@@ -74,6 +154,10 @@ export component AppWindow inherits Window {
         }
         if AppState.is-update-panel-open {
             AppState.is-update-panel-open = false;
+            return true;
+        }
+        if AppState.selection-count > 0 {
+            AppState.clear-selection();
             return true;
         }
         return false;
@@ -125,8 +209,17 @@ export component AppWindow inherits Window {
             if event.modifiers.control && event.text == Key.LeftArrow { AppState.previous-track(); return accept; }
             if event.modifiers.control && event.text == Key.UpArrow { root.step-volume(1); return accept; }
             if event.modifiers.control && event.text == Key.DownArrow { root.step-volume(-1); return accept; }
-            if event.modifiers.control && (event.text == "l" || event.text == "L") { AppState.show-now-playing(); return accept; }
+            if event.modifiers.control && (event.text == "l" || event.text == "L") { root.open-cassette(); return accept; }
             if event.modifiers.control && event.text == "," { AppState.navigate-to-section(SidebarSection.settings); return accept; }
+            // Ctrl+Z arrives as "\u{1a}" on Windows and Linux.
+            if event.modifiers.control && (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
+                if event.modifiers.shift { AppState.queue-redo(); } else { AppState.queue-undo(); }
+                return accept;
+            }
+            if event.text == Key.F1 || event.text == "?" {
+                root.is-help-open = !root.is-help-open;
+                return accept;
+            }
             if event.modifiers.control && event.text == "1" { AppState.navigate-to-section(SidebarSection.recently-added); return accept; }
             if event.modifiers.control && event.text == "2" { AppState.navigate-to-section(SidebarSection.artists); return accept; }
             if event.modifiers.control && event.text == "3" { AppState.navigate-to-section(SidebarSection.albums); return accept; }
@@ -164,6 +257,11 @@ export component AppWindow inherits Window {
             ArtistsView { visible: AppState.view == ViewKind.artists; }
             TracksView { visible: AppState.view == ViewKind.tracks; }
             RecentView { visible: AppState.view == ViewKind.recently-added; }
+
+            if AppState.selection-count >= 2: SelectionBar {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 20px;
+            }
         }
 
         OutputSettings {
@@ -265,10 +363,46 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // The cassette unfolding from under the LCD (toolbar coordinates). Its body starts at
+            // the LCD's bottom edge and only widens below the toolbar, so it never covers the
+            // controls; the artwork slides out of the LCD and lands where the page shows it.
+            if root.is-cassette-shown: Rectangle {
+                property <float> progress: root.cassette-progress;
+                property <length> top: 52px + 8px * self.progress;
+                x: root.lcd-x * (1 - self.progress);
+                y: self.top;
+                width: root.lcd-width + (root.toolbar-width - root.lcd-width) * self.progress;
+                height: (root.height - 60px) * self.progress;
+                border-bottom-left-radius: 6px * (1 - self.progress);
+                border-bottom-right-radius: 6px * (1 - self.progress);
+                background: Tokens.surface-content.mix(Tokens.surface-lcd, self.progress);
+                opacity: root.cassette-cover-opacity;
+                clip: true;
+                // Swallows clicks while it moves.
+                TouchArea { }
+                Rectangle {
+                    // The LCD artwork sits at (4, 12) in the toolbar, above this body's top.
+                    x: 4px + (root.cassette-artwork-end-x - 4px) * parent.progress;
+                    y: 12px - parent.top + (root.cassette-artwork-end-y - 12px + parent.top) * parent.progress;
+                    width: 36px + (root.cassette-artwork-end-size - 36px) * parent.progress;
+                    height: self.width;
+                    border-radius: 4px * (1 - parent.progress);
+                    clip: true;
+                    background: Tokens.surface-field;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: AppState.lcd-artwork;
+                        image-fit: fill;
+                    }
+                }
+            }
+
             Lcd {
                 x: root.lcd-x;
                 y: 8px;
                 width: root.lcd-width;
+                open-requested => { root.open-cassette(); }
             }
 
             Rectangle {
@@ -528,7 +662,8 @@ export component AppWindow inherits Window {
             animate appear { duration: 200ms; easing: ease-out-quint; }
             property <length> content-width: min(toast-row.preferred-width, root.width - 240px - 64px);
             x: 240px + (root.width - 240px - self.content-width) / 2;
-            y: root.height - 24px - self.height + 8px * (1 - self.appear);
+            // Above the selection bar when it is shown.
+            y: root.height - 24px - self.height + 8px * (1 - self.appear) - (AppState.selection-count >= 2 ? 56px : 0px);
             opacity: self.appear;
             width: self.content-width;
             height: max(40px, toast-row.preferred-height);
@@ -560,6 +695,18 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                     wrap: word-wrap;
                 }
+                // "Annuler" after a removal: puts back what was just removed.
+                if AppState.message-action-label != "": Txt {
+                    height: 24px;
+                    vertical-alignment: center;
+                    role: TextRole.callout-medium;
+                    text: AppState.message-action-label;
+                    color: undo-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+                    accessible-role: button;
+                    accessible-label: AppState.message-action-label;
+                    accessible-action-default => { AppState.message-action(); }
+                    undo-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.message-action(); } }
+                }
                 IconButton {
                     width: 24px; height: 24px; icon: Icons.x; icon-size: 12px;
                     icon-color: Tokens.text-secondary; label: "Fermer le message";
@@ -587,6 +734,19 @@ export component AppWindow inherits Window {
         if AppState.is-add-to-playlist-open: AddToPlaylistSheet {
             x: (root.width - self.width) / 2;
             y: max(60px, (root.height - self.height) / 3);
+        }
+        // Shortcut help ("?" or F1) over a dimmed window; a click anywhere or Escape closes it.
+        if root.is-help-open: Rectangle {
+            background: #00000066;
+            TouchArea { clicked => { root.is-help-open = false; key-scope.focus(); } }
+        }
+        if root.is-help-open: Sheet {
+            title: "Raccourcis";
+            width: 560px;
+            height: help-list.preferred-height + 96px;
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
+            help-list := ShortcutList { x: 24px; y: 64px; width: parent.width - 48px; }
         }
         // Album editor sheet over a dimmed window; Escape or Annuler closes it.
         if AppState.is-album-editor-open: Rectangle {

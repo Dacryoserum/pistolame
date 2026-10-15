@@ -161,6 +161,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alsa"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3f93573e7ddb15145d27c58c0fa0a452faad9f5452ac17ed4554ea035ea9b71"
+dependencies = [
+ "alsa-sys",
+ "bitflags 2.13.2",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "alsa-sys"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0320138053ef93099f168102c37b46ac0b9c53affc56ef7696633ad5477e2be"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4083,7 +4106,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-analysis"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "ebur128",
@@ -4095,13 +4118,14 @@ dependencies = [
 
 [[package]]
 name = "pistolame-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
  "crossbeam-channel",
  "dirs",
  "ed25519-dalek",
+ "image",
  "pistolame-analysis",
  "pistolame-core",
  "pistolame-library",
@@ -4121,7 +4145,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossbeam-channel",
  "flacenc",
@@ -4133,7 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "pistolame-library"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "md-5 0.11.0",
  "notify",
@@ -4145,8 +4169,9 @@ dependencies = [
 
 [[package]]
 name = "pistolame-output"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
+ "alsa",
  "crossbeam-channel",
  "objc2-audio-toolbox",
  "objc2-core-audio",

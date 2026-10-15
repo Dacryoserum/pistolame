@@ -3,9 +3,11 @@
 
 use slint::ComponentHandle;
 mod album_artists;
+mod album_resume;
 mod album_sort;
 mod analysis_worker;
 mod artist_photos;
+mod artwork_thumbnails;
 mod authenticity;
 mod file_drop;
 mod m3u;
@@ -17,6 +19,8 @@ mod process;
 mod search;
 mod session;
 mod settings;
+mod sleep_timer;
+mod track_selection;
 mod track_sort;
 mod transport;
 mod ui_bridge;
@@ -25,6 +29,7 @@ mod ui_preview;
 mod updater;
 mod window_chrome;
 mod window_events;
+mod window_geometry;
 
 #[allow(
     missing_docs,
@@ -46,6 +51,9 @@ fn main() -> anyhow::Result<()> {
     let window = AppWindow::new()?;
     window_chrome::install(&window);
     let bridge = ui_bridge::UiBridge::new(&window)?;
+    if let Some(geometry) = bridge.saved_window_geometry() {
+        window_geometry::restore(&window, geometry);
+    }
     bridge.connect(&window);
     // A debug run must not overwrite the start section the user saved.
     #[cfg(debug_assertions)]
@@ -84,11 +92,22 @@ fn main() -> anyhow::Result<()> {
     }
     let timer = slint::Timer::default();
     let ticking_bridge = bridge.clone();
+    let closing_bridge = bridge.clone();
     timer.start(
         slint::TimerMode::Repeated,
         pistolame_core::timing::UI_REFRESH_INTERVAL,
         move || ticking_bridge.tick(),
     );
+    // The geometry is read while the window still exists: `run` returns once it is hidden.
+    let closing_window = window.as_weak();
+    window.window().on_close_requested(move || {
+        if let Some(window) = closing_window.upgrade()
+            && let Some(geometry) = window_geometry::capture(&window)
+        {
+            closing_bridge.remember_window_geometry(geometry);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
     window.run()?;
     bridge.save_session();
     Ok(())

@@ -9,6 +9,11 @@ pub(crate) fn remaining_clock(seconds: u64) -> String {
     format!("−{}", clock(seconds))
 }
 
+/// "1 album", "3 albums": French takes the singular for 0 and 1.
+pub(crate) fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count <= 1 { singular } else { plural })
+}
+
 pub(crate) fn frequency(rate: u32) -> String {
     format!("{}", f64::from(rate) / 1000.0).replace('.', ",")
 }
@@ -541,6 +546,13 @@ pub(crate) fn device_list_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_take_the_singular_up_to_one() {
+        assert_eq!(count_label(0, "album", "albums"), "0 album");
+        assert_eq!(count_label(1, "morceau", "morceaux"), "1 morceau");
+        assert_eq!(count_label(12, "morceau", "morceaux"), "12 morceaux");
+    }
 
     fn speakers_and_headphones() -> Vec<OutputDeviceInfo> {
         vec![

@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Dacryoserum/pistolame"
-version = "0.5.0"
+version = "0.6.0"
 
 [workspace.dependencies]
 pistolame-core    = { path = "crates/pistolame-core" }
@@ -53,6 +53,12 @@ notify            = "8.2.0"
 rustfft           = "6.4.1"
 ebur128           = "0.1.10"
 rayon             = "1.10"
+# Linux output backend (Apache-2.0 OR MIT): safe wrappers over libasound, which every Linux
+# desktop ships. Links libasound.so.2 dynamically; building needs libasound2-dev.
+alsa              = "0.12.1"
+# Cover thumbnails (MIT OR Apache-2.0). Already in the lock file through Slint, same version and
+# formats: decoding covers ourselves lets the library worker scale them down off the UI thread.
+image             = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
 # Same version as `windows` (already in the lock file through it): its `#[implement]` macro, used

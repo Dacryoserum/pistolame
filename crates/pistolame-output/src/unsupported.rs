@@ -1,4 +1,4 @@
-//! Backend for platforms whose output backend does not exist yet (macOS and Linux in M1, plan
+//! Backend for platforms with no output backend (the BSDs; macOS and Linux used it in M1, plan
 //! B5.9). It has no devices, so the app can say "no audio output on this system yet" while the
 //! workspace keeps compiling and testing on every OS. It contains no platform code, so it is
 //! compiled everywhere and its tests run on every OS.

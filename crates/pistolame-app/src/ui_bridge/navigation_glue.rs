@@ -117,6 +117,21 @@ impl UiBridge {
             }
         });
         let handle = self.clone();
+        state.on_open_current_artist(move || {
+            let artist = handle.selected_track.get().and_then(|(album_index, _)| {
+                handle
+                    .albums
+                    .borrow()
+                    .get(album_index)
+                    .and_then(|album| album.artists.first().cloned())
+            });
+            if let Some(artist) = artist {
+                handle.open_artist_named(&artist);
+            }
+        });
+        let handle = self.clone();
+        state.on_open_artist_named(move |artist| handle.open_artist_named(&artist));
+        let handle = self.clone();
         state.on_open_playlist(move |index| {
             if let Ok(index) = usize::try_from(index) {
                 handle.open_playlist(index);
@@ -214,6 +229,8 @@ impl UiBridge {
         let generation = self.route_generation.get().wrapping_add(1);
         self.route_generation.set(generation);
         state.set_is_popover_open(false);
+        // A selection belongs to the page it was made on.
+        self.clear_selection();
         // Data before scroll, so the restored offset is reachable.
         self.fill_page(&state, &route.page);
         state.set_view(view_of(&route.page));
@@ -276,7 +293,12 @@ impl UiBridge {
                 }
             }
             // Over the page it was opened from: that page's filter and query stay as they are.
-            Page::NowPlaying => {}
+            // The analysis waits for this page (it decodes the whole file on several cores).
+            Page::NowPlaying => {
+                if let Some(path) = self.current_path() {
+                    self.show_authenticity_for(&path, true);
+                }
+            }
             Page::Playlist { playlist_id } => {
                 Self::clear_grid_filters(state);
                 state.set_selected_playlist(self.playlist_index_of(*playlist_id));

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0
+
+### Features
+- the LCD unfolds into the current-track page: click anywhere on it (or Cmd/Ctrl+L) and it opens downward; leaving the page folds it back
+- multiple selection in every track list (Cmd/Ctrl+click, Shift+click) with an action bar; double click plays, a single click selects (option "Lire d'un simple clic" in Réglages)
+- right click opens a track's "…" menu; artists and albums are links in the Morceaux table, the album header and the current-track page
+- queue: undo and redo (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z), move tracks up and down, Delete, and a played history with "Lire à partir d'ici"
+- "Annuler" after removing from the queue, a playlist or the favorites
+- sleep timer in the queue panel: end of the track or 15 to 90 minutes, no fade (bit-perfect to the end)
+- artist page: photo, "Tout lire", "Aléatoire", albums from the newest, most played tracks
+- "Reprendre" on an album page continues where listening stopped
+- keyboard help with ? or F1; the mouse wheel sets the volume
+- the window, the Morceaux order and its Favoris filter are remembered
+- Linux plays sound through ALSA (experimental): shared mode through PipeWire or PulseAudio, exclusive bit-perfect mode on a chosen card
+- macOS: unified title bar, floating messages, consistent page headers
+
+### Performance
+- covers are decoded in the background at display size and kept on disk: about half the memory, a start several times lighter, no stall while the library loads
+- the authenticity analysis runs only when the current-track page is open, not at every track change
+- long playlists build only the rows on screen; the queue panel lists at most 100 tracks per section
+
 ## 0.5.0
 
 ### Features

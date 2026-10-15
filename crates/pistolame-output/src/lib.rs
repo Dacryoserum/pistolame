@@ -9,18 +9,21 @@ pub use pistolame_core::format::{
 };
 pub use pistolame_core::output_contract::*;
 
+mod alsa_layouts;
 pub mod float_conversion;
 pub mod sample_gain;
 mod stream_state;
 pub mod unsupported;
 
+#[cfg(target_os = "linux")]
+pub mod alsa_backend;
 #[cfg(target_os = "macos")]
 pub mod coreaudio;
 #[cfg(windows)]
 pub mod wasapi;
 
 /// The output backend for the platform this binary runs on: WASAPI on Windows, CoreAudio on
-/// macOS, a backend with no devices on Linux until the ALSA backend exists (plan B5.9).
+/// macOS, ALSA on Linux, and a backend with no devices elsewhere (BSD).
 pub fn platform_default_output() -> Box<dyn AudioOutput> {
     #[cfg(windows)]
     {
@@ -30,7 +33,11 @@ pub fn platform_default_output() -> Box<dyn AudioOutput> {
     {
         Box::new(coreaudio::CoreAudioOutput::new())
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(alsa_backend::AlsaOutput::new())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         Box::new(unsupported::UnsupportedPlatformOutput)
     }

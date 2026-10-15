@@ -24,6 +24,9 @@ pub(crate) struct Session {
     pub(crate) queue: QueueSnapshot,
     /// Position in the current track, in whole seconds.
     pub(crate) position_seconds: u64,
+    /// Where listening to each album stopped ("Reprendre"); absent from older session files.
+    #[serde(default)]
+    pub(crate) album_resume_points: Vec<crate::album_resume::ResumePoint>,
 }
 
 impl Session {
@@ -84,9 +87,26 @@ mod tests {
                 current: Some("a2.flac".into()),
             },
             position_seconds: 83,
+            album_resume_points: vec![crate::album_resume::ResumePoint {
+                track_path: "b3.flac".into(),
+                position_seconds: 120,
+            }],
         };
         session.save_to(&path).expect("saved");
         assert_eq!(Session::load_from(&path), Some(session));
+    }
+
+    #[test]
+    fn a_session_written_before_resume_points_still_loads() {
+        let path = fresh_test_directory("older").join(SESSION_FILE_NAME);
+        fs::write(
+            &path,
+            br#"{"queue":{"context":[],"context_name":"","context_position":0,"up_next":[],"current":null},"position_seconds":4}"#,
+        )
+        .expect("written");
+        let session = Session::load_from(&path).expect("loaded");
+        assert_eq!(session.position_seconds, 4);
+        assert!(session.album_resume_points.is_empty());
     }
 
     #[test]

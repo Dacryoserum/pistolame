@@ -17,6 +17,8 @@ pub(crate) type AnalysisOutcome = (PathBuf, Result<AuthenticityView, String>);
 pub(crate) struct AnalysisWorker {
     requests: Sender<PathBuf>,
     results: Receiver<AnalysisOutcome>,
+    /// The file being analyzed: asking for it again (page reopened) starts no second run.
+    in_flight: std::cell::RefCell<Option<PathBuf>>,
 }
 
 impl AnalysisWorker {
@@ -48,17 +50,33 @@ impl AnalysisWorker {
                 }
             })
             .ok()?;
-        Some(AnalysisWorker { requests, results })
+        Some(AnalysisWorker {
+            requests,
+            results,
+            in_flight: std::cell::RefCell::new(None),
+        })
     }
 
-    /// Asks for `path` to be analyzed.
+    /// Asks for `path` to be analyzed, unless it is the file being analyzed now.
     pub(crate) fn request(&self, path: PathBuf) {
+        if self.in_flight.borrow().as_ref() == Some(&path) {
+            return;
+        }
+        *self.in_flight.borrow_mut() = Some(path.clone());
         // The thread lives as long as the worker; a send only fails at exit.
         let _ = self.requests.send(path);
     }
 
     /// The analyses finished since the last call.
     pub(crate) fn take_results(&self) -> Vec<AnalysisOutcome> {
-        self.results.try_iter().collect()
+        let outcomes: Vec<AnalysisOutcome> = self.results.try_iter().collect();
+        let mut in_flight = self.in_flight.borrow_mut();
+        if outcomes
+            .iter()
+            .any(|(path, _)| in_flight.as_ref() == Some(path))
+        {
+            *in_flight = None;
+        }
+        outcomes
     }
 }
