@@ -763,13 +763,18 @@ export component VolumeSlider inherits Rectangle {
 }
 
 export component Lcd inherits Rectangle {
+    // A click anywhere on the cassette (artwork, title, time) except the seek band and the
+    // badge asks to unfold it into the current-track page.
+    callback open-requested();
     // Fixed slot for the badge: the title and the progress rail never move when the badge text
     // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
     // in it and its text is elided if ever too long.
     property <length> badge-slot-width: 46px;
     property <length> column-width: root.width - 68px - root.badge-slot-width;
+    // Presses below this line seek; above it, a click unfolds the cassette.
+    property <length> seek-band-top: 34px;
     property <bool> is-seeking;
-    property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
+    property <bool> are-extras-visible: touch.has-hover || title-keyboard.has-focus || badge-touch.has-hover || root.is-seeking;
     height: 44px;
     border-radius: 6px;
     background: Tokens.surface-lcd;
@@ -779,11 +784,16 @@ export component Lcd inherits Rectangle {
         AppState.seek(Math.clamp((x - 48px) / root.column-width, 0, 1));
     }
     touch := TouchArea {
+        mouse-cursor: AppState.has-current-track && self.mouse-y < root.seek-band-top ? MouseCursor.pointer : MouseCursor.default;
         pointer-event(event) => {
-            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left && self.mouse-y >= 34px {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left && self.mouse-y >= root.seek-band-top {
                 root.is-seeking = true;
             } else if event.kind == PointerEventKind.up {
-                if root.is-seeking { root.seek-to(self.mouse-x); }
+                if root.is-seeking {
+                    root.seek-to(self.mouse-x);
+                } else if event.button == PointerEventButton.left && AppState.has-current-track && self.has-hover && self.mouse-y < root.seek-band-top {
+                    root.open-requested();
+                }
                 root.is-seeking = false;
             } else if event.kind == PointerEventKind.cancel {
                 root.is-seeking = false;
@@ -877,22 +887,17 @@ export component Lcd inherits Rectangle {
         x: 48px; y: 4px; width: root.column-width; height: 28px;
         accessible-role: button;
         accessible-label: "Afficher le morceau en cours : " + AppState.lcd-title;
-        accessible-action-default => { AppState.show-now-playing(); }
+        accessible-action-default => { root.open-requested(); }
         border-width: title-keyboard.has-focus ? 2px : 0px;
         border-color: Tokens.focus-ring;
         title-keyboard := FocusScope {
             enabled: AppState.has-current-track;
             key-pressed(event) => {
                 if event.text == Key.Return || event.text == " " {
-                    AppState.show-now-playing(); return accept;
+                    root.open-requested(); return accept;
                 }
                 return reject;
             }
-        }
-        title-touch := TouchArea {
-            enabled: AppState.has-current-track;
-            mouse-cursor: pointer;
-            clicked => { AppState.show-now-playing(); }
         }
     }
 
