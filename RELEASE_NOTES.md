@@ -1,23 +1,22 @@
-# Pistolame 0.4.0
+# Pistolame 0.4.1
 
-Getting around, the way you expect.
-
-- **Back takes you back.** Open an album from Artistes, Morceaux, a search, Ajouts récents, a
-  playlist or the current-track page: Back returns there, with the same filter, search and
-  scroll position. Chains unwind step by step (album → artist → album, Back, Back), and Forward
-  re-applies what you left.
-- **Shortcuts**: Cmd+[ / Cmd+] (Ctrl elsewhere), Alt+← / Alt+→, and the side buttons of your
-  mouse.
-- **Escape** closes what is open first (menu, album editor, queue panel…), then goes back.
-- **The sidebar always shows where you are**, and Pistolame reopens on your last library section.
-- **Add music from the Albums page** with the new + button. The version now shows, small, in the
-  sidebar corner.
-- The unfinished Authenticité and Spectrogrammes entries leave the sidebar; the analysis stays on
-  the current-track page.
-
-Known limits: no gapless playback yet; Linux has no audio backend. Windows builds are unsigned.
+- **No more silence with headphones.** A new **"Sortie du système"** choice, now the default,
+  follows your Mac's or PC's output: plug headphones, AirPods or a DAC and Pistolame plays there,
+  even mid-track in shared mode. If you picked a specific device before, open Réglages → Sortie
+  audio and choose "Sortie du système" once.
+- **Unplugging stops the music** instead of sending it to the speakers. In exclusive mode a new
+  system output is used from the next track, so the stream never bounces between devices.
+- **Lighter on the CPU**: the interface only redraws what changes, and the equalizer moves only
+  while playing.
 
 # Changelog
+
+## 0.4.1
+
+### Fixes
+- "Sortie du système" (new default): follow the operating system's output device, so headphones, AirPods or a DAC plugged in are used; no more silence when the remembered device is muted by the system
+- unplugging the device in use stops playback instead of jumping to the speakers; no device bouncing in exclusive mode
+- the interface stops refreshing values that did not change (lower CPU use), and the equalizer animates only while playing
 
 ## 0.4.0
 
