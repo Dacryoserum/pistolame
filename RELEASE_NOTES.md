@@ -1,15 +1,22 @@
-# Pistolame 0.4.1
+# Pistolame 0.5.0
 
-- **No more silence with headphones.** A new **"Sortie du système"** choice, now the default,
-  follows your Mac's or PC's output: plug headphones, AirPods or a DAC and Pistolame plays there,
-  even mid-track in shared mode. If you picked a specific device before, open Réglages → Sortie
-  audio and choose "Sortie du système" once.
-- **Unplugging stops the music** instead of sending it to the speakers. In exclusive mode a new
-  system output is used from the next track, so the stream never bounces between devices.
-- **Lighter on the CPU**: the interface only redraws what changes, and the equalizer moves only
-  while playing.
+- **All your music, not just FLAC.** Pistolame now plays ALAC and AAC (M4A), MP3, WAV, AIFF,
+  CAF and Ogg Vorbis. Import them like before: files, folders or drag and drop.
+- **Still honest about quality.** ALAC, WAV and AIFF are decoded bit for bit and can earn the
+  "Bit-perfect" badge. MP3, AAC and Vorbis are lossy: their badge reads "Avec perte" and the
+  signal path explains that the decoder's output is rounded to 24 bits.
+- **No encoder silence.** MP3 and Vorbis tracks start on the first note, without the gap the
+  encoder adds.
+- Not supported yet: Opus, WavPack, Monkey's Audio, DSD and Matroska audio.
 
 # Changelog
+
+## 0.5.0
+
+### Features
+- every common audio format: FLAC, ALAC, WAV, AIFF and CAF stay bit-perfect; MP3, AAC (M4A) and Ogg Vorbis play too, marked "Avec perte" and never shown as bit-perfect
+- MP3 and Vorbis encoder delay and padding are removed, so tracks start without the encoder's silence
+- the codec is shown on the LCD, in the file details and on album pages; the file picker and folder watching accept every supported format
 
 ## 0.4.1
 

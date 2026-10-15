@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+pistolame-core.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true

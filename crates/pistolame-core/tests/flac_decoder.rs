@@ -299,7 +299,7 @@ fn truncated_file_with_a_known_total_reports_corrupt_data_after_the_prefix() {
 fn registry_rejects_other_file_types_and_missing_files() {
     let registry = DecoderRegistry::with_default_providers();
     assert!(matches!(
-        registry.open(Path::new("track.mp3")),
+        registry.open(Path::new("track.opus")),
         Err(DecodeError::UnsupportedFileType)
     ));
     assert!(matches!(

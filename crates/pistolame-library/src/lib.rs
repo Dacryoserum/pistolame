@@ -10,13 +10,14 @@ pub use store::{
 };
 pub use watcher::FolderWatcher;
 
+use pistolame_core::{SourceCodec, declared_bits_per_sample, is_supported_audio_file};
 use std::path::{Path, PathBuf};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::{FormatOptions, TrackType, probe::Hint};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{MetadataOptions, StandardTag};
 
-/// One local FLAC and its display metadata, independent of any UI toolkit.
+/// One local audio file and its display metadata, independent of any UI toolkit.
 #[derive(Clone, Debug)]
 pub struct MusicFile {
     /// Original path used by the playback engine.
@@ -33,8 +34,12 @@ pub struct MusicFile {
     pub track_number: u64,
     /// Source sample rate in hertz.
     pub sample_rate_hz: u32,
-    /// Source precision in bits.
+    /// Source precision in bits; 0 for lossy codecs, which have none.
     pub bits_per_sample: u32,
+    /// Codec name shown to the user ("FLAC", "ALAC", "MP3", ...).
+    pub codec: String,
+    /// The codec discarded audio information (MP3, AAC, Vorbis).
+    pub is_lossy: bool,
     /// Declared duration in seconds.
     pub duration_seconds: u64,
     /// Release year (release date first, then recording date, then original date).
@@ -61,7 +66,7 @@ pub enum MetadataError {
     /// The file cannot be read.
     #[error("{0}")]
     Io(#[from] std::io::Error),
-    /// The FLAC parser rejected the file.
+    /// The container or codec parser rejected the file.
     #[error("{0}")]
     Decode(#[from] symphonia::core::errors::Error),
     /// No audio stream could be identified.
@@ -76,7 +81,9 @@ pub enum MetadataError {
 pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
     let stream = MediaSourceStream::new(Box::new(std::fs::File::open(path)?), Default::default());
     let mut hint = Hint::new();
-    hint.with_extension("flac");
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        hint.with_extension(extension);
+    }
     let mut reader = symphonia::default::get_probe().probe(
         &hint,
         stream,
@@ -90,6 +97,7 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         return Err(MetadataError::NoAudio);
     };
     let rate = parameters.sample_rate.unwrap_or(0);
+    let codec = SourceCodec::from_codec_id(parameters.codec);
     let mut file = MusicFile {
         path: path.to_owned(),
         title: path
@@ -107,7 +115,13 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         disc_number: 0,
         track_number: 0,
         sample_rate_hz: rate,
-        bits_per_sample: parameters.bits_per_sample.unwrap_or(0),
+        bits_per_sample: if codec.is_lossy {
+            0
+        } else {
+            declared_bits_per_sample(parameters).unwrap_or(0)
+        },
+        codec: codec.display_name.to_owned(),
+        is_lossy: codec.is_lossy,
         duration_seconds: track.num_frames.unwrap_or(0) / u64::from(rate.max(1)),
         year: None,
         sort_album: None,
@@ -155,7 +169,7 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
             file.artist = artist;
         }
         file.year = years.release.or(years.recording).or(years.original);
-        // The FLAC metadata parser bounds individual blocks; only one cover is retained.
+        // The metadata parsers bound individual blocks; only one cover is retained.
         file.artwork = revision
             .media
             .visuals
@@ -188,10 +202,10 @@ fn non_empty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// Recursively collects FLAC paths, without following symbolic links.
+/// Recursively collects the paths of supported audio files, without following symbolic links.
 ///
 /// Errors are kept alongside successful files, so unreadable folders are never silently omitted.
-pub fn collect_flac_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
+pub fn collect_audio_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
     let mut pending = roots.to_vec();
     let mut files = std::collections::BTreeSet::new();
     let mut errors = Vec::new();
@@ -218,11 +232,7 @@ pub fn collect_flac_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
                 }
                 Err(error) => errors.push(format!("{}: {error}", path.display())),
             }
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
-            && !is_apple_double(&path)
-        {
+        } else if is_supported_audio_file(&path) && !is_apple_double(&path) {
             files.insert(path);
         }
     }
@@ -281,7 +291,7 @@ mod tests {
     #[test]
     fn a_missing_root_is_reported() {
         let (paths, errors) =
-            collect_flac_paths(&[PathBuf::from("missing-pistolame-library-test")]);
+            collect_audio_paths(&[PathBuf::from("missing-pistolame-library-test")]);
         assert!(paths.is_empty());
         assert_eq!(errors.len(), 1);
     }
@@ -293,7 +303,8 @@ mod tests {
         assert_eq!(track.sample_rate_hz, 44_100);
         assert_eq!(track.bits_per_sample, 16);
         assert_eq!(track.duration_seconds, 3);
-        let (paths, errors) = collect_flac_paths(&[fixture.path.clone(), fixture.path.clone()]);
+        assert_eq!((track.codec.as_str(), track.is_lossy), ("FLAC", false));
+        let (paths, errors) = collect_audio_paths(&[fixture.path.clone(), fixture.path.clone()]);
         assert!(errors.is_empty());
         assert_eq!(paths, vec![fixture.path.clone()]);
     }
@@ -344,7 +355,7 @@ mod tests {
         std::fs::create_dir_all(&folder).expect("test folder");
         std::fs::write(folder.join("._01 Track.flac"), b"metadata").expect("companion");
         std::fs::write(folder.join("01 Track.flac"), b"audio").expect("track");
-        let (paths, errors) = collect_flac_paths(std::slice::from_ref(&folder));
+        let (paths, errors) = collect_audio_paths(std::slice::from_ref(&folder));
         assert!(errors.is_empty());
         assert_eq!(paths, vec![folder.join("01 Track.flac")]);
         let _ = std::fs::remove_dir_all(&folder);

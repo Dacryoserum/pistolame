@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+### Features
+- every common audio format: FLAC, ALAC, WAV, AIFF and CAF stay bit-perfect; MP3, AAC (M4A) and Ogg Vorbis play too, marked "Avec perte" and never shown as bit-perfect
+- MP3 and Vorbis encoder delay and padding are removed, so tracks start without the encoder's silence
+- the codec is shown on the LCD, in the file details and on album pages; the file picker and folder watching accept every supported format
+
 ## 0.4.1
 
 ### Fixes

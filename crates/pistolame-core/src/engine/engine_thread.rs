@@ -444,6 +444,7 @@ impl EngineThread {
             return;
         };
         let source_format = pipeline.source.format;
+        let source_codec = pipeline.source.codec;
         let Some(device_id) = self.selected_device_id.clone() else {
             pipeline.render_source = Some(render_source);
             self.on_open_failure(
@@ -489,6 +490,7 @@ impl EngineThread {
         }
         let assessment = assess_signal_path(
             &source_format,
+            &source_codec,
             stream.negotiated(),
             &ProcessingState::default(),
         );
@@ -810,7 +812,9 @@ mod tests {
                 channel_mask: ChannelMask(0b11),
             },
             total_frames,
+            is_total_frames_exact: true,
             embedded_md5: None,
+            codec: crate::decoder::SourceCodec::FLAC,
         }
     }
 

@@ -1,6 +1,7 @@
 //! The bit-perfect assessment: its types and the pure function `assess_signal_path`, the only
 //! place that decides whether the "Bit-perfect" badge may be shown.
 
+use crate::decoder::SourceCodec;
 use crate::format::{ChannelMask, DeviceSampleFormat, StreamFormat};
 use crate::output_contract::{
     DeviceAccessMode, DeviceSampleDelivery, NegotiatedOutput, SharedModeCause,
@@ -8,7 +9,7 @@ use crate::output_contract::{
 
 const BITS_PER_BYTE: u32 = 8;
 
-/// Processing the app applies before the device. M1: always the default (all `false`, i.e. `ProcessingState::default()`).
+/// Processing the app applies before the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct ProcessingState {
     /// A software volume is applied.
@@ -55,6 +56,9 @@ pub enum NotBitPerfectReason {
     /// data the app cannot verify (CoreAudio float-only devices, plan coreaudio.md §0). Badge
     /// "Exclusif", never "Bit-perfect".
     DeliveredAsFloatToPlatform,
+    /// The codec decodes to floating point, rounded to 24-bit integers before the device: the
+    /// samples sent are the decoder's approximation, not the file's own integers.
+    FloatDecoderOutputRounded,
     /// A software volume is applied.
     SoftwareVolumeActive,
     /// A resampler is applied.
@@ -80,6 +84,8 @@ pub enum BitPerfectVerdict {
 pub struct SignalPathAssessment {
     /// Format of the decoded source.
     pub source_format: StreamFormat,
+    /// Codec of the source: lossy or not, and whether its samples were rounded from float.
+    pub source_codec: SourceCodec,
     /// What the backend actually negotiated.
     pub negotiated: NegotiatedOutput,
     /// Processing applied before the device.
@@ -106,6 +112,7 @@ pub struct SignalPathAssessment {
 /// as `UserPreference`, the default shared cause, and is never `BitPerfect`.
 pub fn assess_signal_path(
     source_format: &StreamFormat,
+    source_codec: &SourceCodec,
     negotiated: &NegotiatedOutput,
     processing: &ProcessingState,
 ) -> SignalPathAssessment {
@@ -127,6 +134,9 @@ pub fn assess_signal_path(
             }
         }
     }
+    if source_codec.is_decoded_as_float {
+        reasons.push(NotBitPerfectReason::FloatDecoderOutputRounded);
+    }
     reasons.extend(processing_reasons(processing));
 
     let verdict = if reasons.is_empty() {
@@ -136,6 +146,7 @@ pub fn assess_signal_path(
     };
     SignalPathAssessment {
         source_format: *source_format,
+        source_codec: *source_codec,
         negotiated: negotiated.clone(),
         processing: *processing,
         verdict,
@@ -265,7 +276,7 @@ mod tests {
         negotiated: NegotiatedOutput,
         processing: ProcessingState,
     ) -> SignalPathAssessment {
-        assess_signal_path(&src, &negotiated, &processing)
+        assess_signal_path(&src, &SourceCodec::FLAC, &negotiated, &processing)
     }
 
     #[test]
@@ -376,6 +387,26 @@ mod tests {
                 device_mask: STEREO_MASK
             }]
         );
+    }
+
+    #[test]
+    fn a_source_decoded_as_float_is_never_bit_perfect() {
+        let mp3 = SourceCodec {
+            display_name: "MP3",
+            is_lossy: true,
+            is_decoded_as_float: true,
+        };
+        let result = assess_signal_path(
+            &source(44_100, 24),
+            &mp3,
+            &exclusive(device(44_100, 4, 24)),
+            &ProcessingState::default(),
+        );
+        assert_eq!(
+            reasons_of(&result),
+            vec![NotBitPerfectReason::FloatDecoderOutputRounded]
+        );
+        assert_eq!(result.source_codec, mp3);
     }
 
     #[test]
@@ -544,7 +575,7 @@ mod tests {
             is_dsp_active: true,
             ..ProcessingState::default()
         };
-        let result = assess_signal_path(&src, &negotiated, &processing);
+        let result = assess_signal_path(&src, &SourceCodec::FLAC, &negotiated, &processing);
         assert_eq!(result.source_format, src);
         assert_eq!(result.negotiated, negotiated);
         assert_eq!(result.processing, processing);
@@ -557,6 +588,7 @@ mod tests {
         negotiated.sample_delivery = DeviceSampleDelivery::ExactFloat32Conversion;
         let assessment = assess_signal_path(
             &source(96_000, 24),
+            &SourceCodec::FLAC,
             &negotiated,
             &ProcessingState::default(),
         );

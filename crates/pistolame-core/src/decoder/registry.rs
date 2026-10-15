@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::{AudioDecoder, DecodeError, DecoderProvider, FlacDecoderProvider};
+use super::{AudioDecoder, DecodeError, DecoderProvider, SymphoniaDecoderProvider};
 
 /// Ordered list of providers; the first that [`DecoderProvider::can_open`] wins.
 ///
@@ -13,9 +13,9 @@ pub struct DecoderRegistry {
 }
 
 impl DecoderRegistry {
-    /// Registry with the formats supported today: FLAC only.
+    /// Registry with the formats supported today: everything symphonia decodes.
     pub fn with_default_providers() -> Self {
-        Self::from_providers(vec![Box::new(FlacDecoderProvider)])
+        Self::from_providers(vec![Box::new(SymphoniaDecoderProvider)])
     }
 
     /// Registry with exactly these providers, tried in order.
@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn unknown_extension_is_unsupported() {
         let registry = DecoderRegistry::with_default_providers();
-        let result = registry.open(Path::new("song.mp3"));
+        let result = registry.open(Path::new("song.opus"));
         assert!(matches!(result, Err(DecodeError::UnsupportedFileType)));
     }
 
