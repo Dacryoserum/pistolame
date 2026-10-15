@@ -1061,6 +1061,8 @@ export component Lcd inherits Rectangle {
         border-color: Tokens.focus-ring;
         title-keyboard := FocusScope {
             enabled: AppState.has-current-track;
+            // Keyboard only (Tab): a mouse click on the cassette must not draw the focus ring.
+            focus-on-click: false;
             key-pressed(event) => {
                 if event.text == Key.Return || event.text == " " {
                     root.open-requested(); return accept;
