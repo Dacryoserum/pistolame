@@ -82,7 +82,7 @@ impl UiBridge {
             .collect();
         if is_artist_page {
             // An artist's page lists the newest albums first, undated ones last.
-            cards.sort_by(|left, right| right.0.cmp(&left.0));
+            cards.sort_by_key(|(year, _)| std::cmp::Reverse(*year));
         }
         let cards: Vec<AlbumCard> = cards.into_iter().map(|(_, card)| card).collect();
         let current_path = self.current_path();
