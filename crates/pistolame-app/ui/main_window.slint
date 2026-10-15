@@ -184,6 +184,15 @@ export component AppWindow inherits Window {
                 background: Tokens.separator-chrome;
             }
 
+            // Empty toolbar moves the window (macOS unified title bar); the controls sit above.
+            if AppState.title-bar-inset > 0: TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        AppState.begin-window-drag();
+                    }
+                }
+            }
+
             IconButton {
                 x: 20px;
                 y: 16px;
@@ -375,8 +384,11 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Sidebar.
-        Rectangle {
+        // Sidebar. On macOS its top holds the window buttons (unified title bar).
+        sidebar := Rectangle {
+            property <length> top: AppState.title-bar-inset;
+            // Réglages sits at the bottom, above the version.
+            property <length> settings-y: self.height - 64px;
             x: 0px;
             y: 0px;
             width: 240px;
@@ -387,6 +399,15 @@ export component AppWindow inherits Window {
                 y: 0px;
                 width: 1px;
                 background: Tokens.separator-chrome;
+            }
+
+            if sidebar.top > 0: TouchArea {
+                height: sidebar.top;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        AppState.begin-window-drag();
+                    }
+                }
             }
 
             // The running version, small and quiet, bottom left.
@@ -401,16 +422,16 @@ export component AppWindow inherits Window {
 
             search := SearchField {
                 x: 12px;
-                y: 16px;
+                y: sidebar.top + 16px;
             }
 
             SidebarHeader {
-                y: 60px;
+                y: sidebar.top + 60px;
                 text: "Bibliothèque";
             }
 
             SidebarItem {
-                y: 84px;
+                y: sidebar.top + 84px;
                 icon: Icons.clock-counter-clockwise;
                 label: "Ajouts récents";
                 is-selected: AppState.section == SidebarSection.recently-added;
@@ -421,7 +442,7 @@ export component AppWindow inherits Window {
             }
 
             SidebarItem {
-                y: 112px;
+                y: sidebar.top + 112px;
                 icon: Icons.microphone-stage;
                 label: "Artistes";
                 is-selected: AppState.section == SidebarSection.artists;
@@ -432,7 +453,7 @@ export component AppWindow inherits Window {
             }
 
             SidebarItem {
-                y: 140px;
+                y: sidebar.top + 140px;
                 icon: Icons.vinyl-record;
                 label: "Albums";
                 is-selected: AppState.section == SidebarSection.albums;
@@ -443,7 +464,7 @@ export component AppWindow inherits Window {
             }
 
             SidebarItem {
-                y: 168px;
+                y: sidebar.top + 168px;
                 icon: Icons.music-note;
                 label: "Morceaux";
                 is-selected: AppState.section == SidebarSection.tracks;
@@ -453,25 +474,14 @@ export component AppWindow inherits Window {
                 }
             }
 
-            SidebarItem {
-                y: 196px;
-                icon: Icons.sliders-horizontal;
-                label: "Réglages";
-                is-selected: AppState.section == SidebarSection.settings;
-                clicked => {
-                    AppState.navigate-to-section(SidebarSection.settings);
-                    key-scope.focus();
-                }
-            }
-
             SidebarHeader {
-                y: 240px;
+                y: sidebar.top + 212px;
                 text: "Playlists";
             }
 
             IconButton {
                 x: 196px;
-                y: 236px;
+                y: sidebar.top + 208px;
                 width: 24px;
                 height: 24px;
                 icon: Icons.plus;
@@ -484,10 +494,10 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Items whose row would reach the version label (bottom left) are not drawn.
+            // Items whose row would reach Réglages (bottom) are not drawn.
             for item[index] in AppState.playlists: SidebarItem {
-                visible: 264px + 28px * (index + 1) <= parent.height - 40px;
-                y: 264px + 28px * index;
+                visible: sidebar.top + 236px + 28px * (index + 1) <= sidebar.settings-y - 8px;
+                y: sidebar.top + 236px + 28px * index;
                 icon: Icons.playlist;
                 artwork: item.artwork;
                 label: item.name;
@@ -497,16 +507,61 @@ export component AppWindow inherits Window {
                     key-scope.focus();
                 }
             }
+
+            SidebarItem {
+                y: sidebar.settings-y;
+                icon: Icons.sliders-horizontal;
+                label: "Réglages";
+                is-selected: AppState.section == SidebarSection.settings;
+                clicked => {
+                    AppState.navigate-to-section(SidebarSection.settings);
+                    key-scope.focus();
+                }
+            }
         }
 
+        // Floating message, bottom center of the content. Errors stay until closed; notices
+        // leave by themselves (the Rust side clears them).
         if AppState.message != "": Rectangle {
-            x: 260px; y: root.height - 62px; width: root.width - 280px; height: 48px;
-            background: Tokens.surface-raised; border-radius: 6px;
-            HorizontalLayout {
-                padding: 8px; spacing: 8px;
-                Text { text: AppState.message; color: Tokens.status-caution; wrap: word-wrap; }
+            property <float> appear: 0;
+            init => { self.appear = 1; }
+            animate appear { duration: 200ms; easing: ease-out-quint; }
+            property <length> content-width: min(toast-row.preferred-width, root.width - 240px - 64px);
+            x: 240px + (root.width - 240px - self.content-width) / 2;
+            y: root.height - 24px - self.height + 8px * (1 - self.appear);
+            opacity: self.appear;
+            width: self.content-width;
+            height: max(40px, toast-row.preferred-height);
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            toast-row := HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 6px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+                alignment: start;
+                Icon {
+                    width: 16px;
+                    source: AppState.is-message-error ? Icons.warning-fill : Icons.check;
+                    colorize: AppState.is-message-error ? Tokens.status-caution : Tokens.status-ok;
+                }
+                Text {
+                    min-height: 24px;
+                    max-width: 640px;
+                    text: AppState.message;
+                    color: Tokens.text-primary;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
                 IconButton {
-                    width: 24px; height: 24px; icon: Icons.x; icon-size: 14px;
+                    width: 24px; height: 24px; icon: Icons.x; icon-size: 12px;
                     icon-color: Tokens.text-secondary; label: "Fermer le message";
                     clicked => { AppState.message = ""; }
                 }

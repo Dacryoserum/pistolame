@@ -37,6 +37,41 @@ struct Album {
     has_custom_artwork: bool,
 }
 
+/// For each album of the catalog, what tells it apart from a namesake (see
+/// `presentation::distinguishing_labels`).
+fn distinguishing_labels(albums: &[Album]) -> Vec<Option<String>> {
+    let identities: Vec<presentation::AlbumIdentity<'_>> = albums
+        .iter()
+        .map(|album| presentation::AlbumIdentity {
+            title: &album.title,
+            artist: &album.artist,
+            format: album
+                .tracks
+                .first()
+                .map(|track| {
+                    presentation::compact_format(
+                        track.bits_per_sample,
+                        track.sample_rate_hz,
+                        track.is_lossy.then_some(track.codec.as_str()),
+                    )
+                })
+                .unwrap_or_default(),
+            track_count: album.tracks.len(),
+        })
+        .collect();
+    presentation::distinguishing_labels(&identities)
+}
+
+/// The grid tile of catalog album `index`, with what tells it apart from a namesake.
+fn album_card(index: usize, album: &Album, distinguishing_label: Option<&str>) -> AlbumCard {
+    AlbumCard {
+        catalog_index: index as i32,
+        title: album.title.as_str().into(),
+        artist: presentation::album_tile_subtitle(&album.artist, distinguishing_label).into(),
+        artwork: album.artwork.clone(),
+    }
+}
+
 /// A cover change waiting for "Enregistrer" in the album editor.
 enum PendingArtwork {
     Unchanged,
@@ -61,6 +96,9 @@ enum UpdateMessage {
 
 /// Most tracks listed under a search; enough to find anything without a huge list.
 const MAXIMUM_SEARCH_TRACKS: usize = 200;
+/// How long a confirmation ("ajouté aux favoris") stays on screen: long enough to read two
+/// short lines, short enough not to cover the content.
+const NOTICE_DISPLAY_DURATION: Duration = Duration::from_secs(4);
 
 /// First update check after start-up, then once a day.
 const FIRST_UPDATE_CHECK_DELAY: Duration = Duration::from_secs(5);
@@ -648,10 +686,34 @@ impl UiBridge {
         self.save_settings();
     }
 
+    /// Shows an error; it stays until the user closes it or a new track starts. An empty text
+    /// hides the message.
     fn message(&self, text: String) {
         if let Some(window) = self.window.upgrade() {
-            window.global::<AppState>().set_message(text.into());
+            let state = window.global::<AppState>();
+            state.set_is_message_error(true);
+            state.set_message(text.into());
         }
+    }
+
+    /// Shows a confirmation or an information that leaves by itself after
+    /// `NOTICE_DISPLAY_DURATION`, unless another message replaced it meanwhile.
+    fn notice(&self, text: String) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        state.set_is_message_error(false);
+        state.set_message(text.as_str().into());
+        let weak = window.as_weak();
+        slint::Timer::single_shot(NOTICE_DISPLAY_DURATION, move || {
+            if let Some(window) = weak.upgrade() {
+                let state = window.global::<AppState>();
+                if !state.get_is_message_error() && state.get_message() == text.as_str() {
+                    state.set_message("".into());
+                }
+            }
+        });
     }
 
     /// Remembers `new_roots` (none at start-up), shows the stored library at once, then
@@ -923,11 +985,9 @@ impl UiBridge {
             return;
         };
         let albums = self.albums.borrow();
-        let card = |(index, album): (usize, &Album)| AlbumCard {
-            catalog_index: index as i32,
-            title: album.title.as_str().into(),
-            artist: album.artist.as_str().into(),
-            artwork: album.artwork.clone(),
+        let labels = distinguishing_labels(&albums);
+        let card = |(index, album): (usize, &Album)| {
+            album_card(index, album, labels.get(index).and_then(Option::as_deref))
         };
         let mut added: Vec<(usize, &Album)> = albums.iter().enumerate().collect();
         added.sort_by_key(|(_, album)| std::cmp::Reverse(album.sort_keys.added_seconds));
@@ -1227,6 +1287,7 @@ impl UiBridge {
         let words = crate::search::query_words(query);
         let artist_filter = state.get_artist_filter().to_string();
         let albums = self.albums.borrow();
+        let labels = distinguishing_labels(&albums);
         let cards: Vec<AlbumCard> = albums
             .iter()
             .enumerate()
@@ -1242,11 +1303,8 @@ impl UiBridge {
                     .unwrap_or_default();
                 crate::search::matches(&words, &[&album.title, &album.artist, &year, &genre])
             })
-            .map(|(index, album)| AlbumCard {
-                catalog_index: index as i32,
-                title: album.title.as_str().into(),
-                artist: album.artist.as_str().into(),
-                artwork: album.artwork.clone(),
+            .map(|(index, album)| {
+                album_card(index, album, labels.get(index).and_then(Option::as_deref))
             })
             .collect();
         let current_path = self.current_path();
@@ -1735,7 +1793,7 @@ impl UiBridge {
                 } else {
                     self.refresh_queue_view();
                 }
-                self.status(format!(
+                self.notice(format!(
                     "{subject} : {}",
                     if action == TrackAction::PlayNext {
                         "lu ensuite"
@@ -1815,7 +1873,7 @@ impl UiBridge {
             }
         }
         self.refresh_favorite_marks();
-        self.status(format!(
+        self.notice(format!(
             "{subject} : {}",
             if should_add {
                 "ajouté aux favoris"
@@ -2052,12 +2110,6 @@ impl UiBridge {
     }
 
     /// A short confirmation in the status line under the sidebar.
-    fn status(&self, text: String) {
-        if let Some(window) = self.window.upgrade() {
-            window.global::<AppState>().set_import_status(text.into());
-        }
-    }
-
     /// Redraws the "À suivre" panel.
     fn refresh_queue_view(&self) {
         let Some(window) = self.window.upgrade() else {
@@ -2461,7 +2513,7 @@ impl UiBridge {
             .collect();
         drop(albums);
         match std::fs::write(&path, crate::m3u::write_m3u(&entries)) {
-            Ok(()) => self.status(format!("Playlist exportée : {}", path.display())),
+            Ok(()) => self.notice(format!("Playlist exportée : {}", path.display())),
             Err(error) => self.message(format!("Export impossible : {error}")),
         }
     }
@@ -2531,16 +2583,11 @@ impl UiBridge {
             playlist.track_paths.extend(tracks);
         }
         self.show_playlists();
-        if let Some(window) = self.window.upgrade() {
-            window.global::<AppState>().set_import_status(
-                format!(
-                    "{count} morceau{} ajouté{} à « {name} »",
-                    if count == 1 { "" } else { "x" },
-                    if count == 1 { "" } else { "s" }
-                )
-                .into(),
-            );
-        }
+        self.notice(format!(
+            "{count} morceau{} ajouté{} à « {name} »",
+            if count == 1 { "" } else { "x" },
+            if count == 1 { "" } else { "s" }
+        ));
     }
 
     /// Shows track `track_index` of album `album_index` on the LCD and in the details.
@@ -3052,8 +3099,8 @@ impl UiBridge {
                 *self.devices.borrow_mut() = devices;
             }
             EngineEvent::PreferredDeviceUnavailable { .. } => {
-                self.message(
-                    "La sortie mémorisée est introuvable ; la sortie par défaut est utilisée."
+                self.notice(
+                    "Sortie mémorisée absente : lecture sur la sortie par défaut du système."
                         .into(),
                 );
             }

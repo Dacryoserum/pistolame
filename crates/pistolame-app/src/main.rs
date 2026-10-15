@@ -23,6 +23,7 @@ mod ui_bridge;
 #[cfg(test)]
 mod ui_preview;
 mod updater;
+mod window_chrome;
 mod window_events;
 
 #[allow(
@@ -41,7 +42,9 @@ fn main() -> anyhow::Result<()> {
     settings::migrate_legacy_app_data();
     // The copy an update replaced is deleted once this new copy runs.
     updater::clean_up_previous_copy();
+    window_chrome::select_backend()?;
     let window = AppWindow::new()?;
+    window_chrome::install(&window);
     let bridge = ui_bridge::UiBridge::new(&window)?;
     bridge.connect(&window);
     // A debug run must not overwrite the start section the user saved.

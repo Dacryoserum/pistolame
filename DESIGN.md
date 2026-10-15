@@ -132,6 +132,10 @@ The layout, density and calm of a classic macOS music app; the identity of an in
 - **No translucency.** Native vibrancy/backdrop blur exists in neither Slint nor iced. Chrome
   (sidebar + toolbar) uses one solid tinted surface, one step lighter than content, framed by
   a 1 px `separator-chrome` line. This reads as the same L-shaped chrome without the blur.
+- **Unified title bar (macOS).** The window draws under a transparent title bar: the window
+  buttons sit at the top of the sidebar (38 px kept free above the search field), the transport
+  toolbar is the top edge of the window, and empty chrome drags the window (double click
+  zooms). Windows and Linux keep their system title bar.
 
 ## 2. Color
 
@@ -230,14 +234,15 @@ Motion explains state; nothing else moves.
 
 | Token | Value | Use |
 |---|---|---|
-| instant | 0 ms | hover and pressed fills, navigation between views, play/pause glyph swap |
-| quick | 120 ms ease-out-quint | LCD time labels and scrubber thumb appearing on hover |
-| standard | 200 ms ease-out-quint | popover open (opacity 0→1, y −4→0); close is instant |
+| instant | 0 ms | pressed fills, list-row hover (virtualized rows are reused while scrolling), navigation between views, play/pause glyph swap |
+| quick | 120 ms ease-out-quint | hover fills of buttons, sidebar items and menu rows; album tile veil and play button; LCD time labels and scrubber thumb |
+| standard | 200 ms ease-out-quint | popover and message open (opacity 0→1, a few px of travel); close is instant |
 | continuous | per frame | progress fill, now-playing bars (stop when paused) |
 
 `ease-out-quint` ≈ cubic-bezier(0.22, 1, 0.36, 1); both Slint (`ease-out-quint`) and iced
 (`animation::Easing::EaseOutQuint`) have it by name. No bounce, no stagger, no page-load
-choreography. With "reduce animations" on, quick/standard become instant; progress and bars
+choreography. Motion runs only on a state change and stops: nothing animates while the app is
+idle (Pistolame must stay light; idle CPU is measured after UI changes). With "reduce animations" on, quick/standard become instant; progress and bars
 keep updating (they are state).
 
 ## 6. Iconography
@@ -283,7 +288,8 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
 
 - **Sidebar item** — 220×28, radius 6, icon 16 in `accent`, label body `text-primary`.
   Hover `fill-sidebar-hover`, selected `fill-sidebar-selected`. Section header: label role,
-  `text-secondary`, 24 high.
+  `text-secondary`, 24 high. Order: Bibliothèque (Ajouts récents, Artistes, Albums, Morceaux),
+  Playlists, then Réglages pinned at the bottom above the version.
 - **Search field** — 216×28, radius 7, `surface-field`, magnifying-glass 14 `text-secondary`,
   placeholder "Rechercher" `text-secondary`, focused: 2 px `focus-ring` border.
 - **Icon button (toolbar)** — 28/32/36 square, radius 6, glyph `text-primary` (toggles
@@ -292,7 +298,7 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
   cover. Centre: title (body-medium) over "Artiste — Album" (callout, secondary), centered,
   elided; under them a 3 px progress rail (`rail` / `rail-fill`). On hover: elapsed and
   remaining times appear at both ends of line 2 and a 9 px thumb on the rail (drag to seek).
-  Right: the quality badge.
+  Right: the quality badge. Thumbnail radius 4.
 - **Quality badge** — pill, 20 high, padding 8, gap 4, icon 12 + label role text.
   *Bit-perfect · 24 bits / 96 kHz*: `status-ok-tint` / `status-ok` / seal-check-fill.
   *Traité · 24 bits / 96 kHz*: `fill-control` / `text-primary` / sliders-horizontal.
@@ -314,6 +320,18 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
   `fill-row-pressed`. Number (secondary, end-aligned) → title (body) → format (caption,
   secondary) → duration (body, secondary, end-aligned). Playing row: three animated accent
   bars replace the number; title becomes body-medium.
+- **Header button** — the single control style of page headers ("Trier par : …", "+",
+  "Favoris"): 28 high, pill, `fill-control` (hover `fill-control-hover`), icon 12 in
+  `text-secondary`, label callout-medium `text-primary`, optional caret. A filter that is on
+  turns brass: `accent` at 16 % behind, `accent` icon and label. Icon-only = 28 px circle.
+- **Page header** — display title at 24, a count line in callout `text-secondary` under it
+  ("25 albums", "478 morceaux"), header buttons right-aligned on the title.
+- **Message** — floating at the bottom center of the content, 10 radius, `surface-raised`,
+  level 2, icon 16 + body text `text-primary` + close button. Error: `warning-fill` in
+  `status-caution`, stays until closed. Notice (a confirmation, or information such as a
+  missing remembered output): `check` in `status-ok`, leaves after 4 s.
+- **Album tile namesakes** — when two albums share title and artist, the artist line adds what
+  tells them apart: the compact format if it differs ("Maes · 24/48"), else the track count.
 - **Pill buttons** — 112×32, radius 16, icon 14 + headline label. Primary "Lecture":
   `accent` / `text-on-accent` (hover `accent-hover`, pressed `accent-pressed`). Secondary
   "Aléatoire": `fill-control` / `accent` (hover `fill-control-hover`, pressed

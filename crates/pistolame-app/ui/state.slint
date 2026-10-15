@@ -165,7 +165,14 @@ export global AppState {
     in property <bool> transmission-ok;
     in property <bool> integrity-ok;
     in-out property <string> message;
+    // An error stays until closed; a notice (confirmation, information) leaves by itself.
+    in property <bool> is-message-error;
     in property <string> import-status;
+    // macOS: the window draws under its transparent title bar; the sidebar keeps this much room
+    // at the top for the window buttons. Zero where the system title bar stays.
+    in property <length> title-bar-inset: 0px;
+    // Empty chrome (toolbar, sidebar top) moves the window; a double click zooms it.
+    callback begin-window-drag();
     in property <string> underrun-label: "Coupures : 0";
     callback import-files();
     callback import-folder();
