@@ -510,6 +510,15 @@ export component ActionMenuButton inherits Rectangle {
     callback action(TrackAction);
     width: 28px;
     height: 28px;
+    // Where the menu opens, in this button's coordinates: under it, or at the pointer.
+    property <length> menu-x;
+    property <length> menu-y;
+    // Opens the menu at (x, y) in this button's coordinates (right click on the row).
+    public function open-at(x: length, y: length) {
+        root.menu-x = x;
+        root.menu-y = y;
+        menu.show();
+    }
     button := IconButton {
         width: root.width;
         height: root.height;
@@ -517,11 +526,11 @@ export component ActionMenuButton inherits Rectangle {
         icon-size: 18px;
         icon-color: root.icon-color;
         label: root.label;
-        clicked => { menu.show(); }
+        clicked => { root.open-at(root.width - 232px, root.height + 4px); }
     }
     menu := PopupWindow {
-        x: root.width - 232px;
-        y: root.height + 4px;
+        x: root.menu-x;
+        y: root.menu-y;
         width: 232px;
         Rectangle {
             border-radius: 10px;
@@ -559,6 +568,68 @@ export component ActionMenuButton inherits Rectangle {
     }
 }
 
+// Secondary text that opens a page (artist, album): only the text itself is clickable, so the
+// rest of its cell keeps the row's own behavior. It brightens while hovered.
+export component TextLink inherits Rectangle {
+    in property <string> text;
+    // The widest the link may be (its column); shorter text keeps the rest of it unclickable.
+    in property <length> available-width;
+    in property <TextRole> role: TextRole.body;
+    in property <color> text-color: Tokens.text-secondary;
+    in property <color> hover-text-color: Tokens.text-primary;
+    out property <bool> has-hover: touch.has-hover;
+    callback clicked();
+    width: min(label.preferred-width, root.available-width);
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    label := Txt {
+        role: root.role;
+        width: root.width;
+        height: root.height;
+        vertical-alignment: center;
+        text: root.text;
+        overflow: elide;
+        color: touch.has-hover ? root.hover-text-color : root.text-color;
+    }
+    touch := TouchArea {
+        enabled: root.text != "";
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The press rules shared by every track row. Ctrl/Cmd+click toggles the row in the selection,
+// Shift+click selects the range, a plain click plays ("Lire d'un simple clic") or selects (then a
+// double click plays), a right click opens the row's "…" menu at the pointer. Slint reports
+// Command as `control` on macOS.
+component TrackRowTouch inherits TouchArea {
+    callback activated();
+    callback selected(bool /* is-toggle */, bool /* is-range */);
+    callback menu-requested(length, length);
+    pointer-event(event) => {
+        if event.kind != PointerEventKind.up || !self.has-hover {
+            return;
+        }
+        if event.button == PointerEventButton.right {
+            root.menu-requested(self.mouse-x, self.mouse-y);
+        } else if event.button == PointerEventButton.left {
+            if event.modifiers.control || event.modifiers.shift {
+                root.selected(event.modifiers.control, event.modifiers.shift);
+            } else if AppState.is-single-click-play {
+                root.activated();
+            } else {
+                root.selected(false, false);
+            }
+        }
+    }
+    double-clicked => {
+        if !AppState.is-single-click-play {
+            root.activated();
+        }
+    }
+}
+
 export component TrackRow inherits Rectangle {
     in property <int> number;
     in property <string> title;
@@ -573,14 +644,18 @@ export component TrackRow inherits Rectangle {
     in property <bool> is-favorite;
     in property <bool> can-go-to-album: true;
     in property <string> subtitle;
-    callback clicked();
+    in property <bool> is-selected;
+    // Plays the track: double click, Return, or a single click with "Lire d'un simple clic".
+    callback activated();
+    // A press that changes the selection: (is-toggle, is-range); both false = only this row.
+    callback selected(bool, bool);
     callback action(TrackAction);
     border-width: keyboard.has-focus ? 2px : 0px;
     border-color: Tokens.focus-ring;
     keyboard := FocusScope {
         key-pressed(event) => {
             if event.text == " " || event.text == Key.Return {
-                root.clicked(); return accept;
+                root.activated(); return accept;
             }
             return reject;
         }
@@ -589,11 +664,11 @@ export component TrackRow inherits Rectangle {
     border-radius: 6px;
     // Still hovered while the pointer is on the row's own "…" button.
     property <bool> is-hovered: touch.has-hover || menu-button.has-hover;
-    background: touch.pressed ? Tokens.fill-row-pressed : root.is-hovered ? Tokens.fill-row-hover : is-odd ? Tokens.fill-row-zebra : transparent;
+    background: touch.pressed ? Tokens.fill-row-pressed : root.is-selected ? Tokens.fill-row-selected : root.is-hovered ? Tokens.fill-row-hover : is-odd ? Tokens.fill-row-zebra : transparent;
     accessible-role: button;
     accessible-label: root.title;
     accessible-action-default => {
-        root.clicked();
+        root.activated();
     }
     property <length> action-slot: 32px;
     property <length> duration-x: root.width - 12px - root.action-slot - 44px;
@@ -650,10 +725,10 @@ export component TrackRow inherits Rectangle {
         color: Tokens.text-secondary;
     }
 
-    touch := TouchArea {
-        clicked => {
-            root.clicked();
-        }
+    touch := TrackRowTouch {
+        activated => { root.activated(); }
+        selected(is-toggle, is-range) => { root.selected(is-toggle, is-range); }
+        menu-requested(x, y) => { menu-button.open-at(x - menu-button.x, y - menu-button.y); }
     }
 
     // A favorite shows a small heart in the menu slot while the row is not hovered.
@@ -675,6 +750,72 @@ export component TrackRow inherits Rectangle {
         can-go-to-album: root.can-go-to-album;
         opacity: root.has-menu && root.is-hovered ? 1 : 0;
         action(kind) => { root.action(kind); }
+    }
+}
+
+// Every keyboard and mouse shortcut, for Réglages and the "?" help sheet.
+export component ShortcutList inherits VerticalLayout {
+    spacing: 6px;
+    for shortcut in [
+        { keys: "Espace", action: "Lecture / pause" },
+        { keys: AppState.shortcut-modifier + "→  /  " + AppState.shortcut-modifier + "←", action: "Morceau suivant / précédent" },
+        { keys: AppState.shortcut-modifier + "↑  /  " + AppState.shortcut-modifier + "↓", action: "Volume +1 dB / −1 dB (mode partagé, aussi la molette)" },
+        { keys: AppState.shortcut-modifier + "F", action: "Rechercher" },
+        { keys: AppState.shortcut-modifier + "L", action: "Morceau en cours" },
+        { keys: AppState.shortcut-modifier + "1 à " + AppState.shortcut-modifier + "4", action: "Ajouts récents, Artistes, Albums, Morceaux" },
+        { keys: AppState.shortcut-modifier + ",", action: "Réglages" },
+        { keys: AppState.shortcut-modifier + "[  /  " + AppState.shortcut-modifier + "]", action: "Page précédente / suivante (souris : boutons 4 et 5)" },
+        { keys: AppState.shortcut-modifier + "O  /  " + AppState.shortcut-modifier + "⇧O", action: "Ajouter des fichiers / un dossier" },
+        { keys: AppState.shortcut-modifier + "clic  /  ⇧clic", action: "Sélectionner plusieurs morceaux" },
+        { keys: "Clic droit", action: "Menu d’un morceau" },
+        { keys: AppState.shortcut-modifier + "Z  /  " + AppState.shortcut-modifier + "⇧Z", action: "Annuler / rétablir la dernière modification de la file" },
+        { keys: "?  /  F1", action: "Cette aide" },
+        { keys: "Échap", action: "Fermer, effacer la sélection, revenir en arrière" },
+    ]: HorizontalLayout {
+        spacing: 16px;
+        Txt { width: 160px; text: shortcut.keys; color: Tokens.text-primary; }
+        Txt { text: shortcut.action; color: Tokens.text-secondary; }
+    }
+}
+
+// Floating bar over the content while several tracks are selected: the "…" actions for all of
+// them at once. Static (no animation, one shadow drawn once).
+export component SelectionBar inherits Rectangle {
+    height: 44px;
+    width: content.preferred-width;
+    border-radius: 22px;
+    background: Tokens.surface-raised;
+    border-width: 1px;
+    border-color: Tokens.border-raised;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-blur: 18px;
+    drop-shadow-color: Tokens.shadow-popover;
+    content := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        spacing: 8px;
+        alignment: center;
+        Txt {
+            role: TextRole.callout-medium;
+            height: root.height;
+            vertical-alignment: center;
+            text: AppState.selection-count + " morceaux sélectionnés";
+        }
+        Rectangle { width: 4px; }
+        HeaderButton { y: 8px; icon: Icons.skip-forward-fill; label: "Lire ensuite"; clicked => { AppState.selection-action(TrackAction.play-next); } }
+        HeaderButton { y: 8px; icon: Icons.queue; label: "Ajouter à la file"; clicked => { AppState.selection-action(TrackAction.add-to-queue); } }
+        HeaderButton { y: 8px; icon: Icons.plus; label: "Playlist…"; clicked => { AppState.selection-action(TrackAction.add-to-playlist); } }
+        HeaderButton { y: 8px; icon: Icons.heart; label: "Favoris"; clicked => { AppState.selection-action(TrackAction.toggle-favorite); } }
+        if AppState.can-remove-selection: HeaderButton {
+            y: 8px; icon: Icons.x; label: "Retirer";
+            clicked => { AppState.selection-action(TrackAction.remove-from-playlist); }
+        }
+        IconButton {
+            y: 8px; width: 28px; height: 28px;
+            icon: Icons.x; icon-size: 12px; icon-color: Tokens.text-secondary;
+            label: "Effacer la sélection (Échap)";
+            clicked => { AppState.clear-selection(); }
+        }
     }
 }
 
@@ -739,6 +880,14 @@ export component VolumeSlider inherits Rectangle {
             if self.pressed {
                 root.apply(self.mouse-x);
             }
+        }
+        // The wheel moves one decibel per notch (up = louder), like Cmd/Ctrl+Up/Down.
+        scroll-event(event) => {
+            if !root.is-adjustable || event.delta-y == 0 {
+                return reject;
+            }
+            AppState.volume-changed(Math.clamp(AppState.volume-decibels + (event.delta-y > 0 ? 1 : -1), -60, 0), false);
+            return accept;
         }
     }
 
@@ -1287,7 +1436,11 @@ export component AlbumsGrid inherits Rectangle {
                 is-odd: Math.mod(parent.track-row, 2) == 1;
                 is-current: AppState.search-tracks[parent.track-row].is-current;
                 is-favorite: AppState.search-tracks[parent.track-row].is-favorite;
-                clicked => { AppState.play-search-result(parent.track-row); }
+                is-selected: AppState.search-tracks[parent.track-row].is-selected;
+                activated => { AppState.play-search-result(parent.track-row); }
+                selected(is-toggle, is-range) => {
+                    AppState.select-track({ source: TrackSource.search-result, album: 0, track: 0, position: parent.track-row }, is-toggle, is-range);
+                }
                 action(kind) => {
                     AppState.track-action({ source: TrackSource.search-result, album: 0, track: 0, position: parent.track-row }, kind);
                 }
@@ -1431,13 +1584,24 @@ export component AlbumDetail inherits Rectangle {
             text: AppState.detail.title;
         }
 
-        Txt {
-            role: TextRole.title-2;
+        // Each artist of the album opens its page.
+        HorizontalLayout {
             x: 300px;
             y: 194px;
             width: root.content-width - 332px;
-            text: AppState.detail.artist;
-            color: Tokens.accent;
+            height: 28px;
+            alignment: start;
+            for artist[index] in AppState.detail-artists: HorizontalLayout {
+                if index > 0: Txt { role: TextRole.title-2; text: ", "; color: Tokens.accent; }
+                TextLink {
+                    role: TextRole.title-2;
+                    available-width: root.content-width - 332px;
+                    text: artist;
+                    text-color: Tokens.accent;
+                    hover-text-color: Tokens.accent-hover;
+                    clicked => { AppState.open-artist-named(artist); }
+                }
+            }
         }
 
         HorizontalLayout {
@@ -1503,9 +1667,13 @@ export component AlbumDetail inherits Rectangle {
                 is-odd: Math.mod(track.track-index, 2) == 1;
                 is-current: AppState.playing-album-index == AppState.detail-album-index && AppState.playing-track-index == track.track-index;
                 is-favorite: track.is-favorite;
+                is-selected: track.is-selected;
                 can-go-to-album: false;
-                clicked => {
+                activated => {
                     AppState.play-track(AppState.detail-album-index, track.track-index);
+                }
+                selected(is-toggle, is-range) => {
+                    AppState.select-track({ source: TrackSource.album-track, album: AppState.detail-album-index, track: track.track-index, position: 0 }, is-toggle, is-range);
                 }
                 action(kind) => {
                     AppState.track-action({ source: TrackSource.album-track, album: AppState.detail-album-index, track: track.track-index, position: 0 }, kind);
@@ -1883,29 +2051,32 @@ export component OutputSettings inherits Rectangle {
                     }
                 }
             }
+            SettingsCard {
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Txt { role: TextRole.headline; text: "Lire d’un simple clic"; }
+                        Txt {
+                            role: TextRole.callout;
+                            text: "Un clic sur un morceau le lance. Sinon, un clic le sélectionne et un double clic le lance.";
+                            color: Tokens.text-secondary;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
+                    }
+                    Switch {
+                        checked: AppState.is-single-click-play;
+                        accessible-label: "Lire d’un simple clic";
+                        toggled => { AppState.set-single-click-play(self.checked); }
+                    }
+                }
+            }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "Raccourcis clavier"; height: 32px; vertical-alignment: center; }
             SettingsCard {
-                VerticalLayout {
-                    padding: 14px;
-                    spacing: 6px;
-                    for shortcut in [
-                        { keys: "Espace", action: "Lecture / pause" },
-                        { keys: AppState.shortcut-modifier + "→  /  " + AppState.shortcut-modifier + "←", action: "Morceau suivant / précédent" },
-                        { keys: AppState.shortcut-modifier + "↑  /  " + AppState.shortcut-modifier + "↓", action: "Volume +1 dB / −1 dB (mode partagé)" },
-                        { keys: AppState.shortcut-modifier + "F", action: "Rechercher" },
-                        { keys: AppState.shortcut-modifier + "L", action: "Morceau en cours" },
-                        { keys: AppState.shortcut-modifier + "1 à " + AppState.shortcut-modifier + "4", action: "Ajouts récents, Artistes, Albums, Morceaux" },
-                        { keys: AppState.shortcut-modifier + ",", action: "Réglages" },
-                        { keys: AppState.shortcut-modifier + "[  /  " + AppState.shortcut-modifier + "]", action: "Page précédente / suivante (souris : boutons 4 et 5)" },
-                        { keys: AppState.shortcut-modifier + "O  /  " + AppState.shortcut-modifier + "⇧O", action: "Ajouter des fichiers / un dossier" },
-                        { keys: "Échap", action: "Revenir en arrière" },
-                    ]: HorizontalLayout {
-                        spacing: 16px;
-                        Txt { width: 160px; text: shortcut.keys; color: Tokens.text-primary; }
-                        Txt { text: shortcut.action; color: Tokens.text-secondary; }
-                    }
-                }
+                ShortcutList { padding: 14px; }
             }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "À propos"; height: 32px; vertical-alignment: center; }
@@ -2005,8 +2176,23 @@ export component NowPlaying inherits Rectangle {
                     spacing: 6px;
                     Txt { role: TextRole.label; text: "MORCEAU EN COURS"; color: Tokens.text-secondary; }
                     Txt { role: TextRole.display; text: AppState.lcd-title; overflow: elide; }
-                    Txt { role: TextRole.title-2; text: AppState.current-artist; color: Tokens.accent; overflow: elide; }
-                    Txt { text: AppState.current-album; color: Tokens.text-secondary; overflow: elide; }
+                    HorizontalLayout {
+                        alignment: start;
+                        height: 28px;
+                        TextLink {
+                            role: TextRole.title-2; available-width: 600px; text: AppState.current-artist;
+                            text-color: Tokens.accent; hover-text-color: Tokens.accent-hover;
+                            clicked => { AppState.open-current-artist(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        height: 20px;
+                        TextLink {
+                            available-width: 600px; text: AppState.current-album;
+                            clicked => { AppState.open-current-album(); }
+                        }
+                    }
                     Rectangle { height: 8px; }
                     HorizontalLayout {
                         spacing: 10px;
@@ -2331,8 +2517,12 @@ export component PlaylistView inherits Rectangle {
             is-odd: Math.mod(index, 2) == 1;
             is-current: track.is-current;
             is-favorite: track.is-favorite;
+            is-selected: track.is-selected;
             can-remove: true;
-            clicked => { AppState.play-playlist-row(index); }
+            activated => { AppState.play-playlist-row(index); }
+            selected(is-toggle, is-range) => {
+                AppState.select-track({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, is-toggle, is-range);
+            }
             action(kind) => {
                 AppState.track-action({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, kind);
             }
@@ -2775,27 +2965,41 @@ component LibraryTrackLine inherits Rectangle {
     in property <length> year-x; in property <length> format-x; in property <length> duration-x;
     in property <bool> is-odd;
     property <bool> is-current: root.track.path != "" && root.track.path == AppState.current-track-path;
-    property <bool> is-hovered: touch.has-hover || menu-button.has-hover;
-    callback clicked();
+    property <bool> is-hovered: touch.has-hover || menu-button.has-hover || artist-link.has-hover || album-link.has-hover;
+    callback activated();
+    callback selected(bool, bool);
     callback action(TrackAction);
     height: 32px;
     border-radius: 6px;
-    background: touch.pressed ? Tokens.fill-row-pressed : root.is-hovered ? Tokens.fill-row-hover : root.is-odd ? Tokens.fill-row-zebra : transparent;
+    background: touch.pressed ? Tokens.fill-row-pressed : root.track.is-selected ? Tokens.fill-row-selected : root.is-hovered ? Tokens.fill-row-hover : root.is-odd ? Tokens.fill-row-zebra : transparent;
     accessible-role: button;
     accessible-label: root.track.title + ", " + root.track.artist;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { root.activated(); }
     Txt {
         role: root.is-current ? TextRole.body-medium : TextRole.body;
         x: root.title-x; width: root.title-width; height: root.height; vertical-alignment: center;
         text: root.track.title; overflow: elide;
         color: root.is-current ? Tokens.accent : Tokens.text-primary;
     }
-    Txt { x: root.artist-x; width: root.artist-width; height: root.height; vertical-alignment: center; text: root.track.artist; overflow: elide; color: Tokens.text-secondary; }
-    Txt { x: root.album-x; width: root.album-width; height: root.height; vertical-alignment: center; text: root.track.album; overflow: elide; color: Tokens.text-secondary; }
     Txt { x: root.year-x; width: 56px; height: root.height; vertical-alignment: center; text: root.track.year; horizontal-alignment: right; color: Tokens.text-secondary; }
     Txt { role: TextRole.caption; x: root.format-x; width: 128px; height: root.height; vertical-alignment: center; text: root.track.format-label; horizontal-alignment: right; color: Tokens.text-secondary; }
     Txt { x: root.duration-x; width: 56px; height: root.height; vertical-alignment: center; text: root.track.duration-label; horizontal-alignment: right; color: Tokens.text-secondary; }
-    touch := TouchArea { clicked => { root.clicked(); } }
+    touch := TrackRowTouch {
+        activated => { root.activated(); }
+        selected(is-toggle, is-range) => { root.selected(is-toggle, is-range); }
+        menu-requested(x, y) => { menu-button.open-at(x - menu-button.x, y - menu-button.y); }
+    }
+    // Artist and album open their page; the rest of the cell still selects the row.
+    artist-link := TextLink {
+        x: root.artist-x; available-width: root.artist-width; height: root.height;
+        text: root.track.artist;
+        clicked => { root.action(TrackAction.go-to-artist); }
+    }
+    album-link := TextLink {
+        x: root.album-x; available-width: root.album-width; height: root.height;
+        text: root.track.album;
+        clicked => { root.action(TrackAction.go-to-album); }
+    }
     if root.track.is-favorite && !root.is-hovered: Icon {
         x: root.width - 8px - 28px + 8px;
         y: (root.height - 12px) / 2;
@@ -2858,7 +3062,10 @@ export component TracksView inherits Rectangle {
             artist-x: columns.artist-x; artist-width: columns.artist-width;
             album-x: columns.album-x; album-width: columns.album-width;
             year-x: columns.year-x; format-x: columns.format-x; duration-x: columns.duration-x;
-            clicked => { AppState.play-library-track(index); }
+            activated => { AppState.play-library-track(index); }
+            selected(is-toggle, is-range) => {
+                AppState.select-track({ source: TrackSource.library-track, album: 0, track: 0, position: index }, is-toggle, is-range);
+            }
             action(kind) => {
                 AppState.track-action({ source: TrackSource.library-track, album: 0, track: 0, position: index }, kind);
             }

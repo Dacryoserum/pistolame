@@ -3,7 +3,6 @@
 use super::*;
 
 impl UiBridge {
-    /// A short confirmation in the status line under the sidebar.
     /// Redraws the "À suivre" panel.
     pub(super) fn refresh_queue_view(&self) {
         let Some(window) = self.window.upgrade() else {

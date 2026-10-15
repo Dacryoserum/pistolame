@@ -117,6 +117,21 @@ impl UiBridge {
             }
         });
         let handle = self.clone();
+        state.on_open_current_artist(move || {
+            let artist = handle.selected_track.get().and_then(|(album_index, _)| {
+                handle
+                    .albums
+                    .borrow()
+                    .get(album_index)
+                    .and_then(|album| album.artists.first().cloned())
+            });
+            if let Some(artist) = artist {
+                handle.open_artist_named(&artist);
+            }
+        });
+        let handle = self.clone();
+        state.on_open_artist_named(move |artist| handle.open_artist_named(&artist));
+        let handle = self.clone();
         state.on_open_playlist(move |index| {
             if let Ok(index) = usize::try_from(index) {
                 handle.open_playlist(index);

@@ -17,6 +17,7 @@ export struct TrackRowData {
     // Index of the track in the album (rows and tracks differ when there are headings).
     track-index: int,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export struct PathStep {
@@ -122,6 +123,7 @@ export struct LibraryTrackRow {
     // File path, compared with `AppState.current-track-path` to mark the playing row.
     path: string,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export struct ArtistCard {
@@ -146,6 +148,7 @@ export struct PlaylistTrackRow {
     duration-label: string,
     is-current: bool,
     is-favorite: bool,
+    is-selected: bool,
 }
 
 export global AppState {
@@ -190,6 +193,10 @@ export global AppState {
     in property <string> current-duration;
     in property <string> current-filename;
     callback open-current-album();
+    callback open-current-artist();
+    // The artists of the album page, each a link to its page.
+    in property <[string]> detail-artists;
+    callback open-artist-named(string);
     // "Modifier l'album" sheet: title, artist and cover shown in the app, stored in the
     // library; the music files are never modified.
     in-out property <bool> is-album-editor-open;
@@ -232,6 +239,17 @@ export global AppState {
     // The play queue ("À suivre"): tracks queued by hand play before the rest of the album or
     // playlist being played.
     callback track-action(TrackTarget, TrackAction);
+    // Multiple selection in the track lists: Ctrl/Cmd+click toggles a row, Shift+click selects
+    // the range from the last row clicked. A "…" action on a selected row applies to them all.
+    callback select-track(TrackTarget, bool /* is-toggle */, bool /* is-range */);
+    in property <int> selection-count;
+    // The selection is in a playlist: the bar offers "Retirer de la playlist".
+    in property <bool> can-remove-selection;
+    callback selection-action(TrackAction);
+    callback clear-selection();
+    // Réglages: a single click plays a track; otherwise it selects and a double click plays.
+    in property <bool> is-single-click-play;
+    callback set-single-click-play(bool);
     // "Afficher dans le Finder" / "Afficher dans l'Explorateur" / "Ouvrir le dossier".
     in property <string> reveal-label: "Afficher dans le Finder";
     in-out property <bool> is-queue-open;

@@ -5,6 +5,15 @@ use super::*;
 impl UiBridge {
     /// Runs a "…" menu action on a track, an album or a playlist.
     pub(super) fn run_track_action(&self, target: TrackTarget, action: TrackAction) {
+        let selected = self.selected_tracks_including(&target);
+        if selected.is_some() {
+            // The selection did its job; its rows are rebuilt by some actions anyway.
+            if action == TrackAction::RemoveFromPlaylist {
+                self.run_selection_action(action);
+                return;
+            }
+            self.clear_selection();
+        }
         if action == TrackAction::RemoveFromPlaylist {
             if target.source == TrackSource::PlaylistEntry
                 && let Ok(position) = usize::try_from(target.position)
@@ -13,7 +22,7 @@ impl UiBridge {
             }
             return;
         }
-        let Some((paths, subject)) = self.target_tracks(&target) else {
+        let Some((paths, subject)) = selected.or_else(|| self.target_tracks(&target)) else {
             return;
         };
         match action {

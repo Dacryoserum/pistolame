@@ -145,6 +145,12 @@ impl UiBridge {
                     duration_label: presentation::clock(file.duration_seconds).into(),
                     is_current: current_path.as_ref() == Some(&path),
                     is_favorite: self.favorites.borrow().contains(&path),
+                    is_selected: self.is_row_selected(
+                        crate::track_selection::SelectionList::Playlist {
+                            playlist_index: index,
+                        },
+                        position,
+                    ),
                 })
             })
             .collect();
@@ -217,6 +223,8 @@ impl UiBridge {
     }
 
     pub(super) fn remove_playlist_entry(&self, position: usize) {
+        // The entries after it move up: the selected positions would be wrong.
+        self.clear_selection();
         let Some(index) = self.current_playlist_index() else {
             return;
         };

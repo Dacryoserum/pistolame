@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
+import { AddToPlaylistSheet, SelectionBar, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, SidebarSection, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -144,6 +144,10 @@ export component AppWindow inherits Window {
             AppState.is-update-panel-open = false;
             return true;
         }
+        if AppState.selection-count > 0 {
+            AppState.clear-selection();
+            return true;
+        }
         return false;
     }
 
@@ -232,6 +236,11 @@ export component AppWindow inherits Window {
             ArtistsView { visible: AppState.view == ViewKind.artists; }
             TracksView { visible: AppState.view == ViewKind.tracks; }
             RecentView { visible: AppState.view == ViewKind.recently-added; }
+
+            if AppState.selection-count >= 2: SelectionBar {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 20px;
+            }
         }
 
         OutputSettings {

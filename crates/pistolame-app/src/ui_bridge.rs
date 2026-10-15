@@ -24,6 +24,7 @@ mod now_playing;
 mod playback;
 mod playlists;
 mod queue;
+mod selection;
 mod session_glue;
 mod track_actions;
 mod updates;
@@ -202,6 +203,8 @@ pub(crate) struct UiBridge {
     navigation: RefCell<crate::navigation::NavigationHistory>,
     /// Counts the routes shown, so a delayed scroll restore never lands on a newer route.
     route_generation: Rc<Cell<u64>>,
+    /// The rows selected in the track list shown (Ctrl/Cmd+click, Shift+click).
+    selection: RefCell<crate::track_selection::TrackSelection>,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -291,6 +294,7 @@ impl UiBridge {
             next_session_save: Cell::new(std::time::Instant::now()),
             navigation: RefCell::new(crate::navigation::NavigationHistory::new(start_page)),
             route_generation: Rc::new(Cell::new(0)),
+            selection: RefCell::default(),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -385,6 +389,15 @@ impl UiBridge {
             }
         });
         state.on_open_nyquist(|| open_in_browser(crate::authenticity::NYQUIST_URL));
+        state.set_is_single_click_play(self.settings.borrow().is_single_click_play);
+        let handle = self.clone();
+        state.on_set_single_click_play(move |is_on| {
+            handle.settings.borrow_mut().is_single_click_play = is_on;
+            handle.save_settings();
+            if let Some(window) = handle.window.upgrade() {
+                window.global::<AppState>().set_is_single_click_play(is_on);
+            }
+        });
         state.set_are_artist_photos_on(!self.settings.borrow().are_artist_photos_off);
         let handle = self.clone();
         state.on_set_artist_photos(move |is_on| {
@@ -472,6 +485,7 @@ impl UiBridge {
             }
         });
         self.connect_queue(&state);
+        self.connect_selection(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {

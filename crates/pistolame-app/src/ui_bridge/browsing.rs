@@ -47,6 +47,8 @@ impl UiBridge {
     /// Shows the albums matching `query` (all of them when it is empty) and, while searching,
     /// the matching tracks under them.
     pub(super) fn update_grid(&self, query: &str) {
+        // The rows are rebuilt: their positions may change.
+        self.clear_selection();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -97,6 +99,7 @@ impl UiBridge {
                             duration_label: presentation::clock(file.duration_seconds).into(),
                             is_current: current_path.as_ref() == Some(&file.path),
                             is_favorite: self.favorites.borrow().contains(&file.path),
+                            is_selected: false,
                         });
                         results.push(file.path.clone());
                     }
@@ -127,6 +130,8 @@ impl UiBridge {
 
     /// Fills the "Morceaux" table with every track, in the chosen column order.
     pub(super) fn show_library_tracks(&self) {
+        // The rows are rebuilt: their positions may change.
+        self.clear_selection();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -175,6 +180,7 @@ impl UiBridge {
                 duration_label: presentation::clock(track.duration_seconds).into(),
                 path: track.path.to_string_lossy().as_ref().into(),
                 is_favorite: favorites.contains(&track.path),
+                is_selected: false,
             })
             .collect();
         *self.library_tracks.borrow_mut() = tracks
@@ -279,6 +285,8 @@ impl UiBridge {
     }
 
     pub(super) fn show_album(&self, index: usize) {
+        // The rows are rebuilt: their positions may change.
+        self.clear_selection();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -289,6 +297,16 @@ impl UiBridge {
         self.detail_album.set(index);
         let state = window.global::<AppState>();
         state.set_detail_album_index(index as i32);
+        let artist_links: Vec<SharedString> = if album.artists.is_empty() {
+            vec![album.artist.as_str().into()]
+        } else {
+            album
+                .artists
+                .iter()
+                .map(|artist| artist.as_str().into())
+                .collect()
+        };
+        state.set_detail_artists(ModelRc::new(VecModel::from(artist_links)));
         state.set_detail(DetailInfo {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
@@ -336,6 +354,7 @@ impl UiBridge {
                 is_disc_header: false,
                 track_index: index as i32,
                 is_favorite: self.favorites.borrow().contains(&track.path),
+                is_selected: false,
             });
         }
         state.set_detail_tracks(ModelRc::new(VecModel::from(rows)));
