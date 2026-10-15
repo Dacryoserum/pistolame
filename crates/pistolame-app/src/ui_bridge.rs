@@ -327,6 +327,20 @@ impl UiBridge {
         Ok(bridge)
     }
 
+    /// The window position and size saved at the last exit.
+    pub(crate) fn saved_window_geometry(&self) -> Option<crate::settings::WindowGeometry> {
+        self.settings.borrow().window_geometry
+    }
+
+    /// Saves the window position and size, to reopen it the same way.
+    pub(crate) fn remember_window_geometry(&self, geometry: crate::settings::WindowGeometry) {
+        if self.settings.borrow().window_geometry == Some(geometry) {
+            return;
+        }
+        self.settings.borrow_mut().window_geometry = Some(geometry);
+        self.save_settings();
+    }
+
     /// Stops navigation from saving the start section (debug and preview runs).
     pub(crate) fn disable_remembering_start_section(&self) {
         self.should_remember_start_section.set(false);
@@ -375,19 +389,29 @@ impl UiBridge {
                 .position(|sort| *sort == self.album_sort())
                 .unwrap_or(0) as i32,
         );
-        let handle = self.clone();
-        state.on_sort_tracks(move |index| {
-            let Some(column) = usize::try_from(index)
+        // The "Morceaux" table reopens with its last order and filter.
+        let column_at = |index: i32| {
+            usize::try_from(index)
                 .ok()
                 .and_then(|index| crate::track_sort::TrackColumn::ALL.get(index).copied())
-            else {
+        };
+        if let Some((index, is_descending)) = self.settings.borrow().track_sort
+            && let Some(column) = column_at(index)
+        {
+            self.track_sort.set((column, is_descending));
+        }
+        state.set_is_favorites_only(self.settings.borrow().is_tracks_favorites_only);
+        let handle = self.clone();
+        state.on_sort_tracks(move |index| {
+            let Some(column) = column_at(index) else {
                 return;
             };
             // A second click on the sorted column flips the direction.
             let (current, is_descending) = handle.track_sort.get();
-            handle
-                .track_sort
-                .set((column, current == column && !is_descending));
+            let is_now_descending = current == column && !is_descending;
+            handle.track_sort.set((column, is_now_descending));
+            handle.settings.borrow_mut().track_sort = Some((index, is_now_descending));
+            handle.save_settings();
             handle.show_library_tracks();
         });
         let handle = self.clone();
@@ -423,7 +447,10 @@ impl UiBridge {
         state.on_toggle_favorites_only(move || {
             if let Some(window) = handle.window.upgrade() {
                 let state = window.global::<AppState>();
-                state.set_is_favorites_only(!state.get_is_favorites_only());
+                let is_favorites_only = !state.get_is_favorites_only();
+                state.set_is_favorites_only(is_favorites_only);
+                handle.settings.borrow_mut().is_tracks_favorites_only = is_favorites_only;
+                handle.save_settings();
             }
             handle.show_library_tracks();
         });
