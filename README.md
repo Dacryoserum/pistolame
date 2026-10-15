@@ -8,9 +8,9 @@ A native lossless audio player built with Rust and Slint. Plays on Windows (WASA
 Get the Windows x64, macOS universal (Apple Silicon + Intel, macOS 11+) or Linux x64 archive from
 [Releases](https://github.com/Dacryoserum/pistolame/releases) and check its SHA-256 file.
 
-- **Windows**: FLAC playback through WASAPI, shared (default) or exclusive mode. Use the
+- **Windows**: playback through WASAPI, shared (default) or exclusive mode. Use the
   `…-setup.exe` installer (per user, no administrator rights) or the portable ZIP. Unsigned build.
-- **macOS**: FLAC playback through CoreAudio, shared or exclusive mode (hog mode at the file's
+- **macOS**: playback through CoreAudio, shared or exclusive mode (hog mode at the file's
   sample rate). Ad-hoc signed, not notarized: macOS may ask for approval in System Settings >
   Privacy & Security on first launch. Move the app to Applications so it can update itself.
 - **Linux**: interface and library only; the ALSA backend is not implemented yet. Targets
@@ -21,7 +21,10 @@ download is verified against an ed25519 signature before anything is replaced.
 
 ## What it does
 
-- **Library**: import FLAC files or folders (or drop them on the window); albums are
+- **Formats**: FLAC, ALAC, WAV, AIFF and CAF play bit-perfect; MP3, AAC (M4A) and Ogg Vorbis
+  play too, labelled "Avec perte" and never shown as bit-perfect (their decoders output float,
+  rounded to 24-bit integers).
+- **Library**: import audio files or folders (or drop them on the window); albums are
   remembered between launches and the folders are watched, so new music shows up on its own
   (files that vanish with an unplugged drive are kept). Browse by album (sortable, natural
   order), artist or track (a sortable table), see what was added or played recently, search
@@ -65,10 +68,10 @@ Click the title in the central display to open the current track page. It follow
 shows artwork, metadata and the two real verification results, and returns to the previous view
 with Back or Escape. The quality badge still opens the signal-path popover.
 
-## Limits of 0.2.0
+## Limits of 0.5.0
 
-No gapless playback yet; FLAC only, up to 24 significant
-bits. Hardware acceptance on the reference DAC and screen-reader testing are still pending.
+No gapless queue yet; up to 24 significant bits. Not supported: Opus, WavPack, Monkey's Audio,
+DSD and Matroska audio. Hardware acceptance on the reference DAC and screen-reader testing are still pending.
 
 ## Development
 
