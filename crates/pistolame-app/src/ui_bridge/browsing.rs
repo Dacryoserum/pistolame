@@ -406,6 +406,7 @@ impl UiBridge {
                 .collect()
         };
         state.set_detail_artists(ModelRc::new(VecModel::from(artist_links)));
+        state.set_detail_resume_label(self.album_resume_label(index).into());
         state.set_detail(DetailInfo {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),

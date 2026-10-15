@@ -428,6 +428,9 @@ export global AppState {
     callback open-album(int);
     callback play-track(int, int);
     callback play-detail-album();
+    // "Reprendre · piste 5, 3:12" when listening to the album page's album stopped midway.
+    in property <string> detail-resume-label;
+    callback resume-detail-album();
     callback shuffle-detail-album();
     callback toggle-play();
     callback previous-track();

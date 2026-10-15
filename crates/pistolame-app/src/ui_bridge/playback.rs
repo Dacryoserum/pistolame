@@ -148,6 +148,7 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
+        self.forget_album_when_finished();
         if self.should_sleep_after_track() {
             return;
         }

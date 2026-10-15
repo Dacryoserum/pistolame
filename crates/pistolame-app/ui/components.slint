@@ -1677,6 +1677,15 @@ export component AlbumDetail inherits Rectangle {
             }
         }
 
+        // Where listening to this album stopped; hidden while the album plays.
+        if AppState.detail-resume-label != "" && AppState.playing-album-index != AppState.detail-album-index: PillButton {
+            x: 548px;
+            y: 268px;
+            icon: Icons.clock-counter-clockwise;
+            label: AppState.detail-resume-label;
+            clicked => { AppState.resume-detail-album(); }
+        }
+
         for track[index] in AppState.detail-tracks: Rectangle {
             x: 32px;
             y: 328px + 36px * index;

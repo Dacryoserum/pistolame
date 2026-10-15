@@ -213,6 +213,8 @@ pub(crate) struct UiBridge {
     pending_undo: RefCell<Option<undo::UndoableChange>>,
     /// Minuteur de veille (not stored between runs).
     sleep_timer: Cell<crate::sleep_timer::SleepTimer>,
+    /// Where listening to each album stopped ("Reprendre"), stored with the session.
+    album_resume_points: RefCell<Vec<crate::album_resume::ResumePoint>>,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -305,6 +307,7 @@ impl UiBridge {
             selection: RefCell::default(),
             pending_undo: RefCell::default(),
             sleep_timer: Cell::default(),
+            album_resume_points: RefCell::default(),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -465,6 +468,8 @@ impl UiBridge {
         });
         let handle = self.clone();
         state.on_play_artist(move |is_shuffled| handle.play_artist(is_shuffled));
+        let handle = self.clone();
+        state.on_resume_detail_album(move || handle.resume_detail_album());
         let handle = self.clone();
         state.on_play_search_result(move |index| {
             let paths = handle.search_results.borrow().clone();

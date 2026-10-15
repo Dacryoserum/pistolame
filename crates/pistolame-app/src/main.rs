@@ -3,6 +3,7 @@
 
 use slint::ComponentHandle;
 mod album_artists;
+mod album_resume;
 mod album_sort;
 mod analysis_worker;
 mod artist_photos;
