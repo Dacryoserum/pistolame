@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, SelectionBar, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
+import { AddToPlaylistSheet, SelectionBar, Sheet, ShortcutList, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, SidebarSection, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -118,8 +118,15 @@ export component AppWindow inherits Window {
         }
     }
 
+    // The shortcut list ("?" or F1).
+    property <bool> is-help-open;
+
     // Closes the topmost open overlay, in z-order; false when nothing was open.
     function close-topmost-overlay() -> bool {
+        if root.is-help-open {
+            root.is-help-open = false;
+            return true;
+        }
         if AppState.is-popover-open {
             AppState.is-popover-open = false;
             return true;
@@ -199,6 +206,15 @@ export component AppWindow inherits Window {
             if event.modifiers.control && event.text == Key.DownArrow { root.step-volume(-1); return accept; }
             if event.modifiers.control && (event.text == "l" || event.text == "L") { root.open-cassette(); return accept; }
             if event.modifiers.control && event.text == "," { AppState.navigate-to-section(SidebarSection.settings); return accept; }
+            // Ctrl+Z arrives as "\u{1a}" on Windows and Linux.
+            if event.modifiers.control && (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
+                if event.modifiers.shift { AppState.queue-redo(); } else { AppState.queue-undo(); }
+                return accept;
+            }
+            if event.text == Key.F1 || event.text == "?" {
+                root.is-help-open = !root.is-help-open;
+                return accept;
+            }
             if event.modifiers.control && event.text == "1" { AppState.navigate-to-section(SidebarSection.recently-added); return accept; }
             if event.modifiers.control && event.text == "2" { AppState.navigate-to-section(SidebarSection.artists); return accept; }
             if event.modifiers.control && event.text == "3" { AppState.navigate-to-section(SidebarSection.albums); return accept; }
@@ -641,7 +657,8 @@ export component AppWindow inherits Window {
             animate appear { duration: 200ms; easing: ease-out-quint; }
             property <length> content-width: min(toast-row.preferred-width, root.width - 240px - 64px);
             x: 240px + (root.width - 240px - self.content-width) / 2;
-            y: root.height - 24px - self.height + 8px * (1 - self.appear);
+            // Above the selection bar when it is shown.
+            y: root.height - 24px - self.height + 8px * (1 - self.appear) - (AppState.selection-count >= 2 ? 56px : 0px);
             opacity: self.appear;
             width: self.content-width;
             height: max(40px, toast-row.preferred-height);
@@ -673,6 +690,18 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                     wrap: word-wrap;
                 }
+                // "Annuler" after a removal: puts back what was just removed.
+                if AppState.message-action-label != "": Txt {
+                    height: 24px;
+                    vertical-alignment: center;
+                    role: TextRole.callout-medium;
+                    text: AppState.message-action-label;
+                    color: undo-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+                    accessible-role: button;
+                    accessible-label: AppState.message-action-label;
+                    accessible-action-default => { AppState.message-action(); }
+                    undo-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.message-action(); } }
+                }
                 IconButton {
                     width: 24px; height: 24px; icon: Icons.x; icon-size: 12px;
                     icon-color: Tokens.text-secondary; label: "Fermer le message";
@@ -700,6 +729,19 @@ export component AppWindow inherits Window {
         if AppState.is-add-to-playlist-open: AddToPlaylistSheet {
             x: (root.width - self.width) / 2;
             y: max(60px, (root.height - self.height) / 3);
+        }
+        // Shortcut help ("?" or F1) over a dimmed window; a click anywhere or Escape closes it.
+        if root.is-help-open: Rectangle {
+            background: #00000066;
+            TouchArea { clicked => { root.is-help-open = false; key-scope.focus(); } }
+        }
+        if root.is-help-open: Sheet {
+            title: "Raccourcis";
+            width: 560px;
+            height: help-list.preferred-height + 96px;
+            x: (root.width - self.width) / 2;
+            y: max(60px, (root.height - self.height) / 3);
+            help-list := ShortcutList { x: 24px; y: 64px; width: parent.width - 48px; }
         }
         // Album editor sheet over a dimmed window; Escape or Annuler closes it.
         if AppState.is-album-editor-open: Rectangle {

@@ -21,6 +21,11 @@ pub(crate) struct QueueSnapshot {
     pub(crate) current: Option<PathBuf>,
 }
 
+/// How many tracks played before the current one the queue remembers ("Historique").
+const PLAYED_HISTORY_LENGTH: usize = 50;
+/// How many edits of the tracks queued by hand Ctrl/Cmd+Z can undo.
+const UNDOABLE_EDIT_COUNT: usize = 50;
+
 /// What plays now and next.
 #[derive(Debug, Default)]
 pub(crate) struct PlayQueue {
@@ -29,6 +34,11 @@ pub(crate) struct PlayQueue {
     context_position: usize,
     up_next: VecDeque<PathBuf>,
     current: Option<PathBuf>,
+    /// The tracks played before the current one, oldest first. Not stored between runs.
+    played: VecDeque<PathBuf>,
+    /// The "up next" list before each edit (newest last), and the ones undone.
+    undo_states: Vec<VecDeque<PathBuf>>,
+    redo_states: Vec<VecDeque<PathBuf>>,
 }
 
 impl PlayQueue {
@@ -44,13 +54,14 @@ impl PlayQueue {
         self.context = paths;
         self.context_name = name;
         self.context_position = position;
-        self.current = Some(current.clone());
+        self.set_current(current.clone());
         Some(current)
     }
 
     /// "Lire ensuite": `paths` play right after the current track, in their order, before any
     /// track already queued.
     pub(crate) fn play_next(&mut self, paths: Vec<PathBuf>) {
+        self.remember_edit();
         for path in paths.into_iter().rev() {
             self.up_next.push_front(path);
         }
@@ -58,7 +69,85 @@ impl PlayQueue {
 
     /// "Ajouter à la file d'attente": `paths` play after every track already queued.
     pub(crate) fn add_to_queue(&mut self, paths: Vec<PathBuf>) {
+        self.remember_edit();
         self.up_next.extend(paths);
+    }
+
+    /// Moves queued track `index` one place earlier (`is_earlier`) or later. False when it
+    /// cannot move (first or last, or no such track).
+    pub(crate) fn move_up_next(&mut self, index: usize, is_earlier: bool) -> bool {
+        let other = if is_earlier {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1)
+        };
+        let Some(other) = other.filter(|&other| other < self.up_next.len()) else {
+            return false;
+        };
+        if index >= self.up_next.len() {
+            return false;
+        }
+        self.remember_edit();
+        self.up_next.swap(index, other);
+        true
+    }
+
+    /// Undoes the last edit of the tracks queued by hand (Ctrl/Cmd+Z). False when none is left.
+    pub(crate) fn undo_edit(&mut self) -> bool {
+        let Some(previous) = self.undo_states.pop() else {
+            return false;
+        };
+        let undone = std::mem::replace(&mut self.up_next, previous);
+        self.redo_states.push(undone);
+        true
+    }
+
+    /// Redoes the last undone edit (Ctrl/Cmd+Shift+Z). False when none is left.
+    pub(crate) fn redo_edit(&mut self) -> bool {
+        let Some(next) = self.redo_states.pop() else {
+            return false;
+        };
+        let redone = std::mem::replace(&mut self.up_next, next);
+        self.undo_states.push(redone);
+        true
+    }
+
+    /// The tracks played before the current one, most recent first.
+    pub(crate) fn played(&self) -> impl Iterator<Item = &PathBuf> {
+        self.played.iter().rev()
+    }
+
+    /// "Lire à partir d'ici" on a played track (`index` as listed by [`PlayQueue::played`]): in
+    /// the context, playing goes on from it; otherwise it plays before the queued tracks.
+    pub(crate) fn play_from_played(&mut self, index: usize) -> Option<PathBuf> {
+        let path = self.played().nth(index)?.clone();
+        if let Some(position) = self.context.iter().position(|candidate| *candidate == path) {
+            return self.jump_to_context_position(position);
+        }
+        self.up_next.push_front(path);
+        self.advance(None, false)
+    }
+
+    /// Keeps the "up next" list before an edit, so it can be undone; a new edit forgets the
+    /// undone ones.
+    fn remember_edit(&mut self) {
+        if self.undo_states.len() == UNDOABLE_EDIT_COUNT {
+            self.undo_states.remove(0);
+        }
+        self.undo_states.push(self.up_next.clone());
+        self.redo_states.clear();
+    }
+
+    /// Makes `path` the current track; the one it replaces joins the played history.
+    fn set_current(&mut self, path: PathBuf) {
+        if let Some(previous) = self.current.replace(path)
+            && Some(&previous) != self.current.as_ref()
+        {
+            if self.played.len() == PLAYED_HISTORY_LENGTH {
+                self.played.pop_front();
+            }
+            self.played.push_back(previous);
+        }
     }
 
     /// Moves to the next track: the first queued one, otherwise the next of the context.
@@ -70,7 +159,10 @@ impl PlayQueue {
         is_repeat_on: bool,
     ) -> Option<PathBuf> {
         if let Some(path) = self.up_next.pop_front() {
-            self.current = Some(path.clone());
+            // Undoing an earlier edit would bring back the track that just left the list.
+            self.undo_states.clear();
+            self.redo_states.clear();
+            self.set_current(path.clone());
             return Some(path);
         }
         let count = self.context.len();
@@ -112,13 +204,17 @@ impl PlayQueue {
     /// Removes queued track `index`.
     pub(crate) fn remove_up_next(&mut self, index: usize) {
         if index < self.up_next.len() {
+            self.remember_edit();
             self.up_next.remove(index);
         }
     }
 
     /// Empties the tracks queued by hand.
     pub(crate) fn clear_up_next(&mut self) {
-        self.up_next.clear();
+        if !self.up_next.is_empty() {
+            self.remember_edit();
+            self.up_next.clear();
+        }
     }
 
     /// Whether something plays after the current track.
@@ -185,13 +281,14 @@ impl PlayQueue {
             context_name: snapshot.context_name,
             up_next: snapshot.up_next.into(),
             current: snapshot.current,
+            ..PlayQueue::default()
         }
     }
 
     fn jump_to_context_position(&mut self, position: usize) -> Option<PathBuf> {
         let path = self.context.get(position)?.clone();
         self.context_position = position;
-        self.current = Some(path.clone());
+        self.set_current(path.clone());
         Some(path)
     }
 }
@@ -272,6 +369,89 @@ mod tests {
         queue.clear_up_next();
         assert_eq!(queue.up_next().count(), 0);
         assert_eq!(queue.upcoming(), &paths(&["a2", "a3"])[..]);
+    }
+
+    fn queued(queue: &PlayQueue) -> Vec<PathBuf> {
+        queue.up_next().cloned().collect()
+    }
+
+    #[test]
+    fn edits_of_the_queue_can_be_undone_and_redone() {
+        let mut queue = album();
+        queue.add_to_queue(paths(&["q1", "q2"]));
+        queue.remove_up_next(0);
+        queue.clear_up_next();
+        assert!(queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&["q2"]));
+        assert!(queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&["q1", "q2"]));
+        assert!(queue.redo_edit());
+        assert_eq!(queued(&queue), paths(&["q2"]));
+        // A new edit forgets what was undone.
+        queue.add_to_queue(paths(&["q3"]));
+        assert!(!queue.redo_edit());
+        assert!(queue.undo_edit());
+        assert!(queue.undo_edit());
+        assert!(queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&[]));
+        assert!(!queue.undo_edit());
+    }
+
+    #[test]
+    fn playing_a_queued_track_forgets_the_undo_steps() {
+        let mut queue = album();
+        queue.add_to_queue(paths(&["q1"]));
+        queue.advance(None, false);
+        assert!(!queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&[]));
+    }
+
+    #[test]
+    fn queued_tracks_move_one_place_at_a_time() {
+        let mut queue = album();
+        queue.add_to_queue(paths(&["q1", "q2", "q3"]));
+        assert!(queue.move_up_next(2, true));
+        assert_eq!(queued(&queue), paths(&["q1", "q3", "q2"]));
+        assert!(queue.move_up_next(0, false));
+        assert_eq!(queued(&queue), paths(&["q3", "q1", "q2"]));
+        assert!(!queue.move_up_next(0, true));
+        assert!(!queue.move_up_next(2, false));
+        assert!(!queue.move_up_next(7, true));
+        assert!(queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&["q1", "q3", "q2"]));
+    }
+
+    #[test]
+    fn played_tracks_are_listed_most_recent_first() {
+        let mut queue = album();
+        queue.advance(None, false);
+        queue.advance(None, false);
+        assert_eq!(
+            queue.played().cloned().collect::<Vec<_>>(),
+            paths(&["a2", "a1"])
+        );
+    }
+
+    #[test]
+    fn playing_from_a_played_context_track_goes_on_from_it() {
+        let mut queue = album();
+        queue.advance(None, false);
+        queue.advance(None, false);
+        // "a1" is second most recent.
+        assert_eq!(queue.play_from_played(1), Some("a1".into()));
+        assert_eq!(queue.advance(None, false), Some("a2".into()));
+    }
+
+    #[test]
+    fn playing_from_a_played_track_outside_the_context_queues_it_first() {
+        let mut queue = album();
+        queue.play_next(paths(&["n1"]));
+        queue.advance(None, false);
+        queue.advance(None, false);
+        assert_eq!(queue.current(), Some(&"a2".into()));
+        // Played: "n1", then "a1".
+        assert_eq!(queue.play_from_played(0), Some("n1".into()));
+        assert_eq!(queue.advance(None, false), Some("a3".into()));
     }
 
     #[test]

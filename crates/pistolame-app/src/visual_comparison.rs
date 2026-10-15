@@ -52,6 +52,9 @@ mod tests {
         state.set_playing_album_index(0);
         state.set_playing_track_index(1);
         state.set_detail_album_index(0);
+        state.set_detail_artists(ModelRc::new(VecModel::from(vec![
+            slint::SharedString::from("Artiste témoin"),
+        ])));
         state.set_detail(DetailInfo {
             title: "Album témoin".into(),
             artist: "Artiste témoin".into(),

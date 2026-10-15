@@ -17,6 +17,7 @@ mod process;
 mod search;
 mod session;
 mod settings;
+mod sleep_timer;
 mod track_selection;
 mod track_sort;
 mod transport;

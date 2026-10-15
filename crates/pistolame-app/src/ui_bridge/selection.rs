@@ -181,11 +181,7 @@ impl UiBridge {
         };
         if action == TrackAction::RemoveFromPlaylist {
             if matches!(list, SelectionList::Playlist { .. }) {
-                self.clear_selection();
-                // From the end, so the positions still to remove do not move.
-                for position in positions.into_iter().rev() {
-                    self.remove_playlist_entry(position);
-                }
+                self.remove_playlist_entries(&positions);
             }
             return;
         }

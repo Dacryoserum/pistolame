@@ -26,7 +26,9 @@ mod playlists;
 mod queue;
 mod selection;
 mod session_glue;
+mod sleep_timer_glue;
 mod track_actions;
+mod undo;
 mod updates;
 pub(crate) use navigation_glue::slint_sidebar_section;
 
@@ -205,6 +207,10 @@ pub(crate) struct UiBridge {
     route_generation: Rc<Cell<u64>>,
     /// The rows selected in the track list shown (Ctrl/Cmd+click, Shift+click).
     selection: RefCell<crate::track_selection::TrackSelection>,
+    /// What the "Annuler" of the confirmation shown puts back.
+    pending_undo: RefCell<Option<undo::UndoableChange>>,
+    /// Minuteur de veille (not stored between runs).
+    sleep_timer: Cell<crate::sleep_timer::SleepTimer>,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -295,6 +301,8 @@ impl UiBridge {
             navigation: RefCell::new(crate::navigation::NavigationHistory::new(start_page)),
             route_generation: Rc::new(Cell::new(0)),
             selection: RefCell::default(),
+            pending_undo: RefCell::default(),
+            sleep_timer: Cell::default(),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -486,6 +494,8 @@ impl UiBridge {
         });
         self.connect_queue(&state);
         self.connect_selection(&state);
+        self.connect_undo(&state);
+        self.connect_sleep_timer(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -714,6 +724,7 @@ impl UiBridge {
     /// Shows an error; it stays until the user closes it or a new track starts. An empty text
     /// hides the message.
     fn message(&self, text: String) {
+        self.forget_pending_undo();
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
             state.set_is_message_error(true);
@@ -724,6 +735,12 @@ impl UiBridge {
     /// Shows a confirmation or an information that leaves by itself after
     /// `NOTICE_DISPLAY_DURATION`, unless another message replaced it meanwhile.
     fn notice(&self, text: String) {
+        self.notice_for(text, NOTICE_DISPLAY_DURATION);
+    }
+
+    /// Like [`UiBridge::notice`], shown for `duration`.
+    fn notice_for(&self, text: String, duration: Duration) {
+        self.forget_pending_undo();
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -731,11 +748,12 @@ impl UiBridge {
         state.set_is_message_error(false);
         state.set_message(text.as_str().into());
         let weak = window.as_weak();
-        slint::Timer::single_shot(NOTICE_DISPLAY_DURATION, move || {
+        slint::Timer::single_shot(duration, move || {
             if let Some(window) = weak.upgrade() {
                 let state = window.global::<AppState>();
                 if !state.get_is_message_error() && state.get_message() == text.as_str() {
                     state.set_message("".into());
+                    state.set_message_action_label("".into());
                 }
             }
         });
@@ -779,6 +797,7 @@ impl UiBridge {
     }
 
     pub(crate) fn tick(&self) {
+        self.check_sleep_timer();
         for update in self.imports.try_iter() {
             self.apply_library_update(update);
         }

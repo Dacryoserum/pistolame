@@ -33,6 +33,9 @@ export global Icons {
     out property <image> speaker-low: @image-url("../assets/icons/speaker-low.svg");
     out property <image> speaker-high: @image-url("../assets/icons/speaker-high.svg");
     out property <image> caret-left: @image-url("../assets/icons/caret-left.svg");
+    out property <image> caret-up: @image-url("../assets/icons/caret-up.svg");
+    out property <image> caret-down: @image-url("../assets/icons/caret-down.svg");
+    out property <image> moon: @image-url("../assets/icons/moon.svg");
     out property <image> seal-check-fill: @image-url("../assets/icons/seal-check-fill.svg");
     out property <image> warning-fill: @image-url("../assets/icons/warning-fill.svg");
     out property <image> sliders-horizontal: @image-url("../assets/icons/sliders-horizontal.svg");
@@ -2678,19 +2681,52 @@ export component AddToPlaylistSheet inherits Sheet {
     }
 }
 
+// One track of the "À suivre" panel. Like the other lists, a click selects it (or plays it with
+// "Lire d'un simple clic") and a double click plays it. The selected row takes the keyboard:
+// Return plays, Delete or Backspace removes a queued track, Alt+Up/Down moves it.
 component QueueTrack inherits Rectangle {
     in property <QueueRow> entry;
+    // A track queued by hand: it can be removed and moved.
     in property <bool> can-remove;
+    in property <bool> can-move-earlier;
+    in property <bool> can-move-later;
     callback clicked();
     callback remove();
+    callback move(bool /* is-earlier */);
     height: 48px;
     border-radius: 8px;
-    property <bool> is-hovered: touch.has-hover || remove-button.has-hover;
-    background: root.is-hovered ? Tokens.fill-row-hover : transparent;
+    property <bool> is-hovered: touch.has-hover || remove-button.has-hover || earlier-button.has-hover || later-button.has-hover;
+    background: keyboard.has-focus ? Tokens.fill-row-selected : root.is-hovered ? Tokens.fill-row-hover : transparent;
     accessible-role: button;
     accessible-label: root.entry.title;
     accessible-action-default => { root.clicked(); }
-    touch := TouchArea { clicked => { root.clicked(); } }
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            if root.can-remove && (event.text == Key.Delete || event.text == Key.Backspace) {
+                root.remove(); return accept;
+            }
+            if root.can-remove && event.modifiers.alt && event.text == Key.UpArrow {
+                if root.can-move-earlier { root.move(true); }
+                return accept;
+            }
+            if root.can-remove && event.modifiers.alt && event.text == Key.DownArrow {
+                if root.can-move-later { root.move(false); }
+                return accept;
+            }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            if AppState.is-single-click-play { root.clicked(); } else { keyboard.focus(); }
+        }
+        double-clicked => {
+            if !AppState.is-single-click-play { root.clicked(); }
+        }
+    }
     Rectangle {
         x: 8px; y: 6px; width: 36px; height: 36px;
         background: Tokens.surface-field;
@@ -2698,7 +2734,27 @@ component QueueTrack inherits Rectangle {
     }
     Txt { x: 52px; y: 7px; width: root.width - 52px - 76px; text: root.entry.title; overflow: elide; }
     Txt { x: 52px; y: 25px; width: root.width - 52px - 76px; role: TextRole.callout; text: root.entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
-    Txt { x: root.width - 76px; y: 16px; width: 40px; role: TextRole.callout; text: root.entry.duration-label; color: Tokens.text-secondary; horizontal-alignment: right; }
+    Txt {
+        x: root.width - 76px; y: 16px; width: 40px; role: TextRole.callout;
+        text: root.entry.duration-label; color: Tokens.text-secondary; horizontal-alignment: right;
+        visible: !(root.can-remove && root.is-hovered);
+    }
+    earlier-button := IconButton {
+        x: root.width - 84px; y: 12px; width: 24px; height: 24px;
+        icon: Icons.caret-up; icon-size: 12px; icon-color: Tokens.text-secondary;
+        label: "Monter dans la file";
+        visible: root.can-remove && root.can-move-earlier;
+        opacity: root.is-hovered ? 1 : 0;
+        clicked => { root.move(true); }
+    }
+    later-button := IconButton {
+        x: root.width - 58px; y: 12px; width: 24px; height: 24px;
+        icon: Icons.caret-down; icon-size: 12px; icon-color: Tokens.text-secondary;
+        label: "Descendre dans la file";
+        visible: root.can-remove && root.can-move-later;
+        opacity: root.is-hovered ? 1 : 0;
+        clicked => { root.move(false); }
+    }
     remove-button := IconButton {
         x: root.width - 32px; y: 12px; width: 24px; height: 24px;
         icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
@@ -2709,6 +2765,58 @@ component QueueTrack inherits Rectangle {
     }
 }
 
+// Minuteur de veille: stops playback at the end of the track or after some minutes. No fade:
+// the samples stay untouched until the stop (bit-perfect).
+component SleepTimerButton inherits Rectangle {
+    width: AppState.sleep-timer-label == "" ? 28px : chip.preferred-width;
+    height: 28px;
+    border-radius: 14px;
+    background: AppState.sleep-timer-label == "" ? transparent : Tokens.accent.with-alpha(0.16);
+    chip := HorizontalLayout {
+        padding-left: AppState.sleep-timer-label == "" ? 7px : 10px;
+        padding-right: AppState.sleep-timer-label == "" ? 7px : 10px;
+        spacing: 6px;
+        Icon {
+            width: 14px; source: Icons.moon;
+            colorize: AppState.sleep-timer-label == "" ? Tokens.text-secondary : Tokens.accent;
+        }
+        if AppState.sleep-timer-label != "": Txt {
+            role: TextRole.callout-medium; height: 28px; vertical-alignment: center;
+            text: AppState.sleep-timer-label; color: Tokens.accent;
+        }
+    }
+    accessible-role: button;
+    accessible-label: AppState.sleep-timer-label == "" ? "Minuteur de veille" : "Minuteur de veille : " + AppState.sleep-timer-label;
+    accessible-action-default => { menu.show(); }
+    TouchArea { mouse-cursor: pointer; clicked => { menu.show(); } }
+    menu := PopupWindow {
+        x: root.width - 200px;
+        y: root.height + 4px;
+        width: 200px;
+        Rectangle {
+            border-radius: 10px;
+            background: Tokens.surface-raised;
+            border-width: 1px;
+            border-color: Tokens.border-raised;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Tokens.shadow-popover;
+            VerticalLayout {
+                padding: 5px;
+                MenuRow { icon: Icons.music-note; label: "Fin du morceau"; clicked => { AppState.set-sleep-timer(-1); } }
+                for minutes in [15, 30, 45, 60, 90]: MenuRow {
+                    icon: Icons.clock-counter-clockwise; label: minutes + " minutes";
+                    clicked => { AppState.set-sleep-timer(minutes); }
+                }
+                if AppState.sleep-timer-label != "": MenuRow {
+                    icon: Icons.x; label: "Désactiver"; is-destructive: true;
+                    clicked => { AppState.set-sleep-timer(0); }
+                }
+            }
+        }
+    }
+}
+
 // "À suivre": the current track, the tracks queued by hand, then the rest of the album or
 // playlist being played.
 export component QueuePanel inherits Rectangle {
@@ -2716,8 +2824,11 @@ export component QueuePanel inherits Rectangle {
     background: Tokens.surface-raised;
     border-width: 1px;
     border-color: Tokens.separator;
+    // The "Historique" section starts folded.
+    property <bool> is-history-shown;
     TouchArea { }
     Txt { x: 20px; y: 18px; role: TextRole.title-3; text: "À suivre"; }
+    SleepTimerButton { x: root.width - 16px - 28px - 6px - self.width; y: 14px; }
     IconButton {
         x: root.width - 16px - 28px; y: 14px; width: 28px; height: 28px;
         icon: Icons.x; icon-size: 14px; icon-color: Tokens.text-secondary;
@@ -2740,6 +2851,36 @@ export component QueuePanel inherits Rectangle {
                 color: Tokens.text-secondary;
                 wrap: word-wrap;
             }
+            if AppState.queue-played.length > 0: HorizontalLayout {
+                height: 28px;
+                spacing: 4px;
+                alignment: start;
+                accessible-role: button;
+                accessible-label: root.is-history-shown ? "Masquer l’historique" : "Afficher l’historique";
+                accessible-action-default => { root.is-history-shown = !root.is-history-shown; }
+                Icon {
+                    width: 10px; source: Icons.caret-left; colorize: Tokens.text-secondary;
+                    transform-rotation: root.is-history-shown ? -90deg : 180deg;
+                }
+                Txt {
+                    height: 28px; vertical-alignment: center;
+                    role: TextRole.label; text: "HISTORIQUE (" + AppState.queue-played.length + ")";
+                    color: history-touch.has-hover ? Tokens.text-primary : Tokens.text-secondary;
+                    history-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.is-history-shown = !root.is-history-shown; }
+                    }
+                }
+            }
+            // Most recent first; a click goes back to that track ("Lire à partir d'ici").
+            if root.is-history-shown: VerticalLayout {
+                spacing: 2px;
+                for item[index] in AppState.queue-played: QueueTrack {
+                    entry: item;
+                    opacity: 0.7;
+                    clicked => { AppState.queue-play-played(index); }
+                }
+            }
             if AppState.has-queue-current: Txt { height: 24px; role: TextRole.label; text: "EN COURS"; color: Tokens.text-secondary; }
             if AppState.has-queue-current: QueueTrack { entry: AppState.queue-current; }
             if AppState.queue-up-next.length > 0: HorizontalLayout {
@@ -2756,8 +2897,11 @@ export component QueuePanel inherits Rectangle {
             for item[index] in AppState.queue-up-next: QueueTrack {
                 entry: item;
                 can-remove: true;
+                can-move-earlier: index > 0;
+                can-move-later: index < AppState.queue-up-next.length - 1;
                 clicked => { AppState.queue-play-up-next(index); }
                 remove => { AppState.queue-remove(index); }
+                move(is-earlier) => { AppState.queue-move(index, is-earlier); }
             }
             if AppState.queue-upcoming.length > 0: Txt {
                 height: 34px;
@@ -2770,6 +2914,13 @@ export component QueuePanel inherits Rectangle {
             for item[index] in AppState.queue-upcoming: QueueTrack {
                 entry: item;
                 clicked => { AppState.queue-play-upcoming(index); }
+            }
+            if AppState.queue-upcoming-hidden-count > 0: Txt {
+                height: 32px;
+                vertical-alignment: center;
+                role: TextRole.callout;
+                text: "… et " + AppState.queue-upcoming-hidden-count + " autres morceaux";
+                color: Tokens.text-tertiary;
             }
         }
     }

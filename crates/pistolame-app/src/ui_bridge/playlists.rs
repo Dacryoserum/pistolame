@@ -223,31 +223,54 @@ impl UiBridge {
     }
 
     pub(super) fn remove_playlist_entry(&self, position: usize) {
-        // The entries after it move up: the selected positions would be wrong.
+        self.remove_playlist_entries(&[position]);
+    }
+
+    /// Removes the entries at `positions` (among every entry) from the open playlist in one
+    /// write, then offers "Annuler".
+    pub(super) fn remove_playlist_entries(&self, positions: &[usize]) {
+        // The entries after them move up: the selected positions would be wrong.
         self.clear_selection();
         let Some(index) = self.current_playlist_index() else {
             return;
         };
-        let Some(id) = self
+        let Some((id, previous_paths)) = self
             .playlists
             .borrow()
             .get(index)
-            .map(|playlist| playlist.id)
+            .map(|playlist| (playlist.id, playlist.track_paths.clone()))
         else {
             return;
         };
-        if self
-            .with_library(|store| store.remove_from_playlist(id, position))
-            .is_none()
+        let remaining: Vec<PathBuf> = previous_paths
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| !positions.contains(position))
+            .map(|(_, path)| path.clone())
+            .collect();
+        let removed_count = previous_paths.len() - remaining.len();
+        if removed_count == 0
+            || self
+                .with_library(|store| store.replace_playlist_entries(id, &remaining))
+                .is_none()
         {
             return;
         }
-        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index)
-            && position < playlist.track_paths.len()
-        {
-            playlist.track_paths.remove(position);
+        if let Some(playlist) = self.playlists.borrow_mut().get_mut(index) {
+            playlist.track_paths = remaining;
         }
         self.show_playlists();
+        self.notice_with_undo(
+            if removed_count == 1 {
+                "Retiré de la playlist".to_owned()
+            } else {
+                format!("{removed_count} morceaux retirés de la playlist")
+            },
+            super::undo::UndoableChange::PlaylistEntries {
+                playlist_id: id,
+                previous_paths,
+            },
+        );
     }
 
     pub(super) fn begin_playlist_edit(&self) {

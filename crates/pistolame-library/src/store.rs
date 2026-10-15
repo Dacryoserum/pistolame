@@ -593,12 +593,25 @@ impl LibraryStore {
             .filter(|(index, _)| *index != position)
             .map(|(_, path)| path)
             .collect();
+        self.replace_playlist_entries(id, &remaining)
+    }
+
+    /// Makes `paths` the entries of playlist `id`, in order (several removals at once, or
+    /// putting back the entries an undo restores).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn replace_playlist_entries(
+        &mut self,
+        id: i64,
+        paths: &[PathBuf],
+    ) -> Result<(), LibraryError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "DELETE FROM playlist_entries WHERE playlist_id = ?1",
             params![id],
         )?;
-        for (index, path) in remaining.iter().enumerate() {
+        for (index, path) in paths.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO playlist_entries (playlist_id, position, track_path)
                  VALUES (?1, ?2, ?3)",

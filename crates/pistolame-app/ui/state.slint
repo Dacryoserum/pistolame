@@ -170,6 +170,9 @@ export global AppState {
     in-out property <string> message;
     // An error stays until closed; a notice (confirmation, information) leaves by itself.
     in property <bool> is-message-error;
+    // An action offered with the message ("Annuler" after a removal); empty for none.
+    in property <string> message-action-label;
+    callback message-action();
     in property <string> import-status;
     // macOS: the window draws under its transparent title bar; the sidebar keeps this much room
     // at the top for the window buttons. Zero where the system title bar stays.
@@ -258,8 +261,22 @@ export global AppState {
     in property <[QueueRow]> queue-up-next;
     in property <[QueueRow]> queue-upcoming;
     in property <string> queue-context-name;
+    // The tracks played before the current one, most recent first ("Lire à partir d'ici").
+    in property <[QueueRow]> queue-played;
+    // Context tracks after the listed ones (the panel lists a limited number).
+    in property <int> queue-upcoming-hidden-count;
     callback queue-remove(int);
     callback queue-clear();
+    // Moves a queued track one place earlier (true) or later.
+    callback queue-move(int, bool);
+    callback queue-play-played(int);
+    // Minuteur de veille: "" when off, else "Fin du morceau" or the time left ("23 min").
+    in property <string> sleep-timer-label;
+    // -1 at the end of the track, 0 off, else minutes from now.
+    callback set-sleep-timer(int);
+    // Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z on the tracks queued by hand.
+    callback queue-undo();
+    callback queue-redo();
     callback queue-play-up-next(int);
     callback queue-play-upcoming(int);
     // Self-update: a newer release was found on GitHub.

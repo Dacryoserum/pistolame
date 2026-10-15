@@ -148,6 +148,9 @@ impl UiBridge {
             return;
         };
         let state = window.global::<AppState>();
+        if self.should_sleep_after_track() {
+            return;
+        }
         if self
             .play_queue
             .borrow()

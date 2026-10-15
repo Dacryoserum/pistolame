@@ -240,6 +240,25 @@ fn playlists_keep_order_and_survive_reopening() {
 }
 
 #[test]
+fn playlist_entries_can_be_replaced_at_once() {
+    let library = TestLibrary::new("playlist-replace", 3);
+    let mut store = library.open();
+    let id = store.create_playlist("Essai").unwrap();
+    store
+        .append_to_playlist(id, &[library.track(1), library.track(2)])
+        .unwrap();
+    let entries = vec![library.track(3), library.track(1), library.track(3)];
+    store.replace_playlist_entries(id, &entries).unwrap();
+    assert_eq!(store.snapshot().unwrap().playlists[0].track_paths, entries);
+    store.replace_playlist_entries(id, &[]).unwrap();
+    assert!(
+        store.snapshot().unwrap().playlists[0]
+            .track_paths
+            .is_empty()
+    );
+}
+
+#[test]
 fn a_playlist_cover_is_stored_and_cleared() {
     let library = TestLibrary::new("playlist-cover", 1);
     let mut store = library.open();

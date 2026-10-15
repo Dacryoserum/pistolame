@@ -98,9 +98,12 @@ impl UiBridge {
         let Some(database) = &self.library_database else {
             return;
         };
-        let should_add = !paths
+        let previous_favorites: Vec<PathBuf> = paths
             .iter()
-            .all(|path| self.favorites.borrow().contains(path));
+            .filter(|path| self.favorites.borrow().contains(*path))
+            .cloned()
+            .collect();
+        let should_add = previous_favorites.len() < paths.len();
         let saved = LibraryStore::open(database).and_then(|mut store| {
             paths
                 .iter()
@@ -121,14 +124,20 @@ impl UiBridge {
             }
         }
         self.refresh_favorite_marks();
-        self.notice(format!(
-            "{subject} : {}",
-            if should_add {
-                "ajouté aux favoris"
-            } else {
-                "retiré des favoris"
-            }
-        ));
+        self.notice_with_undo(
+            format!(
+                "{subject} : {}",
+                if should_add {
+                    "ajouté aux favoris"
+                } else {
+                    "retiré des favoris"
+                }
+            ),
+            super::undo::UndoableChange::Favorites {
+                paths: paths.to_vec(),
+                previous_favorites,
+            },
+        );
     }
 
     /// Redraws every list that shows a heart.
