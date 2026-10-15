@@ -56,7 +56,12 @@ export component AppWindow inherits Window {
     property <ViewKind> shown-view: AppState.view;
     property <bool> was-now-playing-shown;
     changed shown-view => {
-        if root.shown-view == ViewKind.now-playing {
+        if root.is-cassette-opening && root.shown-view != ViewKind.now-playing {
+            // The user went elsewhere while it unfolded: drop it, never pull them back.
+            root.is-cassette-opening = false;
+            root.is-cassette-shown = false;
+            root.cassette-progress = 0;
+        } else if root.shown-view == ViewKind.now-playing {
             // Reached without the animation (history): rest unfolded so leaving folds it.
             root.cassette-progress = 1;
         } else if root.was-now-playing-shown && !root.is-cassette-opening {

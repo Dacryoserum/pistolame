@@ -229,6 +229,8 @@ impl UiBridge {
         let generation = self.route_generation.get().wrapping_add(1);
         self.route_generation.set(generation);
         state.set_is_popover_open(false);
+        // A selection belongs to the page it was made on.
+        self.clear_selection();
         // Data before scroll, so the restored offset is reachable.
         self.fill_page(&state, &route.page);
         state.set_view(view_of(&route.page));

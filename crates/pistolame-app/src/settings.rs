@@ -97,7 +97,8 @@ pub struct AppSettings {
     pub load_problem: Option<String>,
 }
 
-/// Position and size of the main window, in logical pixels.
+/// Position of the main window in physical pixels (one desktop space even with screens at
+/// different scales) and its size in logical pixels (see `window_geometry`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowGeometry {
     pub x: i32,

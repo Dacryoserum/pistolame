@@ -184,7 +184,12 @@ impl PlayQueue {
         if count == 0 {
             return None;
         }
-        self.jump_to_context_position((self.context_position + count - 1) % count)
+        // Going back is not listening history: the track left stays in "Ensuite depuis" only.
+        let position = (self.context_position + count - 1) % count;
+        let path = self.context.get(position)?.clone();
+        self.context_position = position;
+        self.current = Some(path.clone());
+        Some(path)
     }
 
     /// Plays queued track `index`; the tracks queued before it are skipped.
@@ -426,6 +431,18 @@ mod tests {
         let mut queue = album();
         queue.advance(None, false);
         queue.advance(None, false);
+        assert_eq!(
+            queue.played().cloned().collect::<Vec<_>>(),
+            paths(&["a2", "a1"])
+        );
+    }
+
+    #[test]
+    fn going_back_does_not_fill_the_history() {
+        let mut queue = album();
+        queue.advance(None, false);
+        queue.advance(None, false);
+        assert_eq!(queue.previous(), Some("a2".into()));
         assert_eq!(
             queue.played().cloned().collect::<Vec<_>>(),
             paths(&["a2", "a1"])

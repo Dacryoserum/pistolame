@@ -3,9 +3,9 @@
 use super::undo::UndoableChange;
 use super::*;
 
-/// Context tracks listed under "Ensuite depuis" at most: a long playlist would otherwise build
-/// hundreds of rows (with artwork) each time the panel is redrawn.
-const MAXIMUM_UPCOMING_ROWS: usize = 100;
+/// Rows listed at most under "Ensuite dans la file" and "Ensuite depuis": a long playlist would
+/// otherwise build hundreds of rows (with artwork) each time the panel is redrawn.
+const MAXIMUM_QUEUE_SECTION_ROWS: usize = 100;
 
 impl UiBridge {
     /// Redraws the "À suivre" panel.
@@ -15,41 +15,51 @@ impl UiBridge {
         };
         let state = window.global::<AppState>();
         let queue = self.play_queue.borrow();
-        let row = |path: &PathBuf| self.queue_row(path);
+        let albums = self.albums.borrow();
+        // One pass over the library, then each row is a lookup (not a library scan per row).
+        let locations: std::collections::HashMap<&std::path::Path, (&Album, &MusicFile)> = albums
+            .iter()
+            .flat_map(|album| {
+                album
+                    .tracks
+                    .iter()
+                    .map(move |track| (track.path.as_path(), (album, track)))
+            })
+            .collect();
+        let row = |path: &PathBuf| {
+            let (album, track) = locations.get(path.as_path())?;
+            Some(QueueRow {
+                title: track.title.as_str().into(),
+                subtitle: format!("{} — {}", album.artist, album.title).into(),
+                duration_label: presentation::clock(track.duration_seconds).into(),
+                artwork: album.artwork.clone(),
+            })
+        };
+        let rows = |paths: &mut dyn Iterator<Item = &PathBuf>| -> ModelRc<QueueRow> {
+            ModelRc::new(VecModel::from(
+                paths
+                    .take(MAXIMUM_QUEUE_SECTION_ROWS)
+                    .filter_map(row)
+                    .collect::<Vec<_>>(),
+            ))
+        };
         let current = queue.current().and_then(row);
         state.set_has_queue_current(current.is_some());
         state.set_queue_current(current.unwrap_or_default());
-        state.set_queue_played(ModelRc::new(VecModel::from(
-            queue.played().filter_map(row).collect::<Vec<_>>(),
-        )));
-        state.set_queue_up_next(ModelRc::new(VecModel::from(
-            queue.up_next().filter_map(row).collect::<Vec<_>>(),
-        )));
+        state.set_queue_played(rows(&mut queue.played()));
+        state.set_queue_up_next(rows(&mut queue.up_next()));
+        state.set_queue_up_next_hidden_count(
+            queue
+                .up_next()
+                .count()
+                .saturating_sub(MAXIMUM_QUEUE_SECTION_ROWS) as i32,
+        );
         let upcoming = queue.upcoming();
-        state.set_queue_upcoming(ModelRc::new(VecModel::from(
-            upcoming
-                .iter()
-                .take(MAXIMUM_UPCOMING_ROWS)
-                .filter_map(row)
-                .collect::<Vec<_>>(),
-        )));
+        state.set_queue_upcoming(rows(&mut upcoming.iter()));
         state.set_queue_upcoming_hidden_count(
-            upcoming.len().saturating_sub(MAXIMUM_UPCOMING_ROWS) as i32
+            upcoming.len().saturating_sub(MAXIMUM_QUEUE_SECTION_ROWS) as i32,
         );
         state.set_queue_context_name(queue.context_name().into());
-    }
-
-    pub(super) fn queue_row(&self, path: &std::path::Path) -> Option<QueueRow> {
-        let (album, track) = self.track_location(path)?;
-        let albums = self.albums.borrow();
-        let album = albums.get(album)?;
-        let track = album.tracks.get(track)?;
-        Some(QueueRow {
-            title: track.title.as_str().into(),
-            subtitle: format!("{} — {}", album.artist, album.title).into(),
-            duration_label: presentation::clock(track.duration_seconds).into(),
-            artwork: album.artwork.clone(),
-        })
     }
 
     pub(super) fn connect_queue(self: &Rc<Self>, state: &AppState<'_>) {
@@ -81,6 +91,8 @@ impl UiBridge {
                     .move_up_next(index, is_earlier)
             });
             if has_moved {
+                // The "Annuler" shown is for an earlier edit, no longer the last one.
+                handle.forget_pending_undo();
                 handle.refresh_queue_view();
             }
         });

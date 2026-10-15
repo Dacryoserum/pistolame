@@ -602,6 +602,23 @@ export component TextLink inherits Rectangle {
     }
 }
 
+// With "Lire d'un simple clic", the second press of a double click must not start a track again
+// (in the queue the panel is rebuilt in between, so it would even hit another row). A global,
+// so a row recreated between the two presses still sees the first one.
+export global SingleClickGuard {
+    // When a row last played on a single click, on the animation clock.
+    property <duration> last-activation-time: -10s;
+    // True when this press comes too soon after the previous single-click play; records it
+    // otherwise. 400 ms: the usual double-click interval (500 ms on macOS) minus a margin.
+    public function is-double-click-repeat() -> bool {
+        if animation-tick() - self.last-activation-time < 400ms {
+            return true;
+        }
+        self.last-activation-time = animation-tick();
+        return false;
+    }
+}
+
 // The press rules shared by every track row. Ctrl/Cmd+click toggles the row in the selection,
 // Shift+click selects the range, a plain click plays ("Lire d'un simple clic") or selects (then a
 // double click plays), a right click opens the row's "…" menu at the pointer. Slint reports
@@ -620,7 +637,7 @@ component TrackRowTouch inherits TouchArea {
             if event.modifiers.control || event.modifiers.shift {
                 root.selected(event.modifiers.control, event.modifiers.shift);
             } else if AppState.is-single-click-play {
-                root.activated();
+                if !SingleClickGuard.is-double-click-repeat() { root.activated(); }
             } else {
                 root.selected(false, false);
             }
@@ -2758,7 +2775,11 @@ component QueueTrack inherits Rectangle {
     }
     touch := TouchArea {
         clicked => {
-            if AppState.is-single-click-play { root.clicked(); } else { keyboard.focus(); }
+            if !AppState.is-single-click-play {
+                keyboard.focus();
+            } else if !SingleClickGuard.is-double-click-repeat() {
+                root.clicked();
+            }
         }
         double-clicked => {
             if !AppState.is-single-click-play { root.clicked(); }
@@ -2935,10 +2956,17 @@ export component QueuePanel inherits Rectangle {
                 entry: item;
                 can-remove: true;
                 can-move-earlier: index > 0;
-                can-move-later: index < AppState.queue-up-next.length - 1;
+                can-move-later: index < AppState.queue-up-next.length - 1 || AppState.queue-up-next-hidden-count > 0;
                 clicked => { AppState.queue-play-up-next(index); }
                 remove => { AppState.queue-remove(index); }
                 move(is-earlier) => { AppState.queue-move(index, is-earlier); }
+            }
+            if AppState.queue-up-next-hidden-count > 0: Txt {
+                height: 32px;
+                vertical-alignment: center;
+                role: TextRole.callout;
+                text: "… et " + AppState.queue-up-next-hidden-count + " autres morceaux";
+                color: Tokens.text-tertiary;
             }
             if AppState.queue-upcoming.length > 0: Txt {
                 height: 34px;

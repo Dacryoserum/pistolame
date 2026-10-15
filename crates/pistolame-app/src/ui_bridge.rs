@@ -215,6 +215,8 @@ pub(crate) struct UiBridge {
     sleep_timer: Cell<crate::sleep_timer::SleepTimer>,
     /// Where listening to each album stopped ("Reprendre"), stored with the session.
     album_resume_points: RefCell<Vec<crate::album_resume::ResumePoint>>,
+    /// Counts the messages shown, so a notice's timer only hides its own notice.
+    notice_generation: Rc<Cell<u64>>,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -308,6 +310,7 @@ impl UiBridge {
             pending_undo: RefCell::default(),
             sleep_timer: Cell::default(),
             album_resume_points: RefCell::default(),
+            notice_generation: Rc::default(),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -766,6 +769,9 @@ impl UiBridge {
     /// hides the message.
     fn message(&self, text: String) {
         self.forget_pending_undo();
+        // An error stays: no earlier notice timer may hide it.
+        self.notice_generation
+            .set(self.notice_generation.get().wrapping_add(1));
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
             state.set_is_message_error(true);
@@ -788,11 +794,15 @@ impl UiBridge {
         let state = window.global::<AppState>();
         state.set_is_message_error(false);
         state.set_message(text.as_str().into());
+        // Only the timer of the latest notice may hide it (the same text can come twice).
+        let generation = self.notice_generation.get().wrapping_add(1);
+        self.notice_generation.set(generation);
+        let latest_generation = self.notice_generation.clone();
         let weak = window.as_weak();
         slint::Timer::single_shot(duration, move || {
             if let Some(window) = weak.upgrade() {
                 let state = window.global::<AppState>();
-                if !state.get_is_message_error() && state.get_message() == text.as_str() {
+                if latest_generation.get() == generation && !state.get_is_message_error() {
                     state.set_message("".into());
                     state.set_message_action_label("".into());
                 }

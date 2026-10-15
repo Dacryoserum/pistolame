@@ -55,6 +55,17 @@ impl UiBridge {
         };
         let previous: Vec<usize> = self.selection.borrow().positions().collect();
         self.selection.borrow_mut().click(list, position, gesture);
+        if let SelectionList::Playlist { playlist_index } = list {
+            // Entries whose file left the library are not shown: a range must skip them.
+            let shown: std::collections::HashSet<usize> = self
+                .playable_entries(playlist_index)
+                .into_iter()
+                .map(|(position, _, _)| position)
+                .collect();
+            self.selection
+                .borrow_mut()
+                .retain_shown(|position| shown.contains(&position));
+        }
         self.show_selection(&previous);
     }
 
@@ -180,7 +191,10 @@ impl UiBridge {
             (list, selection.positions().collect::<Vec<_>>())
         };
         if action == TrackAction::RemoveFromPlaylist {
-            if matches!(list, SelectionList::Playlist { .. }) {
+            // Only from the playlist the rows were selected in, and only while it is open.
+            if let SelectionList::Playlist { playlist_index } = list
+                && self.current_playlist_index() == Some(playlist_index)
+            {
                 self.remove_playlist_entries(&positions);
             }
             return;

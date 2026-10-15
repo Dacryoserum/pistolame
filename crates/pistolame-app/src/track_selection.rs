@@ -76,6 +76,15 @@ impl TrackSelection {
         }
     }
 
+    /// Keeps only the selected positions `is_shown` accepts: a range must not take in rows the
+    /// list does not show (playlist entries whose file is gone).
+    pub(crate) fn retain_shown(&mut self, is_shown: impl Fn(usize) -> bool) {
+        self.positions.retain(|&position| is_shown(position));
+        if self.positions.is_empty() {
+            self.clear();
+        }
+    }
+
     /// Forgets the selection (page left, list rebuilt, Escape).
     pub(crate) fn clear(&mut self) {
         self.list = None;
@@ -157,6 +166,17 @@ mod tests {
         let mut selection = TrackSelection::default();
         selection.click(LIBRARY, 4, SelectionGesture::ExtendRange);
         assert_eq!(selected(&selection), [4]);
+    }
+
+    #[test]
+    fn hidden_rows_leave_a_range() {
+        let mut selection = TrackSelection::default();
+        selection.click(LIBRARY, 1, SelectionGesture::Replace);
+        selection.click(LIBRARY, 5, SelectionGesture::ExtendRange);
+        selection.retain_shown(|position| position != 3);
+        assert_eq!(selected(&selection), [1, 2, 4, 5]);
+        selection.retain_shown(|_| false);
+        assert_eq!(selection.list(), None);
     }
 
     #[test]

@@ -263,7 +263,8 @@ export global AppState {
     in property <string> queue-context-name;
     // The tracks played before the current one, most recent first ("Lire à partir d'ici").
     in property <[QueueRow]> queue-played;
-    // Context tracks after the listed ones (the panel lists a limited number).
+    // Tracks after the listed ones in each section (the panel lists a limited number).
+    in property <int> queue-up-next-hidden-count;
     in property <int> queue-upcoming-hidden-count;
     callback queue-remove(int);
     callback queue-clear();
