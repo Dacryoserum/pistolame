@@ -61,26 +61,107 @@ fn source_description(value: &SignalPathAssessment) -> String {
     }
 }
 
+/// A PCM format in the short form the LCD and the album tiles have room for: "24/96",
+/// "16/44,1". Lossy codecs, which have no bit depth of their own, show their name ("MP3").
+pub(crate) fn compact_format(
+    bits_per_sample: u32,
+    sample_rate_hz: u32,
+    lossy_codec_name: Option<&str>,
+) -> String {
+    match lossy_codec_name {
+        Some(codec) => codec.to_owned(),
+        None => format!("{bits_per_sample}/{}", frequency(sample_rate_hz)),
+    }
+}
+
+/// What the grid knows of an album to tell copies apart.
+pub(crate) struct AlbumIdentity<'album> {
+    pub(crate) title: &'album str,
+    pub(crate) artist: &'album str,
+    /// Compact format of its first track ("24/48").
+    pub(crate) format: String,
+    pub(crate) track_count: usize,
+}
+
+/// For each album, what tells it apart when another album has the same title and artist
+/// (ignoring case): its format when the copies differ there (a CD rip and a hi-res download),
+/// else its number of tracks ("14 titres", shorter than "morceaux" under a tile). `None` for
+/// an album without a namesake.
+pub(crate) fn distinguishing_labels(albums: &[AlbumIdentity<'_>]) -> Vec<Option<String>> {
+    let keys: Vec<(String, String)> = albums
+        .iter()
+        .map(|album| (album.title.to_lowercase(), album.artist.to_lowercase()))
+        .collect();
+    let mut formats_by_key: std::collections::HashMap<&(String, String), Vec<&str>> =
+        std::collections::HashMap::with_capacity(keys.len());
+    for (key, album) in keys.iter().zip(albums) {
+        formats_by_key.entry(key).or_default().push(&album.format);
+    }
+    keys.iter()
+        .zip(albums)
+        .map(|(key, album)| {
+            let formats = formats_by_key.get(key)?;
+            if formats.len() < 2 {
+                return None;
+            }
+            let is_format_shared = formats.iter().all(|format| *format == album.format);
+            Some(if is_format_shared {
+                format!(
+                    "{} titre{}",
+                    album.track_count,
+                    if album.track_count == 1 { "" } else { "s" }
+                )
+            } else {
+                album.format.clone()
+            })
+        })
+        .collect()
+}
+
+/// The line under an album tile: the artist, plus what tells copies apart ("Maes · 24/48").
+pub(crate) fn album_tile_subtitle(artist: &str, distinguishing_label: Option<&str>) -> String {
+    match distinguishing_label {
+        Some(label) => format!("{artist} · {label}"),
+        None => artist.to_owned(),
+    }
+}
+
+/// The verdict word the badge starts with: "Bit-perfect", "Mode partagé"…
+fn verdict_word(value: &SignalPathAssessment) -> &'static str {
+    if value.verdict == BitPerfectVerdict::BitPerfect {
+        "Bit-perfect"
+    } else if value.source_codec.is_lossy {
+        "Avec perte"
+    } else if value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer {
+        "Mode partagé"
+    } else if is_exclusive_with_exact_float_delivery(value) {
+        "Exclusif"
+    } else {
+        "Traité"
+    }
+}
+
+/// The LCD badge: the verdict word and the compact source format ("Bit-perfect · 24/96"), so
+/// the proof is read at a glance; the full wording is in the badge's hover bubble.
+pub(crate) fn lcd_badge(value: &SignalPathAssessment) -> String {
+    let source = value.source_format;
+    let format = compact_format(
+        u32::from(source.bits_per_sample),
+        source.sample_rate_hz,
+        value
+            .source_codec
+            .is_lossy
+            .then_some(value.source_codec.display_name),
+    );
+    format!("{} · {format}", verdict_word(value))
+}
+
 pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool) {
     let source = value.source_format;
     let format = source_description(value);
     let is_perfect = value.verdict == BitPerfectVerdict::BitPerfect;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
-    let is_exact_float = is_exclusive_with_exact_float_delivery(value);
-    let badge = format!(
-        "{} · {format}",
-        if is_perfect {
-            "Bit-perfect"
-        } else if value.source_codec.is_lossy {
-            "Avec perte"
-        } else if shared {
-            "Mode partagé"
-        } else if is_exact_float {
-            "Exclusif"
-        } else {
-            "Traité"
-        }
-    );
+    let badge = format!("{} · {format}", verdict_word(value));
     let decoding = if value.source_codec.is_decoded_as_float {
         format!(
             "{} décodé en flottant, arrondi à 24 bits : ce ne sont pas les échantillons d’origine. ",
@@ -636,5 +717,56 @@ mod tests {
         assert_eq!(badge, "Bit-perfect · 24 bits / 96 kHz");
         assert!(is_perfect);
         assert!(reason.ends_with("CoreAudio exclusif"));
+    }
+    #[test]
+    fn lcd_badge_keeps_the_verdict_word_with_a_compact_format() {
+        let exact_float = exclusive_assessment(DeviceSampleDelivery::ExactFloat32Conversion);
+        let unchanged = exclusive_assessment(DeviceSampleDelivery::Unchanged);
+        assert_eq!(lcd_badge(&exact_float), "Exclusif · 24/96");
+        assert_eq!(lcd_badge(&unchanged), "Bit-perfect · 24/96");
+    }
+    #[test]
+    fn compact_format_uses_the_decimal_comma_and_names_lossy_codecs() {
+        assert_eq!(compact_format(16, 44_100, None), "16/44,1");
+        assert_eq!(compact_format(24, 192_000, None), "24/192");
+        assert_eq!(compact_format(0, 44_100, Some("MP3")), "MP3");
+    }
+    fn identity<'album>(
+        title: &'album str,
+        artist: &'album str,
+        format: &str,
+        track_count: usize,
+    ) -> AlbumIdentity<'album> {
+        AlbumIdentity {
+            title,
+            artist,
+            format: format.to_owned(),
+            track_count,
+        }
+    }
+    #[test]
+    fn namesakes_are_told_apart_by_format_then_by_track_count() {
+        let labels = distinguishing_labels(&[
+            identity("LA VIE CONTINUE", "Maes", "24/48", 14),
+            identity("La vie continue", "maes", "24/44,1", 14),
+            identity("Fellowship", "Howard Shore", "24/48", 13),
+            identity("Fellowship", "Howard Shore", "24/48", 1),
+            identity("La vie continue", "Autre artiste", "16/44,1", 9),
+        ]);
+        assert_eq!(
+            labels,
+            [
+                Some("24/48".to_owned()),
+                Some("24/44,1".to_owned()),
+                Some("13 titres".to_owned()),
+                Some("1 titre".to_owned()),
+                None,
+            ]
+        );
+    }
+    #[test]
+    fn tile_subtitle_adds_the_format_only_when_given() {
+        assert_eq!(album_tile_subtitle("Maes", Some("24/48")), "Maes · 24/48");
+        assert_eq!(album_tile_subtitle("Maes", None), "Maes");
     }
 }

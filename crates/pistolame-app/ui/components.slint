@@ -87,6 +87,7 @@ export component IconButton inherits Rectangle {
     }
     border-radius: 6px;
     background: touch.pressed ? Tokens.fill-icon-pressed : touch.has-hover ? Tokens.fill-icon-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => {
@@ -128,6 +129,7 @@ export component SidebarItem inherits Rectangle {
     height: 28px;
     border-radius: 6px;
     background: root.is-selected ? Tokens.fill-sidebar-selected : (touch.has-hover || touch.pressed) ? Tokens.fill-sidebar-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => {
@@ -262,7 +264,7 @@ export component Badge inherits Rectangle {
         alignment: center;
         Icon {
             width: root.is-icon-only ? 14px : 12px;
-            source: root.is-idle ? Icons.speaker-hifi : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
+            source: root.is-idle ? Icons.seal-check : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
             colorize: root.is-idle ? Tokens.text-tertiary : root.foreground;
         }
 
@@ -295,6 +297,7 @@ export component PillButton inherits Rectangle {
     height: 32px;
     border-radius: 16px;
     background: root.is-primary ? (touch.pressed ? Tokens.accent-pressed : touch.has-hover ? Tokens.accent-hover : Tokens.accent) : (touch.pressed ? Tokens.fill-icon-pressed : touch.has-hover ? Tokens.fill-control-hover : Tokens.fill-control);
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => {
@@ -320,6 +323,66 @@ export component PillButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The one control style of page headers (sort menu, "+", "Favoris" filter): a 28 px pill on
+// the control fill, brass when a filter is on. Icon only when there is no label.
+export component HeaderButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> accessible-name: root.label;
+    in property <bool> is-active;
+    in property <bool> has-menu-caret;
+    callback clicked();
+    height: 28px;
+    width: root.label == "" ? 28px : content.preferred-width;
+    border-radius: 14px;
+    background: root.is-active ? Tokens.accent.with-alpha(0.16) : touch.pressed ? Tokens.fill-icon-pressed : touch.has-hover ? Tokens.fill-control-hover : Tokens.fill-control;
+    animate background { duration: 120ms; easing: ease-out-quint; }
+    border-width: keyboard.has-focus ? 2px : 0px;
+    border-color: Tokens.focus-ring;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-action-default => {
+        root.clicked();
+    }
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.clicked(); return accept;
+            }
+            return reject;
+        }
+    }
+    content := HorizontalLayout {
+        padding-left: root.label == "" ? 0px : 12px;
+        padding-right: root.label == "" ? 0px : root.has-menu-caret ? 10px : 12px;
+        spacing: 6px;
+        alignment: center;
+        if root.icon.width > 0: Icon {
+            width: root.label == "" ? 14px : 12px;
+            source: root.icon;
+            colorize: root.is-active ? Tokens.accent : Tokens.text-secondary;
+        }
+        if root.label != "": Txt {
+            role: TextRole.callout-medium;
+            height: root.height;
+            text: root.label;
+            color: root.is-active ? Tokens.accent : Tokens.text-primary;
+        }
+        if root.has-menu-caret: Icon {
+            width: 10px;
+            source: Icons.caret-left;
+            colorize: Tokens.text-secondary;
+            transform-rotation: -90deg;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => {
             root.clicked();
         }
@@ -413,6 +476,7 @@ component MenuRow inherits Rectangle {
     height: 32px;
     border-radius: 6px;
     background: touch.has-hover ? Tokens.fill-row-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
@@ -699,10 +763,9 @@ export component VolumeSlider inherits Rectangle {
 }
 
 export component Lcd inherits Rectangle {
-    // Fixed slot for the badge: the title and the progress rail never move when the badge text
-    // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
-    // in it and its text is elided if ever too long.
-    property <length> badge-slot-width: 46px;
+    // The badge slot follows the badge ("Bit-perfect · 24/96"): the title column shrinks with
+    // it. It changes only when the stream format changes, never while a track plays.
+    property <length> badge-slot-width: badge.width + 16px;
     property <length> column-width: root.width - 68px - root.badge-slot-width;
     property <bool> is-seeking;
     property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
@@ -727,13 +790,19 @@ export component Lcd inherits Rectangle {
         }
     }
 
-    Image {
+    Rectangle {
         x: 4px;
         y: 4px;
         width: 36px;
         height: 36px;
-        source: AppState.lcd-artwork;
-        image-fit: fill;
+        border-radius: 4px;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: AppState.lcd-artwork;
+            image-fit: fill;
+        }
     }
 
     Txt {
@@ -829,10 +898,10 @@ export component Lcd inherits Rectangle {
     badge := Badge {
         x: root.width - 8px - self.width;
         y: 12px;
-        is-icon-only: true;
+        is-icon-only: !AppState.is-output-active || AppState.lcd-badge-label == "";
         is-idle: !AppState.is-output-active;
         kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
-        label: AppState.badge-label;
+        label: AppState.lcd-badge-label;
         is-hovered: badge-touch.has-hover;
         accessible-role: button;
         accessible-label: AppState.badge-label;
@@ -1032,7 +1101,8 @@ component AlbumTile inherits Rectangle {
         y: 0px;
         width: root.tile;
         height: root.tile;
-        visible: root.is-hovered;
+        opacity: root.is-hovered ? 1 : 0;
+        animate opacity { duration: 120ms; easing: ease-out-quint; }
         background: Tokens.overlay-artwork-hover;
     }
 
@@ -1042,7 +1112,8 @@ component AlbumTile inherits Rectangle {
         width: 32px;
         height: 32px;
         border-radius: 16px;
-        visible: root.is-hovered;
+        opacity: root.is-hovered ? 1 : 0;
+        animate opacity { duration: 120ms; easing: ease-out-quint; }
         background: play-touch.has-hover ? Tokens.overlay-button-hover : Tokens.overlay-button;
         // Optical centering: the triangle's box sits 1 px right of the circle's center so its
         // visual weight is centered (measured on a Retina capture, 2026-10-12).
@@ -1103,47 +1174,31 @@ export component AlbumsGrid inherits Rectangle {
         text: AppState.artist-filter != "" ? AppState.artist-filter : "Albums";
         overflow: elide;
     }
+    Txt {
+        x: AppState.artist-filter != "" ? 60px : 32px;
+        y: 58px;
+        role: TextRole.callout;
+        color: Tokens.text-secondary;
+        visible: AppState.albums.length > 0;
+        text: AppState.albums.length + (AppState.albums.length == 1 ? " album" : " albums");
+    }
 
-    // "Trier par" menu, right-aligned with the grid, discreet like Apple Music's view options.
-    sort-button := Rectangle {
-        property <length> label-width: sort-label.preferred-width;
+    // "Trier par" menu, right-aligned with the grid.
+    sort-button := HeaderButton {
         x: root.width - 32px - self.width;
         y: 26px;
-        width: self.label-width + 34px;
-        height: 28px;
-        border-radius: 6px;
-        background: sort-touch.has-hover ? Tokens.fill-icon-hover : transparent;
-        accessible-role: button;
-        accessible-label: "Trier les albums par " + AppState.album-sort-labels[AppState.album-sort-index];
-        sort-label := Txt {
-            x: 10px;
-            role: TextRole.callout-medium;
-            height: parent.height;
-            vertical-alignment: center;
-            text: "Trier par : " + AppState.album-sort-labels[AppState.album-sort-index];
-            color: Tokens.accent;
-        }
-        Icon {
-            x: parent.width - 20px;
-            y: 9px;
-            width: 10px;
-            height: 10px;
-            source: Icons.caret-left;
-            colorize: Tokens.accent;
-            transform-rotation: -90deg;
-        }
-        sort-touch := TouchArea { mouse-cursor: pointer; clicked => { sort-menu.show(); } }
+        label: "Trier par : " + AppState.album-sort-labels[AppState.album-sort-index];
+        accessible-name: "Trier les albums par " + AppState.album-sort-labels[AppState.album-sort-index];
+        has-menu-caret: true;
+        clicked => { sort-menu.show(); }
     }
 
     // "+" next to the sort menu: add music once the library is no longer empty.
-    add-button := IconButton {
+    add-button := HeaderButton {
         x: sort-button.x - 8px - self.width;
         y: 26px;
-        width: 28px;
-        height: 28px;
         icon: Icons.plus;
-        icon-color: Tokens.accent;
-        label: "Ajouter de la musique";
+        accessible-name: "Ajouter de la musique";
         clicked => { add-menu.show(); }
     }
 
@@ -1191,8 +1246,8 @@ export component AlbumsGrid inherits Rectangle {
     }
 
     ListView {
-        y: 76px;
-        height: root.height - 76px;
+        y: 88px;
+        height: root.height - 88px;
         content-y <=> AppState.grid-scroll-y;
         // One repeater (a ListView allows only one): album grid rows, then, while searching, a
         // "Morceaux" heading and the matching tracks.
@@ -1240,7 +1295,7 @@ export component AlbumsGrid inherits Rectangle {
         PillButton { icon: Icons.vinyl-record; label: "Dossier"; clicked => { AppState.import-folder(); } }
     }
     if AppState.albums.length == 0 && AppState.search-tracks.length == 0: VerticalLayout {
-        y: 76px + 96px;
+        y: 88px + 96px;
         height: 80px;
         spacing: 12px;
         alignment: start;
@@ -1299,6 +1354,7 @@ export component AlbumDetail inherits Rectangle {
             height: 28px;
             border-radius: 6px;
             background: back-touch.pressed ? Tokens.fill-row-pressed : back-touch.has-hover ? Tokens.fill-row-hover : transparent;
+            animate background { duration: 120ms; easing: ease-out-quint; }
             accessible-role: button;
             accessible-label: "Retour : " + AppState.back-label;
             accessible-action-default => {
@@ -1611,6 +1667,7 @@ component DeviceRow inherits Rectangle {
     height: 40px;
     border-radius: 8px;
     background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.detail == "" ? root.name : root.name + " · " + root.detail;
     accessible-action-default => { root.clicked(); }
@@ -2364,6 +2421,7 @@ component PlaylistChoiceRow inherits Rectangle {
     height: 40px;
     border-radius: 8px;
     background: touch.pressed ? Tokens.fill-row-pressed : touch.has-hover ? Tokens.fill-row-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
     accessible-role: button;
     accessible-label: root.name;
     accessible-action-default => { root.clicked(); }
@@ -2625,9 +2683,14 @@ export component ArtistsView inherits Rectangle {
     property <length> tile: Math.floor((root.inner-width - 24px * (root.columns - 1)) / root.columns / 1px) * 1px;
     property <int> row-count: Math.ceil(AppState.artists.length / root.columns);
     Txt { role: TextRole.display; x: 32px; y: 24px; width: root.width - 64px; text: "Artistes"; }
+    Txt {
+        x: 32px; y: 58px; role: TextRole.callout; color: Tokens.text-secondary;
+        visible: AppState.artists.length > 0;
+        text: AppState.artists.length + (AppState.artists.length == 1 ? " artiste" : " artistes");
+    }
     ListView {
-        y: 76px;
-        height: root.height - 76px;
+        y: 88px;
+        height: root.height - 88px;
         content-y <=> AppState.artists-scroll-y;
         for row-index in root.row-count: Rectangle {
             height: root.tile + 76px;
@@ -2756,36 +2819,15 @@ export component TracksView inherits Rectangle {
         x: 32px; y: 58px; role: TextRole.callout; color: Tokens.text-secondary;
         text: AppState.library-tracks.length + (AppState.library-tracks.length == 1 ? " morceau" : " morceaux");
     }
-    // "Favoris" filter, a toggle pill at the top right (brass when on).
-    Rectangle {
+    // "Favoris" filter, at the top right (brass when on).
+    HeaderButton {
         x: root.width - 32px - self.width;
-        y: 28px;
-        width: 32px + favorites-label.preferred-width + 12px;
-        height: 28px;
-        border-radius: 14px;
-        background: AppState.is-favorites-only ? Tokens.accent.with-alpha(0.18) : favorites-touch.has-hover ? Tokens.fill-row-hover : transparent;
-        border-width: 1px;
-        border-color: AppState.is-favorites-only ? Tokens.accent : Tokens.separator;
-        accessible-role: checkbox;
-        accessible-checked: AppState.is-favorites-only;
-        accessible-label: "Afficher seulement les favoris";
-        Icon {
-            x: 12px;
-            y: 8px;
-            width: 12px;
-            height: 12px;
-            source: AppState.is-favorites-only ? Icons.heart-fill : Icons.heart;
-            colorize: AppState.is-favorites-only ? Tokens.accent : Tokens.text-secondary;
-        }
-        favorites-label := Txt {
-            x: 32px;
-            height: parent.height;
-            role: TextRole.callout-medium;
-            vertical-alignment: center;
-            text: "Favoris";
-            color: AppState.is-favorites-only ? Tokens.accent : Tokens.text-secondary;
-        }
-        favorites-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.toggle-favorites-only(); } }
+        y: 26px;
+        icon: AppState.is-favorites-only ? Icons.heart-fill : Icons.heart;
+        label: "Favoris";
+        accessible-name: AppState.is-favorites-only ? "Afficher tous les morceaux" : "Afficher seulement les favoris";
+        is-active: AppState.is-favorites-only;
+        clicked => { AppState.toggle-favorites-only(); }
     }
     Rectangle {
         x: 32px; y: 84px; width: root.width - 64px; height: 28px;
