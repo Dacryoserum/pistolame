@@ -1,7 +1,7 @@
 # Pistolame
 
-A native lossless audio player built with Rust and Slint. Plays on Windows (WASAPI) and macOS
-(CoreAudio); the Linux audio backend is planned.
+A native lossless audio player built with Rust and Slint. Plays on Windows (WASAPI), macOS
+(CoreAudio) and Linux (ALSA, experimental).
 
 ## Download
 
@@ -13,8 +13,11 @@ Get the Windows x64, macOS universal (Apple Silicon + Intel, macOS 11+) or Linux
 - **macOS**: playback through CoreAudio, shared or exclusive mode (hog mode at the file's
   sample rate). Ad-hoc signed, not notarized: macOS may ask for approval in System Settings >
   Privacy & Security on first launch. Move the app to Applications so it can update itself.
-- **Linux**: interface and library only; the ALSA backend is not implemented yet. Targets
-  Ubuntu 24.04 or newer with fontconfig, xkbcommon and a working graphics stack.
+- **Linux** (experimental, not yet tested on hardware): playback through ALSA. Shared mode
+  plays through the system's `default` output (PipeWire or PulseAudio); exclusive mode opens the
+  chosen card's `hw:` device at the file's sample rate, bit-perfect, while no other program
+  uses the card. Targets Ubuntu 24.04 or newer with fontconfig, xkbcommon, libasound2 and a
+  working graphics stack. Please report how it behaves on your hardware.
 
 Installed copies check GitHub for new releases and update themselves after one click; every
 download is verified against an ed25519 signature before anything is replaced.

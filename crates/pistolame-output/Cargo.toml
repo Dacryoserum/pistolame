@@ -40,5 +40,10 @@ objc2-core-audio-types = { workspace = true, features = ["std", "CoreAudioBaseTy
 objc2-audio-toolbox = { workspace = true, features = ["std", "AUComponent", "AudioComponent", "AudioOutputUnit", "AudioUnitProperties", "objc2-core-audio", "objc2-core-audio-types"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFString", "CFBase"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# ALSA backend: `hw:` devices for exclusive mode, the `default` PCM (PipeWire or PulseAudio)
+# and `plughw:` for shared mode.
+alsa.workspace = true
+
 [dev-dependencies]
 pistolame-core = { workspace = true, features = ["test-support"] }

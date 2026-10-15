@@ -2,9 +2,9 @@
 //! stream (plan B6): the requested run state and the stream status packed in one word, so
 //! both are lock-free. Used by every backend (WASAPI, CoreAudio).
 
-// `StreamStateCell` serves the CoreAudio backend only; WASAPI keeps its own control block and
-// Linux has no backend yet, so parts of this module are unused there.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// `StreamStateCell` serves the CoreAudio and ALSA backends; WASAPI keeps its own control block,
+// so parts of this module are unused on Windows.
+#![cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
