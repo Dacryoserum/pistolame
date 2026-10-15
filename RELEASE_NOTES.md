@@ -1,15 +1,41 @@
-# Pistolame 0.5.0
+# Pistolame 0.6.0
 
-- **All your music, not just FLAC.** Pistolame now plays ALAC and AAC (M4A), MP3, WAV, AIFF,
-  CAF and Ogg Vorbis. Import them like before: files, folders or drag and drop.
-- **Still honest about quality.** ALAC, WAV and AIFF are decoded bit for bit and can earn the
-  "Bit-perfect" badge. MP3, AAC and Vorbis are lossy: their badge reads "Avec perte" and the
-  signal path explains that the decoder's output is rounded to 24 bits.
-- **No encoder silence.** MP3 and Vorbis tracks start on the first note, without the gap the
-  encoder adds.
-- Not supported yet: Opus, WavPack, Monkey's Audio, DSD and Matroska audio.
+- **The cassette opens.** Click the LCD and it unfolds into the current-track page; leave the
+  page and it folds back.
+- **Lists that work like Apple Music.** Select several tracks with Cmd/Ctrl or Shift, act on
+  all of them from the bar that appears, right click for the menu, double click to play.
+  Artists and albums are links.
+- **A queue you can fix.** Undo with Cmd/Ctrl+Z, move tracks, see what played and go back
+  to it. Every removal offers "Annuler".
+- **Comfort.** Sleep timer, artist pages, "Reprendre" on albums, keyboard help (? or F1),
+  volume on the mouse wheel, window and sort order remembered.
+- **Lighter.** Covers no longer take hundreds of megabytes, and the authenticity analysis
+  waits until you open the current-track page.
+- **Linux plays sound (experimental).** Through PipeWire or PulseAudio, or bit-perfect on a
+  chosen card. Not yet tested on real hardware: feedback welcome.
 
 # Changelog
+
+## 0.6.0
+
+### Features
+- the LCD unfolds into the current-track page: click anywhere on it (or Cmd/Ctrl+L) and it opens downward; leaving the page folds it back
+- multiple selection in every track list (Cmd/Ctrl+click, Shift+click) with an action bar; double click plays, a single click selects (option "Lire d'un simple clic" in Réglages)
+- right click opens a track's "…" menu; artists and albums are links in the Morceaux table, the album header and the current-track page
+- queue: undo and redo (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z), move tracks up and down, Delete, and a played history with "Lire à partir d'ici"
+- "Annuler" after removing from the queue, a playlist or the favorites
+- sleep timer in the queue panel: end of the track or 15 to 90 minutes, no fade (bit-perfect to the end)
+- artist page: photo, "Tout lire", "Aléatoire", albums from the newest, most played tracks
+- "Reprendre" on an album page continues where listening stopped
+- keyboard help with ? or F1; the mouse wheel sets the volume
+- the window, the Morceaux order and its Favoris filter are remembered
+- Linux plays sound through ALSA (experimental): shared mode through PipeWire or PulseAudio, exclusive bit-perfect mode on a chosen card
+- macOS: unified title bar, floating messages, consistent page headers
+
+### Performance
+- covers are decoded in the background at display size and kept on disk: about half the memory, a start several times lighter, no stall while the library loads
+- the authenticity analysis runs only when the current-track page is open, not at every track change
+- long playlists build only the rows on screen; the queue panel lists at most 100 tracks per section
 
 ## 0.5.0
 
