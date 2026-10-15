@@ -542,6 +542,13 @@ impl OutputStream for CoreAudioStream {
         &self.negotiated
     }
 
+    /// Reads `kAudioDevicePropertyDeviceIsAlive` now: the device listener may not have marked
+    /// the stream failed yet when the default-device notification arrives (unplugged
+    /// headphones). An unreadable property counts as gone.
+    fn is_device_still_present(&self) -> bool {
+        is_device_alive(self.device)
+    }
+
     fn play(&mut self) -> Result<(), OutputError> {
         let context = self.context();
         context.state.request(RequestedStreamState::Run);

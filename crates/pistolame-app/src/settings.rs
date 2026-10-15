@@ -3,6 +3,12 @@
 //! The file is plain UTF-8 text, one `key = value` per line, `#` starts a comment. Reading never
 //! fails and never blocks start-up: anything unusable falls back to the default for that key
 //! only. Writing is atomic so a crash cannot leave a half-written file.
+//!
+//! Output device: `output_device_id` is written only for a specific device; its absence means
+//! "Sortie du système" (follow the system default). Files from older versions migrate without
+//! a rewrite: no `output_device_id` line (never picked a device) gives the new default, "Sortie
+//! du système"; a stored id stays that specific device, because it was an explicit pick in the
+//! device list and may be a DAC the user wants to keep whatever the system default is.
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,7 +16,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use pistolame_core::{EngineStartOptions, OutputDeviceId, OutputModePreference, SharedModeVolume};
+use pistolame_core::{
+    EngineStartOptions, OutputDeviceId, OutputDeviceSelection, OutputModePreference,
+    SharedModeVolume,
+};
 
 const OUTPUT_DEVICE_ID_KEY: &str = "output_device_id";
 const OUTPUT_DEVICE_NAME_KEY: &str = "output_device_name";
@@ -50,9 +59,9 @@ const HOME_CONFIG_FOLDER_NAME: &str = ".config";
 /// Choices remembered between runs.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AppSettings {
-    /// Last output device the user chose; `None` means the system default.
-    pub output_device_id: Option<OutputDeviceId>,
-    /// Display name of that device, kept so the app can say which device went missing.
+    /// The output device the user chose: "Sortie du système" (the default) or a device.
+    pub output_device: OutputDeviceSelection,
+    /// Display name of a specific device, kept so the app can say which device went missing.
     pub output_device_name: Option<String>,
     /// Shared (default) or exclusive access mode.
     pub output_mode: OutputModePreference,
@@ -96,7 +105,7 @@ impl AppSettings {
     pub fn engine_start_options(&self) -> EngineStartOptions {
         EngineStartOptions {
             output_mode_preference: self.output_mode,
-            preferred_device_id: self.output_device_id.clone(),
+            device_selection: self.output_device.clone(),
             shared_mode_volume: self.shared_mode_volume(),
         }
     }
@@ -162,11 +171,11 @@ impl AppSettings {
     fn serialize(&self) -> anyhow::Result<String> {
         let mut text =
             String::from("# Pistolame settings. Edited by the app; unknown keys are ignored.\n");
-        if let Some(device_id) = &self.output_device_id {
+        if let OutputDeviceSelection::Specific(device_id) = &self.output_device {
             push_entry(&mut text, OUTPUT_DEVICE_ID_KEY, &device_id.0)?;
-        }
-        if let Some(device_name) = &self.output_device_name {
-            push_entry(&mut text, OUTPUT_DEVICE_NAME_KEY, device_name)?;
+            if let Some(device_name) = &self.output_device_name {
+                push_entry(&mut text, OUTPUT_DEVICE_NAME_KEY, device_name)?;
+            }
         }
         let mode_value = match self.output_mode {
             OutputModePreference::Shared => SHARED_MODE_VALUE,
@@ -231,7 +240,8 @@ impl AppSettings {
         }
 
         if let Some(value) = entries.get(OUTPUT_DEVICE_ID_KEY).filter(|v| !v.is_empty()) {
-            settings.output_device_id = Some(OutputDeviceId((*value).to_owned()));
+            settings.output_device =
+                OutputDeviceSelection::Specific(OutputDeviceId((*value).to_owned()));
         }
         if let Some(value) = entries
             .get(OUTPUT_DEVICE_NAME_KEY)
@@ -377,7 +387,7 @@ mod tests {
         let settings = AppSettings::load_from(&directory.join(SETTINGS_FILE_NAME));
         assert_eq!(settings, AppSettings::default());
         assert_eq!(settings.output_mode, OutputModePreference::Shared);
-        assert_eq!(settings.output_device_id, None);
+        assert_eq!(settings.output_device, OutputDeviceSelection::SystemDefault);
         assert!(!settings.exclusive_mode_notice_seen);
         assert_eq!(settings.load_problem, None);
     }
@@ -387,7 +397,9 @@ mod tests {
         let directory = fresh_test_directory("round-trip");
         let path = directory.join("nested").join(SETTINGS_FILE_NAME);
         let saved = AppSettings {
-            output_device_id: Some(OutputDeviceId("{0.0.0.00000000}.{abc}".to_owned())),
+            output_device: OutputDeviceSelection::Specific(OutputDeviceId(
+                "{0.0.0.00000000}.{abc}".to_owned(),
+            )),
             output_device_name: Some("FiiO K11 (Haut-parleurs)".to_owned()),
             output_mode: OutputModePreference::Exclusive,
             exclusive_mode_notice_seen: true,
@@ -433,8 +445,8 @@ mod tests {
         assert_eq!(settings.output_mode, OutputModePreference::Shared);
         assert!(settings.exclusive_mode_notice_seen);
         assert_eq!(
-            settings.output_device_id,
-            Some(OutputDeviceId("dev1".to_owned()))
+            settings.output_device,
+            OutputDeviceSelection::Specific(OutputDeviceId("dev1".to_owned()))
         );
         assert!(settings.load_problem.unwrap().contains(OUTPUT_MODE_KEY));
     }
@@ -468,6 +480,7 @@ mod tests {
     fn line_break_in_a_value_is_refused_on_save() {
         let directory = fresh_test_directory("line-break");
         let settings = AppSettings {
+            output_device: OutputDeviceSelection::Specific(OutputDeviceId("dev1".to_owned())),
             output_device_name: Some("bad\nname".to_owned()),
             ..AppSettings::default()
         };
@@ -482,7 +495,7 @@ mod tests {
     #[test]
     fn engine_start_options_carry_mode_and_device() {
         let settings = AppSettings {
-            output_device_id: Some(OutputDeviceId("dev1".to_owned())),
+            output_device: OutputDeviceSelection::Specific(OutputDeviceId("dev1".to_owned())),
             output_mode: OutputModePreference::Exclusive,
             ..AppSettings::default()
         };
@@ -492,8 +505,66 @@ mod tests {
             OutputModePreference::Exclusive
         );
         assert_eq!(
-            options.preferred_device_id,
-            Some(OutputDeviceId("dev1".to_owned()))
+            options.device_selection,
+            OutputDeviceSelection::Specific(OutputDeviceId("dev1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_system_output_round_trips_without_a_device_line() {
+        let settings = AppSettings {
+            output_device: OutputDeviceSelection::SystemDefault,
+            // A name left from an earlier specific choice is not written for the system output.
+            output_device_name: Some("Haut-parleurs MacBook Air".to_owned()),
+            ..AppSettings::default()
+        };
+        let text = settings.serialize().unwrap();
+        assert!(!text.contains(OUTPUT_DEVICE_ID_KEY));
+        assert!(!text.contains(OUTPUT_DEVICE_NAME_KEY));
+        let parsed = AppSettings::parse(&text);
+        assert_eq!(parsed.output_device, OutputDeviceSelection::SystemDefault);
+        assert_eq!(
+            parsed.engine_start_options().device_selection,
+            OutputDeviceSelection::SystemDefault
+        );
+    }
+
+    #[test]
+    fn a_specific_device_round_trips_with_its_name() {
+        let settings = AppSettings {
+            output_device: OutputDeviceSelection::Specific(OutputDeviceId(
+                "AppleUSBAudioEngine:FiiO:K11".to_owned(),
+            )),
+            output_device_name: Some("FiiO K11".to_owned()),
+            ..AppSettings::default()
+        };
+        assert_eq!(AppSettings::parse(&settings.serialize().unwrap()), settings);
+    }
+
+    /// Migration: a file written before "Sortie du système" existed.
+    #[test]
+    fn an_older_file_without_a_device_follows_the_system_output() {
+        let settings =
+            AppSettings::parse("output_mode = shared\nexclusive_mode_notice_seen = false\n");
+        assert_eq!(settings.output_device, OutputDeviceSelection::SystemDefault);
+        assert_eq!(settings.load_problem, None);
+    }
+
+    /// Migration: a device picked in an older version stays that device.
+    #[test]
+    fn an_older_file_with_a_device_keeps_that_device() {
+        let settings = AppSettings::parse(concat!(
+            "output_device_id = BuiltInSpeakerDevice\n",
+            "output_device_name = Haut-parleurs MacBook Air\n",
+            "output_mode = shared\n",
+        ));
+        assert_eq!(
+            settings.output_device,
+            OutputDeviceSelection::Specific(OutputDeviceId("BuiltInSpeakerDevice".to_owned()))
+        );
+        assert_eq!(
+            settings.output_device_name.as_deref(),
+            Some("Haut-parleurs MacBook Air")
         );
     }
 

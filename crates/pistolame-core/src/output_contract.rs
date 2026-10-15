@@ -19,6 +19,48 @@ pub struct OutputDeviceInfo {
     pub is_system_default: bool,
 }
 
+/// Which output device the user chose. Persisted in the settings file; `SystemDefault` is the
+/// first-launch default, so Pistolame plays where every other app plays (headphones plugged in
+/// on a Mac make them the default and mute the built-in speakers).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum OutputDeviceSelection {
+    /// The device the operating system designates as its default output, followed when it
+    /// changes ("Sortie du système").
+    #[default]
+    SystemDefault,
+    /// This device, whatever the system default is. When it is absent, the system default is
+    /// used until it comes back.
+    Specific(OutputDeviceId),
+}
+
+impl OutputDeviceSelection {
+    /// The device to open among `devices`: the chosen one if listed, otherwise the system
+    /// default; `None` when neither exists. The single place this rule is written.
+    pub fn resolve(&self, devices: &[OutputDeviceInfo]) -> Option<OutputDeviceId> {
+        let system_default = || {
+            devices
+                .iter()
+                .find(|device| device.is_system_default)
+                .map(|device| device.id.clone())
+        };
+        match self {
+            OutputDeviceSelection::SystemDefault => system_default(),
+            OutputDeviceSelection::Specific(device_id) => {
+                if devices.iter().any(|device| &device.id == device_id) {
+                    Some(device_id.clone())
+                } else {
+                    system_default()
+                }
+            }
+        }
+    }
+}
+
+/// Called by a backend when the operating system's default output device or its set of output
+/// devices changed. Runs on a platform notification thread (never the real-time thread), so it
+/// must return quickly and never block: the engine's listener only posts a wake-up.
+pub type DeviceChangeListener = Box<dyn Fn() + Send + Sync + 'static>;
+
 /// How the device is held. Only `Exclusive` can be bit-perfect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceAccessMode {
@@ -239,6 +281,15 @@ pub trait AudioOutput: Send {
         request: OpenStreamRequest,
         render_source: Box<dyn RenderSource>,
     ) -> Result<Box<dyn OutputStream>, OpenStreamError>;
+    /// Starts calling `on_change` whenever the system default output device or the set of
+    /// output devices changes, until the backend is dropped. Called at most once. Returns
+    /// `false` when the backend cannot watch the system. Notifications only matter while a
+    /// stream plays: the engine re-reads the devices before every open regardless, because a
+    /// registered listener is no proof that notifications are delivered. The default watches
+    /// nothing.
+    fn watch_device_changes(&mut self, _on_change: DeviceChangeListener) -> bool {
+        false
+    }
 }
 
 /// An open stream. There is no "paused but holding the device" state: pause closes the stream
@@ -261,6 +312,13 @@ pub trait OutputStream: Send {
     /// shared streams apply it; exclusive streams ignore it so the device receives the samples
     /// unchanged. The default does nothing, for backends without a mixer stage.
     fn set_shared_mode_volume(&mut self, _linear_gain: f32) {}
+    /// Whether the device this stream plays to still exists, asked by the engine (slow path,
+    /// may query the platform) before it moves the stream to another device after a system
+    /// change. `false` on any doubt: the engine then leaves the stream to the failure path. The
+    /// default answers `true`, for backends whose `status()` reports a lost device promptly.
+    fn is_device_still_present(&self) -> bool {
+        true
+    }
     /// Stops, releases the device and returns the render source so the ring and the feeder's
     /// position survive a reopen (pause/resume, mode switch, gapless format change later).
     /// Blocks the caller (the engine thread) for at most `QUEUED_AUDIO_PLAY_OUT_TIMEOUT` with
@@ -400,6 +458,67 @@ mod tests {
         assert_eq!(
             OpenPolicy::for_preference(OutputModePreference::Exclusive),
             OpenPolicy::ExclusiveThenShared
+        );
+    }
+
+    fn device(id: &str, is_system_default: bool) -> OutputDeviceInfo {
+        OutputDeviceInfo {
+            id: OutputDeviceId(id.to_owned()),
+            display_name: id.to_owned(),
+            is_system_default,
+        }
+    }
+
+    fn id(text: &str) -> Option<OutputDeviceId> {
+        Some(OutputDeviceId(text.to_owned()))
+    }
+
+    #[test]
+    fn default_device_selection_follows_the_system() {
+        assert_eq!(
+            OutputDeviceSelection::default(),
+            OutputDeviceSelection::SystemDefault
+        );
+    }
+
+    #[test]
+    fn system_default_selection_resolves_to_the_flagged_device() {
+        let devices = [device("speakers", false), device("headphones", true)];
+        assert_eq!(
+            OutputDeviceSelection::SystemDefault.resolve(&devices),
+            id("headphones")
+        );
+    }
+
+    #[test]
+    fn system_default_selection_follows_a_new_default() {
+        let before = [device("speakers", true), device("headphones", false)];
+        let after = [device("speakers", false), device("headphones", true)];
+        let selection = OutputDeviceSelection::SystemDefault;
+        assert_eq!(selection.resolve(&before), id("speakers"));
+        assert_eq!(selection.resolve(&after), id("headphones"));
+    }
+
+    #[test]
+    fn specific_selection_ignores_the_system_default() {
+        let devices = [device("speakers", false), device("headphones", true)];
+        let selection = OutputDeviceSelection::Specific(OutputDeviceId("speakers".to_owned()));
+        assert_eq!(selection.resolve(&devices), id("speakers"));
+    }
+
+    #[test]
+    fn absent_specific_device_falls_back_to_the_system_default() {
+        let devices = [device("speakers", true)];
+        let selection = OutputDeviceSelection::Specific(OutputDeviceId("dac".to_owned()));
+        assert_eq!(selection.resolve(&devices), id("speakers"));
+    }
+
+    #[test]
+    fn nothing_resolves_without_devices_or_default() {
+        assert_eq!(OutputDeviceSelection::SystemDefault.resolve(&[]), None);
+        assert_eq!(
+            OutputDeviceSelection::SystemDefault.resolve(&[device("speakers", false)]),
+            None
         );
     }
 

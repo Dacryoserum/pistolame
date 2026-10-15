@@ -10,6 +10,8 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::bounded;
 use windows::Win32::Foundation::E_UNEXPECTED;
 
+use super::com_apartment::ComApartment;
+use super::devices::DeviceEnumerator;
 use super::hresult_mapping::output_error_from_failure;
 use super::render_thread::{OpenResult, RenderThreadContext, RenderThreadExit, run_render_thread};
 use super::stream_control::{RequestedStreamState, StreamControl, WasapiDiagnosticCounters};
@@ -139,6 +141,21 @@ impl OutputStream for WasapiOutputStream {
 
     fn negotiated(&self) -> &NegotiatedOutput {
         &self.negotiated
+    }
+
+    /// Asks the device enumerator whether the endpoint is still active (`IMMDevice::GetState`
+    /// = `DEVICE_STATE_ACTIVE`), on the engine thread with its own COM initialization. Any
+    /// failure counts as gone, so a doubtful device is never left for another one.
+    fn is_device_still_present(&self) -> bool {
+        let Ok(_com_apartment) = ComApartment::initialize_multithreaded() else {
+            return false;
+        };
+        let Ok(enumerator) = DeviceEnumerator::new() else {
+            return false;
+        };
+        enumerator
+            .find_active_render_device(&self.negotiated.device.id)
+            .is_ok()
     }
 
     fn play(&mut self) -> Result<(), OutputError> {

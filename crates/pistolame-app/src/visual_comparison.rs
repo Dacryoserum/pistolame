@@ -49,7 +49,6 @@ mod tests {
         state.set_elapsed_label("1:23".into());
         state.set_remaining_label("−3:33".into());
         state.set_progress(0.28);
-        state.set_equalizer_levels(ModelRc::new(VecModel::from(vec![0.3, 0.6, 0.4])));
         state.set_playing_album_index(0);
         state.set_playing_track_index(1);
         state.set_detail_album_index(0);

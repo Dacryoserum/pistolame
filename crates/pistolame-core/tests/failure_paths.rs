@@ -12,9 +12,9 @@ use pistolame_core::testing::{
 };
 use pistolame_core::{
     DeviceAccessMode, EngineCommand, EngineEvent, EngineStartOptions, EngineTuning,
-    FormatProbeOutcome, OutputDeviceId, OutputFailure, OutputModePreference, PlaybackFailureKind,
-    PlaybackState, SharedModeCause, SignalPathAssessment, TransmissionNotVerifiableReason,
-    TransmissionStatus,
+    FormatProbeOutcome, OutputDeviceId, OutputDeviceSelection, OutputFailure, OutputModePreference,
+    PlaybackFailureKind, PlaybackState, SharedModeCause, SignalPathAssessment,
+    TransmissionNotVerifiableReason, TransmissionStatus,
 };
 use support::{EVENT_WAIT, EngineRun, start_engine, start_engine_with_options, whole_track_tuning};
 
@@ -154,7 +154,7 @@ fn an_absent_preferred_device_selects_the_default_and_says_so() {
         FakeOutputConfig::default(),
         EngineStartOptions {
             output_mode_preference: EXCLUSIVE,
-            preferred_device_id: Some(missing.clone()),
+            device_selection: OutputDeviceSelection::Specific(missing.clone()),
             shared_mode_volume: Default::default(),
         },
         tuning(),

@@ -5,11 +5,12 @@
 //! - IMMDevice::GetId ("the caller is responsible for freeing ... by calling CoTaskMemFree"):
 //!   <https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-getid>
 //! - PKEY_Device_FriendlyName: <https://learn.microsoft.com/en-us/windows/win32/coreaudio/pkey-device-friendlyname>
+//! - RegisterEndpointNotificationCallback: <https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdeviceenumerator-registerendpointnotificationcallback>
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
-    DEVICE_STATE_ACTIVE, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-    eConsole, eRender,
+    DEVICE_STATE_ACTIVE, IAudioClient, IMMDevice, IMMDeviceEnumerator, IMMNotificationClient,
+    MMDeviceEnumerator, eConsole, eRender,
 };
 use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ};
@@ -75,6 +76,30 @@ impl DeviceEnumerator {
         let default_device_id = self.default_render_device_id();
         let info = describe_device(&device, default_device_id.as_deref())?;
         Ok((device, info))
+    }
+
+    /// Starts delivering endpoint notifications to `client`. The caller unregisters it with
+    /// `unregister_endpoint_notifications` before releasing it.
+    pub(crate) fn register_endpoint_notifications(
+        &self,
+        client: &IMMNotificationClient,
+    ) -> Result<(), WasapiCallError> {
+        // SAFETY: valid enumerator and client; the client stays alive until it is unregistered.
+        unsafe { self.enumerator.RegisterEndpointNotificationCallback(client) }
+            .for_operation("IMMDeviceEnumerator::RegisterEndpointNotificationCallback")
+    }
+
+    /// Stops the notifications `register_endpoint_notifications` started.
+    pub(crate) fn unregister_endpoint_notifications(
+        &self,
+        client: &IMMNotificationClient,
+    ) -> Result<(), WasapiCallError> {
+        // SAFETY: valid enumerator; `client` is the registered one, still alive.
+        unsafe {
+            self.enumerator
+                .UnregisterEndpointNotificationCallback(client)
+        }
+        .for_operation("IMMDeviceEnumerator::UnregisterEndpointNotificationCallback")
     }
 
     /// Identifier of the system default render device for the console role, if there is one.

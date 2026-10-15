@@ -21,11 +21,11 @@ use std::time::{Duration, Instant};
 
 use crate::format::{DeviceSampleFormat, ValidBitsAlignment, lossless_device_format_candidates};
 use crate::output_contract::{
-    AudioOutput, ClosedStream, DeviceAccessMode, DeviceSampleDelivery, FormatProbeOutcome,
-    FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamError, OpenStreamRequest,
-    OutputDeviceId, OutputDeviceInfo, OutputError, OutputFailure, OutputStream, OutputStreamStatus,
-    QueuedAudioOnClose, RenderOutcome, RenderSource, RenderStreamDescription, SharedModeCause,
-    SystemMixFormat,
+    AudioOutput, ClosedStream, DeviceAccessMode, DeviceChangeListener, DeviceSampleDelivery,
+    FormatProbeOutcome, FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamError,
+    OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError, OutputFailure, OutputStream,
+    OutputStreamStatus, QueuedAudioOnClose, RenderOutcome, RenderSource, RenderStreamDescription,
+    SharedModeCause, SystemMixFormat,
 };
 
 /// Name the fake backend reports, in `backend_name` and in every `NegotiatedOutput`.
@@ -116,6 +116,13 @@ pub struct FakeOutputConfig {
     pub queued_frame_capacity: u32,
     /// `close(PlayOut)` times out: the queued frames are dropped, not played.
     pub play_out_should_time_out: bool,
+    /// Whether `watch_device_changes` accepts a listener (like CoreAudio and WASAPI) or
+    /// refuses it (like a backend without notifications). Read once, when the engine starts.
+    pub can_watch_device_changes: bool,
+    /// After each successful exclusive open, the system default moves to this device and the
+    /// listener is called, like a system that moves its default away from a device another
+    /// process holds.
+    pub exclusive_open_moves_default_to: Option<OutputDeviceId>,
 }
 
 /// The single device of the default configuration.
@@ -144,6 +151,8 @@ impl Default for FakeOutputConfig {
             buffer_frame_count: 441,
             queued_frame_capacity: 882,
             play_out_should_time_out: false,
+            can_watch_device_changes: true,
+            exclusive_open_moves_default_to: None,
         }
     }
 }
@@ -169,6 +178,8 @@ struct FakeState {
     negotiated_streams: Vec<NegotiatedOutput>,
     injected_failure: Option<OutputFailure>,
     stream_request: StreamRequest,
+    device_change_listener: Option<Arc<dyn Fn() + Send + Sync>>,
+    is_stream_device_gone: bool,
 }
 
 struct FakeShared {
@@ -216,6 +227,8 @@ impl FakeOutput {
                 negotiated_streams: Vec::new(),
                 injected_failure: None,
                 stream_request: StreamRequest::NotStarted,
+                device_change_listener: None,
+                is_stream_device_gone: false,
             }),
             changed: Condvar::new(),
         });
@@ -232,6 +245,25 @@ impl FakeOutputController {
     /// Changes the configuration; it applies from the next open.
     pub fn update_config(&self, change: impl FnOnce(&mut FakeOutputConfig)) {
         self.shared.update(|state| change(&mut state.config));
+    }
+
+    /// The open stream's `is_device_still_present` answers `false` from now on (the device is
+    /// dying but still listed and its stream has not failed yet). Reset by the next open.
+    pub fn mark_stream_device_gone(&self) {
+        self.shared
+            .update(|state| state.is_stream_device_gone = true);
+    }
+
+    /// Changes the device list (for example which device is the system default), then calls
+    /// the engine's device-change listener, like a platform notification, if one was
+    /// registered. Returns whether a listener was called.
+    pub fn change_devices(&self, change: impl FnOnce(&mut Vec<OutputDeviceInfo>)) -> bool {
+        let listener = self.shared.update(|state| {
+            change(&mut state.config.devices);
+            state.device_change_listener.clone()
+        });
+        // Called outside the lock: the listener may run engine code that lists the devices.
+        listener.map(|listener| listener()).is_some()
     }
 
     /// The open stream reports `Failed(failure)` from now on and stops rendering, like a
@@ -353,7 +385,20 @@ impl AudioOutput for FakeOutput {
             state.negotiated_streams.push(negotiated.clone());
             state.injected_failure = None;
             state.stream_request = StreamRequest::NotStarted;
+            state.is_stream_device_gone = false;
         });
+        if negotiated.access_mode == DeviceAccessMode::Exclusive
+            && let Some(new_default) = config.exclusive_open_moves_default_to.clone()
+        {
+            let controller = FakeOutputController {
+                shared: Arc::clone(&self.shared),
+            };
+            controller.change_devices(|devices| {
+                for device in devices {
+                    device.is_system_default = device.id == new_default;
+                }
+            });
+        }
         let mut device = FakeDevice::new(&config, &negotiated);
         device.render_buffer(render_source.as_mut(), &self.shared);
         let shared = Arc::clone(&self.shared);
@@ -366,6 +411,15 @@ impl AudioOutput for FakeOutput {
             shared: Arc::clone(&self.shared),
             thread: Some(thread),
         }))
+    }
+
+    fn watch_device_changes(&mut self, on_change: DeviceChangeListener) -> bool {
+        self.shared.update(|state| {
+            if state.config.can_watch_device_changes {
+                state.device_change_listener = Some(Arc::from(on_change));
+            }
+            state.config.can_watch_device_changes
+        })
     }
 }
 
@@ -700,6 +754,10 @@ impl OutputStream for FakeStream {
         self.shared
             .update(|state| state.stream_request = StreamRequest::Run);
         Ok(())
+    }
+
+    fn is_device_still_present(&self) -> bool {
+        !self.shared.lock().is_stream_device_gone
     }
 
     fn status(&self) -> OutputStreamStatus {

@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Dacryoserum/pistolame"
-version = "0.4.0"
+version = "0.4.1"
 
 [workspace.dependencies]
 pistolame-core    = { path = "crates/pistolame-core" }
@@ -55,6 +55,10 @@ ebur128           = "0.1.10"
 rayon             = "1.10"
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
+# Same version as `windows` (already in the lock file through it): its `#[implement]` macro, used
+# to receive WASAPI endpoint notifications (`IMMNotificationClient`), names `windows_core` directly.
+# MIT OR Apache-2.0.
+windows-core      = "0.62.2"
 # CoreAudio bindings (macOS). Zlib/Apache-2.0/MIT; same objc2 0.6 family Slint already pulls in.
 objc2-core-audio       = { version = "0.3.2", default-features = false }
 objc2-core-audio-types = { version = "0.3.2", default-features = false }

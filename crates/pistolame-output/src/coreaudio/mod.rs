@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 mod device_takeover;
+mod device_watch;
 mod devices;
 mod negotiation;
 mod output_unit;
@@ -19,6 +20,7 @@ use objc2_core_audio::AudioObjectID;
 use objc2_core_audio_types::kAudioFormatFlagIsFloat;
 
 use self::device_takeover::ExclusiveTakeover;
+use self::device_watch::SystemDeviceWatch;
 use self::devices::{
     available_nominal_sample_rates, find_output_device, io_buffer_frame_count, list_output_devices,
     nominal_sample_rate, output_channel_count, output_stream_formats,
@@ -28,10 +30,10 @@ use self::negotiation::{
 };
 use self::stream::{StreamPlan, open_coreaudio_stream};
 use crate::{
-    AudioOutput, DeviceAccessMode, DeviceSampleDelivery, DeviceSampleFormat, FormatProbeOutcome,
-    FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamError, OpenStreamRequest,
-    OutputDeviceId, OutputDeviceInfo, OutputError, OutputStream, RenderSource, SharedModeCause,
-    StreamFormat, SystemMixFormat,
+    AudioOutput, DeviceAccessMode, DeviceChangeListener, DeviceSampleDelivery, DeviceSampleFormat,
+    FormatProbeOutcome, FormatProbeResult, NegotiatedOutput, OpenPolicy, OpenStreamError,
+    OpenStreamRequest, OutputDeviceId, OutputDeviceInfo, OutputError, OutputStream, RenderSource,
+    SharedModeCause, StreamFormat, SystemMixFormat,
 };
 
 /// Name reported by `backend_name` and carried in every `NegotiatedOutput` of this backend.
@@ -39,14 +41,17 @@ const COREAUDIO_BACKEND_NAME: &str = "CoreAudio";
 /// Number of 100 ns units in one second, to express periods in the contract's WASAPI unit.
 const HUNDRED_NANOSECONDS_PER_SECOND: f64 = 10_000_000.0;
 
-/// The CoreAudio output backend. Holds no CoreAudio object between calls.
+/// The CoreAudio output backend. Holds no CoreAudio object between calls, except the system
+/// listeners registered by `watch_device_changes`.
 #[derive(Debug, Default)]
-pub struct CoreAudioOutput;
+pub struct CoreAudioOutput {
+    device_watch: Option<SystemDeviceWatch>,
+}
 
 impl CoreAudioOutput {
     /// Creates the backend. Nothing touches the platform until a method is called.
     pub fn new() -> CoreAudioOutput {
-        CoreAudioOutput
+        CoreAudioOutput::default()
     }
 }
 
@@ -117,6 +122,13 @@ impl AudioOutput for CoreAudioOutput {
                 render_source,
             }
         })
+    }
+
+    /// Listens to `kAudioHardwarePropertyDefaultOutputDevice` and
+    /// `kAudioHardwarePropertyDevices` on the system object.
+    fn watch_device_changes(&mut self, on_change: DeviceChangeListener) -> bool {
+        self.device_watch = SystemDeviceWatch::start(on_change);
+        self.device_watch.is_some()
     }
 }
 

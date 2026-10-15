@@ -29,6 +29,9 @@
 //!     |                                   |   ^
 //!     +-- Play, prefill reached: ---------+   +-- SetOutputModePreference / SelectOutputDevice:
 //!         reopen, play()                            close PlayOut, reopen, play()
+//!                                                   (also when the system default output
+//!                                                   moves under "Sortie du système", as long
+//!                                                   as the device in use is still present)
 //!
 //!   SeekTo in Paused or Opening: new generation, same state.
 //!   To [ Stopped ], tearing the pipeline down:

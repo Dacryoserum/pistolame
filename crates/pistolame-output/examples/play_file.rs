@@ -149,7 +149,9 @@ mod file_play {
         OutputModePreference, PlaybackCountersSnapshot, PlaybackState, SignalPathAssessment,
         TrackId, TransmissionStatus, VerificationStatus,
     };
-    use pistolame_output::{DeviceAccessMode, OutputDeviceInfo, platform_default_output};
+    use pistolame_output::{
+        DeviceAccessMode, OutputDeviceInfo, OutputDeviceSelection, platform_default_output,
+    };
 
     /// How often events and counters are read (B10.5).
     const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -186,7 +188,7 @@ mod file_play {
             DecoderRegistry::with_default_providers(),
             EngineStartOptions {
                 output_mode_preference: preference,
-                preferred_device_id: None,
+                device_selection: OutputDeviceSelection::SystemDefault,
                 shared_mode_volume: Default::default(),
             },
         ) {
@@ -225,7 +227,10 @@ mod file_play {
                 .receive_event_timeout(remaining)
                 .ok_or("the engine sent no device list")?;
             print_event(&event, log, options.is_quiet);
-            if let EngineEvent::DeviceListChanged { devices, selected } = event {
+            if let EngineEvent::DeviceListChanged {
+                devices, selected, ..
+            } = event
+            {
                 break (devices, selected);
             }
         };
@@ -250,7 +255,7 @@ mod file_play {
             .ok_or_else(|| format!("no output device matches \"{filter}\""))?;
         println!("selected: {}", device.display_name);
         handle.send(EngineCommand::SelectOutputDevice {
-            device_id: device.id.clone(),
+            selection: OutputDeviceSelection::Specific(device.id.clone()),
         });
         Ok(())
     }

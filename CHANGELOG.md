@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Fixes
+- "Sortie du système" (new default): follow the operating system's output device, so headphones, AirPods or a DAC plugged in are used; no more silence when the remembered device is muted by the system
+- unplugging the device in use stops playback instead of jumping to the speakers; no device bouncing in exclusive mode
+- the interface stops refreshing values that did not change (lower CPU use), and the equalizer animates only while playing
+
 ## 0.4.0
 
 ### Features
