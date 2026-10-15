@@ -13,7 +13,14 @@ Get the Windows x64, macOS universal (Apple Silicon + Intel, macOS 11+) or Linux
 - **macOS**: playback through CoreAudio, shared or exclusive mode (hog mode at the file's
   sample rate). Ad-hoc signed, not notarized: macOS may ask for approval in System Settings >
   Privacy & Security on first launch. Move the app to Applications so it can update itself.
-- **Linux** (experimental, not yet tested on hardware): playback through ALSA. Shared mode
+- **Linux** (experimental, not yet tested on hardware): install for your user, no administrator
+  rights, with
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/Dacryoserum/pistolame/main/scripts/install.sh | sh
+  ```
+
+  (`… | sh -s -- --uninstall` removes it). The app then updates itself. Playback through ALSA. Shared mode
   plays through the system's `default` output (PipeWire or PulseAudio); exclusive mode opens the
   chosen card's `hw:` device at the file's sample rate, bit-perfect, while no other program
   uses the card. Targets Ubuntu 24.04 or newer with fontconfig, xkbcommon, libasound2 and a

@@ -23,6 +23,25 @@ jobs:
         run: rustup show
       - run: cargo fmt --all --check
 
+  # The Linux install script, run for real against the latest published release.
+  install-script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck scripts/install.sh
+      - name: Install, check and uninstall in a throwaway home
+        run: |
+          export HOME="$(mktemp -d)"
+          sh scripts/install.sh
+          test -x "$HOME/.local/share/pistolame/Pistolame"
+          test -L "$HOME/.local/bin/pistolame"
+          test -f "$HOME/.local/share/applications/pistolame.desktop"
+          test -f "$HOME/.local/share/icons/hicolor/256x256/apps/pistolame.png"
+          sh scripts/install.sh --uninstall
+          test ! -e "$HOME/.local/share/pistolame"
+          test ! -e "$HOME/.local/bin/pistolame"
+
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
