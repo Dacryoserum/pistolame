@@ -53,6 +53,9 @@ notify            = "8.2.0"
 rustfft           = "6.4.1"
 ebur128           = "0.1.10"
 rayon             = "1.10"
+# Cover thumbnails (MIT OR Apache-2.0). Already in the lock file through Slint, same version and
+# formats: decoding covers ourselves lets the library worker scale them down off the UI thread.
+image             = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 flacenc           = { version = "0.5.1", default-features = false }
 windows           = "0.62.2"   # features listed per crate
 # Same version as `windows` (already in the lock file through it): its `#[implement]` macro, used

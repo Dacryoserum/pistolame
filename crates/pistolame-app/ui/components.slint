@@ -2520,9 +2520,14 @@ export component AlbumEditor inherits Rectangle {
 // One user playlist: its tracks in order, each removable.
 export component PlaylistView inherits Rectangle {
     property <length> list-width: root.width - 64px;
-    ScrollView {
+    // A ListView builds only the rows on screen (a playlist can hold thousands of tracks). It
+    // allows one repeater: row 0 is the header, the next ones the tracks.
+    ListView {
         content-y <=> AppState.playlist-scroll-y;
-        content-height: 150px + 36px * AppState.playlist-tracks.length + 32px;
+        for item-index in AppState.playlist-tracks.length + 1: Rectangle {
+        property <int> track-row: item-index - 1;
+        height: item-index == 0 ? 148px : 36px;
+        if item-index == 0: Rectangle {
         Rectangle {
             x: 32px; y: 24px; width: 56px; height: 56px;
             border-radius: 8px;
@@ -2556,34 +2561,35 @@ export component PlaylistView inherits Rectangle {
             icon: Icons.play-fill;
             clicked => { AppState.play-playlist-row(0); }
         }
-        if AppState.playlist-tracks.length == 0: Txt {
-            x: 32px; y: 152px; width: root.list-width;
-            text: "Cette playlist est vide. Ajoutez des morceaux avec le bouton + d’un album ou d’un morceau.";
-            color: Tokens.text-secondary;
-            wrap: word-wrap;
         }
-        for track[index] in AppState.playlist-tracks: TrackRow {
+        if item-index > 0: TrackRow {
             x: 32px;
-            y: 148px + 36px * index;
             width: root.list-width;
-            number: track.number;
-            title: track.title;
-            subtitle: track.subtitle;
-            format-label: track.format-label;
-            duration-label: track.duration-label;
-            is-odd: Math.mod(index, 2) == 1;
-            is-current: track.is-current;
-            is-favorite: track.is-favorite;
-            is-selected: track.is-selected;
+            number: AppState.playlist-tracks[parent.track-row].number;
+            title: AppState.playlist-tracks[parent.track-row].title;
+            subtitle: AppState.playlist-tracks[parent.track-row].subtitle;
+            format-label: AppState.playlist-tracks[parent.track-row].format-label;
+            duration-label: AppState.playlist-tracks[parent.track-row].duration-label;
+            is-odd: Math.mod(parent.track-row, 2) == 1;
+            is-current: AppState.playlist-tracks[parent.track-row].is-current;
+            is-favorite: AppState.playlist-tracks[parent.track-row].is-favorite;
+            is-selected: AppState.playlist-tracks[parent.track-row].is-selected;
             can-remove: true;
-            activated => { AppState.play-playlist-row(index); }
+            activated => { AppState.play-playlist-row(parent.track-row); }
             selected(is-toggle, is-range) => {
-                AppState.select-track({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, is-toggle, is-range);
+                AppState.select-track({ source: TrackSource.playlist-entry, album: 0, track: 0, position: AppState.playlist-tracks[parent.track-row].position }, is-toggle, is-range);
             }
             action(kind) => {
-                AppState.track-action({ source: TrackSource.playlist-entry, album: 0, track: 0, position: track.position }, kind);
+                AppState.track-action({ source: TrackSource.playlist-entry, album: 0, track: 0, position: AppState.playlist-tracks[parent.track-row].position }, kind);
             }
         }
+        }
+    }
+    if AppState.playlist-tracks.length == 0: Txt {
+        x: 32px; y: 152px; width: root.list-width;
+        text: "Cette playlist est vide. Ajoutez des morceaux avec le bouton + d’un album ou d’un morceau.";
+        color: Tokens.text-secondary;
+        wrap: word-wrap;
     }
 }
 

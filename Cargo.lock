@@ -4102,6 +4102,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "ed25519-dalek",
+ "image",
  "pistolame-analysis",
  "pistolame-core",
  "pistolame-library",

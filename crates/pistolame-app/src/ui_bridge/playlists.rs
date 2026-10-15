@@ -72,7 +72,7 @@ impl UiBridge {
             .map(|playlist| PlaylistItem {
                 name: playlist.name.as_str().into(),
                 track_count: playlist.track_paths.len() as i32,
-                artwork: decode_artwork(playlist.artwork.as_ref()),
+                artwork: self.artwork_image(playlist.artwork.as_ref()),
             })
             .collect();
         window
@@ -157,7 +157,7 @@ impl UiBridge {
         let count = rows.len();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_title(playlist.name.as_str().into());
-            state.set_playlist_artwork(decode_artwork(playlist.artwork.as_ref()));
+            state.set_playlist_artwork(self.artwork_image(playlist.artwork.as_ref()));
         }
         state.set_playlist_meta(
             format!(
@@ -281,7 +281,7 @@ impl UiBridge {
         let state = window.global::<AppState>();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_editor_name(playlist.name.as_str().into());
-            state.set_playlist_editor_artwork(decode_artwork(playlist.artwork.as_ref()));
+            state.set_playlist_editor_artwork(self.artwork_image(playlist.artwork.as_ref()));
         }
         *self.pending_playlist_artwork.borrow_mut() = PendingArtwork::Unchanged;
         state.set_is_playlist_editor_open(true);

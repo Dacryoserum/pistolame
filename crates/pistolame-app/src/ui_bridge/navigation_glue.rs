@@ -293,7 +293,12 @@ impl UiBridge {
                 }
             }
             // Over the page it was opened from: that page's filter and query stay as they are.
-            Page::NowPlaying => {}
+            // The analysis waits for this page (it decodes the whole file on several cores).
+            Page::NowPlaying => {
+                if let Some(path) = self.current_path() {
+                    self.show_authenticity_for(&path, true);
+                }
+            }
             Page::Playlist { playlist_id } => {
                 Self::clear_grid_filters(state);
                 state.set_selected_playlist(self.playlist_index_of(*playlist_id));

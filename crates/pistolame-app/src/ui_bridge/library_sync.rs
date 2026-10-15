@@ -33,7 +33,7 @@ impl UiBridge {
         let mut has_new_photo = false;
         for photo in worker.take_results() {
             if let Some(bytes) = photo.image {
-                let image = decode_artwork(Some(&std::sync::Arc::from(bytes)));
+                let image = self.artwork_image(Some(&std::sync::Arc::from(bytes)));
                 if image.size().width > 0 {
                     self.artist_photos.borrow_mut().insert(photo.artist, image);
                     has_new_photo = true;
@@ -142,6 +142,7 @@ impl UiBridge {
             self.watch_library_folders();
         }
         if let Some(snapshot) = update.snapshot {
+            *self.thumbnails.borrow_mut() = update.thumbnails;
             self.replace_albums(snapshot);
             if !self.is_session_restored.get() {
                 self.is_session_restored.set(true);
@@ -178,7 +179,7 @@ impl UiBridge {
     pub(super) fn replace_albums(&self, mut snapshot: LibrarySnapshot) {
         *self.artist_photos.borrow_mut() = std::mem::take(&mut snapshot.artist_images)
             .into_iter()
-            .map(|(artist, bytes)| (artist, decode_artwork(Some(&bytes))))
+            .map(|(artist, bytes)| (artist, self.artwork_image(Some(&bytes))))
             .filter(|(_, image)| image.size().width > 0)
             .collect();
         let selected_path = self.selected_track.get().and_then(|(album, track)| {
@@ -195,7 +196,7 @@ impl UiBridge {
             .map(|album| album.key.clone());
         let mut snapshot = snapshot;
         *self.playlists.borrow_mut() = std::mem::take(&mut snapshot.playlists);
-        let mut albums = albums_from_snapshot(snapshot);
+        let mut albums = albums_from_snapshot(snapshot, &self.thumbnails.borrow());
         let sort = self.album_sort();
         albums.sort_by(|left, right| {
             crate::album_sort::compare_albums(sort, &left.sort_keys, &right.sort_keys)

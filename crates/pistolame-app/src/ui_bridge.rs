@@ -128,6 +128,8 @@ struct LibraryUpdate {
     errors: Vec<String>,
     /// The last message of a synchronization: the worker is done.
     is_final: bool,
+    /// The covers of `snapshot`, decoded by the worker.
+    thumbnails: crate::artwork_thumbnails::SnapshotThumbnails,
 }
 
 pub(crate) struct UiBridge {
@@ -217,6 +219,10 @@ pub(crate) struct UiBridge {
     album_resume_points: RefCell<Vec<crate::album_resume::ResumePoint>>,
     /// Counts the messages shown, so a notice's timer only hides its own notice.
     notice_generation: Rc<Cell<u64>>,
+    /// The covers of the latest library snapshot, decoded and scaled by the library worker.
+    thumbnails: RefCell<crate::artwork_thumbnails::SnapshotThumbnails>,
+    /// Covers already decoded, kept by content between library updates.
+    thumbnail_cache: crate::artwork_thumbnails::ThumbnailCache,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -311,6 +317,10 @@ impl UiBridge {
             sleep_timer: Cell::default(),
             album_resume_points: RefCell::default(),
             notice_generation: Rc::default(),
+            thumbnails: RefCell::default(),
+            thumbnail_cache: crate::artwork_thumbnails::ThumbnailCache::beside(
+                library_database.as_deref(),
+            ),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -333,6 +343,11 @@ impl UiBridge {
         state
             .set_exclusive(bridge.settings.borrow().output_mode == OutputModePreference::Exclusive);
         Ok(bridge)
+    }
+
+    /// The image of a cover: its thumbnail from the library worker, or a decode now.
+    fn artwork_image(&self, bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
+        self.thumbnails.borrow().image(bytes)
     }
 
     /// The window position and size saved at the last exit.
@@ -829,15 +844,18 @@ impl UiBridge {
             );
         }
         let sender = self.import_sender.clone();
+        let thumbnail_cache = self.thumbnail_cache.clone();
         let result = std::thread::Builder::new()
             .name("pistolame-library".into())
             .spawn(move || {
-                let outcome = synchronize_in_background(&database, &new_roots, &sender);
+                let outcome =
+                    synchronize_in_background(&database, &new_roots, &sender, &thumbnail_cache);
                 if let Err(error) = outcome {
                     let _ = sender.send(LibraryUpdate {
                         snapshot: None,
                         errors: vec![error.to_string()],
                         is_final: true,
+                        thumbnails: Default::default(),
                     });
                 }
             });
@@ -1070,21 +1088,30 @@ fn synchronize_in_background(
     database: &std::path::Path,
     new_roots: &[PathBuf],
     sender: &Sender<LibraryUpdate>,
+    thumbnail_cache: &crate::artwork_thumbnails::ThumbnailCache,
 ) -> Result<(), pistolame_library::LibraryError> {
+    use crate::artwork_thumbnails::SnapshotThumbnails;
     let mut store = LibraryStore::open(database)?;
     store.add_roots(new_roots)?;
+    let snapshot = store.snapshot()?;
     let _ = sender.send(LibraryUpdate {
-        snapshot: Some(store.snapshot()?),
+        thumbnails: SnapshotThumbnails::of(&snapshot, thumbnail_cache),
+        snapshot: Some(snapshot),
         errors: Vec::new(),
         is_final: false,
     });
     let report = store.synchronize()?;
+    let snapshot = if report.has_changed {
+        Some(store.snapshot()?)
+    } else {
+        None
+    };
     let _ = sender.send(LibraryUpdate {
-        snapshot: if report.has_changed {
-            Some(store.snapshot()?)
-        } else {
-            None
-        },
+        thumbnails: snapshot
+            .as_ref()
+            .map(|snapshot| SnapshotThumbnails::of(snapshot, thumbnail_cache))
+            .unwrap_or_default(),
+        snapshot,
         errors: report.errors,
         is_final: true,
     });
@@ -1093,7 +1120,10 @@ fn synchronize_in_background(
 
 /// Groups tracks into albums (same folder, same album tag), tracks in disc/track order. The
 /// chosen cover wins over the files' own cover.
-fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
+fn albums_from_snapshot(
+    snapshot: LibrarySnapshot,
+    thumbnails: &crate::artwork_thumbnails::SnapshotThumbnails,
+) -> Vec<Album> {
     let mut albums: Vec<Album> = Vec::new();
     let mut positions: std::collections::HashMap<AlbumKey, usize> =
         std::collections::HashMap::new();
@@ -1136,7 +1166,7 @@ fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
         }
         let custom = snapshot.artwork_overrides.get(&album.key);
         album.has_custom_artwork = custom.is_some();
-        album.artwork = decode_artwork(custom.or_else(|| original_artwork(&album.tracks)));
+        album.artwork = thumbnails.image(custom.or_else(|| original_artwork(&album.tracks)));
         album.sort_keys = sort_keys_of(album);
     }
     albums
@@ -1195,12 +1225,6 @@ fn album_codecs(album: &Album) -> String {
 /// The first cover found in an album's files (embedded or beside them).
 fn original_artwork(tracks: &[MusicFile]) -> Option<&std::sync::Arc<[u8]>> {
     tracks.iter().find_map(|track| track.artwork.as_ref())
-}
-
-fn decode_artwork(bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
-    bytes
-        .and_then(|bytes| slint::Image::load_from_data(bytes, None).ok())
-        .unwrap_or_default()
 }
 
 /// The edited value to store: `None` when the field is empty or equal to the tags, so the app

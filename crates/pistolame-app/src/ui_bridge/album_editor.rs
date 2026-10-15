@@ -132,7 +132,7 @@ impl UiBridge {
             .albums
             .borrow()
             .get(index)
-            .map(|album| decode_artwork(original_artwork(&album.tracks)))
+            .map(|album| self.artwork_image(original_artwork(&album.tracks)))
             .unwrap_or_default();
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
@@ -206,7 +206,7 @@ impl UiBridge {
                     album.has_custom_artwork = true;
                 }
                 PendingArtwork::Restored => {
-                    album.artwork = decode_artwork(original_artwork(&album.tracks));
+                    album.artwork = self.artwork_image(original_artwork(&album.tracks));
                     album.has_custom_artwork = false;
                 }
             }

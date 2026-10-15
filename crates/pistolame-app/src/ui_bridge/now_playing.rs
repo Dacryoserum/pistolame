@@ -45,7 +45,8 @@ impl UiBridge {
         drop(albums);
         state.set_current_path(path.to_string_lossy().as_ref().into());
         self.show_track_info(state, cells, None);
-        self.show_authenticity_for(&path);
+        let is_page_shown = state.get_view() == crate::ViewKind::NowPlaying;
+        self.show_authenticity_for(&path, is_page_shown);
         self.publish_media_track();
     }
 
@@ -72,8 +73,10 @@ impl UiBridge {
         state.set_track_info_cells(ModelRc::new(VecModel::from(cells)));
     }
 
-    /// Shows the stored analysis of `path`, or starts one.
-    pub(super) fn show_authenticity_for(&self, path: &std::path::Path) {
+    /// Shows the stored analysis of `path`, or starts one when `may_start_analysis` (the
+    /// current-track page is shown): a track only listened to is never analyzed, so playing an
+    /// album costs no decode and FFT burst at each track change.
+    pub(super) fn show_authenticity_for(&self, path: &std::path::Path, may_start_analysis: bool) {
         let Some(window) = self.window.upgrade() else {
             return;
         };
@@ -88,6 +91,11 @@ impl UiBridge {
             .map(|(_, outcome)| outcome.clone());
         match (known, &self.analysis_worker) {
             (Some(outcome), _) => self.show_authenticity(&state, &outcome),
+            (None, Some(_)) if !may_start_analysis => {
+                // Started when the page opens.
+                state.set_authenticity_state(1);
+                state.set_has_spectrogram(false);
+            }
             (None, Some(worker)) => {
                 state.set_authenticity_state(1);
                 state.set_has_spectrogram(false);

@@ -7,6 +7,7 @@ mod album_resume;
 mod album_sort;
 mod analysis_worker;
 mod artist_photos;
+mod artwork_thumbnails;
 mod authenticity;
 mod file_drop;
 mod m3u;
