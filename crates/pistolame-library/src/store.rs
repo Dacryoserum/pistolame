@@ -9,11 +9,11 @@ use std::time::UNIX_EPOCH;
 use md5::{Digest, Md5};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{MAX_COVER_BYTES, MusicFile, collect_flac_paths, read_music_file};
+use crate::{MAX_COVER_BYTES, MusicFile, collect_audio_paths, read_music_file};
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     track_number INTEGER NOT NULL,
     sample_rate_hz INTEGER NOT NULL,
     bits_per_sample INTEGER NOT NULL,
+    codec TEXT NOT NULL DEFAULT 'FLAC',
+    is_lossy INTEGER NOT NULL DEFAULT 0,
     duration_seconds INTEGER NOT NULL,
     artwork_hash TEXT REFERENCES artworks(hash),
     year INTEGER,
@@ -242,7 +244,8 @@ impl LibraryStore {
         let mut statement = self.connection.prepare(
             "SELECT path, title, album, artist, disc_number, track_number, sample_rate_hz,
                     bits_per_sample, duration_seconds, artwork_hash, year, sort_album,
-                    sort_album_artist, genre, added_seconds, play_count, last_played_seconds
+                    sort_album_artist, genre, added_seconds, play_count, last_played_seconds,
+                    codec, is_lossy
              FROM tracks ORDER BY path",
         )?;
         let tracks = statement
@@ -265,6 +268,8 @@ impl LibraryStore {
                     added_seconds: row.get(14)?,
                     play_count: row.get(15)?,
                     last_played_seconds: row.get(16)?,
+                    codec: row.get(17)?,
+                    is_lossy: row.get(18)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -332,7 +337,7 @@ impl LibraryStore {
                 seen.extend(known.keys().filter(|path| path.starts_with(&root)).cloned());
                 continue;
             }
-            let (paths, errors) = collect_flac_paths(std::slice::from_ref(&root));
+            let (paths, errors) = collect_audio_paths(std::slice::from_ref(&root));
             report.errors.extend(errors);
             for path in paths {
                 seen.insert(path.clone());
@@ -746,8 +751,9 @@ impl LibraryStore {
             "INSERT INTO tracks (path, root, file_size, modified_nanoseconds, title, album, artist,
                                  disc_number, track_number, sample_rate_hz, bits_per_sample,
                                  duration_seconds, artwork_hash, year, sort_album,
-                                 sort_album_artist, genre, added_seconds)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                                 sort_album_artist, genre, added_seconds, codec, is_lossy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     ?19, ?20)
              ON CONFLICT (path) DO UPDATE SET
                 year = excluded.year, sort_album = excluded.sort_album,
                 sort_album_artist = excluded.sort_album_artist, genre = excluded.genre,
@@ -757,6 +763,7 @@ impl LibraryStore {
                 disc_number = excluded.disc_number, track_number = excluded.track_number,
                 sample_rate_hz = excluded.sample_rate_hz,
                 bits_per_sample = excluded.bits_per_sample,
+                codec = excluded.codec, is_lossy = excluded.is_lossy,
                 duration_seconds = excluded.duration_seconds,
                 artwork_hash = excluded.artwork_hash",
             params![
@@ -778,6 +785,8 @@ impl LibraryStore {
                 track.sort_album_artist,
                 track.genre,
                 now_seconds(),
+                track.codec,
+                track.is_lossy,
             ],
         )?;
         Ok(())
@@ -847,6 +856,16 @@ fn migrate(connection: &Connection) -> Result<(), LibraryError> {
             connection.execute(&format!("ALTER TABLE tracks ADD COLUMN {column}"), [])?;
         }
         connection.execute("UPDATE tracks SET file_size = -1", [])?;
+    }
+    // Version 8 reads every audio format: until then every track was FLAC, which the column
+    // defaults state, so no file needs reading again.
+    if !has_column(connection, "tracks", "codec")? {
+        for column in [
+            "codec TEXT NOT NULL DEFAULT 'FLAC'",
+            "is_lossy INTEGER NOT NULL DEFAULT 0",
+        ] {
+            connection.execute(&format!("ALTER TABLE tracks ADD COLUMN {column}"), [])?;
+        }
     }
     if !has_column(connection, "playlists", "artwork_hash")? {
         connection.execute(

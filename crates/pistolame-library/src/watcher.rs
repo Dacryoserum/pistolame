@@ -48,7 +48,7 @@ impl FolderWatcher {
     }
 }
 
-/// Whether `event` may change the library: a FLAC file or a folder created, removed, renamed or
+/// Whether `event` may change the library: a supported audio file or a folder created, removed, renamed or
 /// rewritten. Reads and metadata-only changes (access times) are ignored.
 fn is_relevant(event: &Event) -> bool {
     let is_relevant_kind = matches!(
@@ -61,12 +61,9 @@ fn is_relevant(event: &Event) -> bool {
     is_relevant_kind && event.paths.iter().any(|path| may_hold_music(path))
 }
 
-/// A FLAC file, or something without extension (a folder, possibly full of FLAC files).
+/// A supported audio file, or something without extension (a folder, possibly full of music).
 fn may_hold_music(path: &Path) -> bool {
-    match path.extension() {
-        Some(extension) => extension.eq_ignore_ascii_case("flac"),
-        None => true,
-    }
+    path.extension().is_none() || pistolame_core::is_supported_audio_file(path)
 }
 
 #[cfg(test)]

@@ -102,7 +102,7 @@ impl Pipeline {
                 track_id: setup.track_id,
                 source_format: format,
                 expected_md5: source.embedded_md5,
-                expected_total_frames: source.total_frames,
+                expected_total_frames: source.total_frames.filter(|_| source.is_total_frames_exact),
             },
             tap_reader,
             verifier_command_receiver,

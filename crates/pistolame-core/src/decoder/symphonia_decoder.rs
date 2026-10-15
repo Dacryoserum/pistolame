@@ -1,24 +1,33 @@
-//! FLAC decoding on symphonia 0.6.1, integer end to end.
+//! Decoding of every container and codec symphonia 0.6.1 reads (FLAC, ALAC, WAV/AIFF PCM,
+//! MP3, AAC, Vorbis), into right-justified integer PCM.
 //!
-//! Policy (walking-skeleton plan B3.3, B4, B8): no float, no dither, no gain, symphonia's own
-//! `verify` option stays off (the pipeline hashes the decoded samples itself), and on damaged
-//! data the decoder returns the blocks before the damage, then one typed error, never silently
-//! skipping audio.
+//! Policy (walking-skeleton plan B3.3, B4, B8): integer codecs stay integer end to end, with no
+//! dither and no gain; symphonia's own `verify` option stays off (the pipeline hashes the
+//! decoded samples itself), and on damaged data the decoder returns the blocks before the
+//! damage, then one typed error, never silently skipping audio.
+//!
+//! Codecs whose decoder outputs floating point (MP3, AAC, Vorbis, float PCM) are rounded to
+//! 24-bit integers, without dither. [`SourceCodec::is_decoded_as_float`] says so, and the
+//! signal path is then never reported as bit-perfect.
 //!
 //! Known limits, by design in M1:
-//! - The `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` Vorbis comment is not read: the channel mask is
-//!   always the default one of RFC 9639 section 9.1.3 for the channel count.
+//! - The channel mask is always the default one of RFC 9639 section 9.1.3 for the channel
+//!   count (the `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` Vorbis comment and WAV masks are not read).
 //! - symphonia cannot open files whose STREAMINFO minimum block size is not conformant; they
 //!   are reported as [`DecodeError::CorruptData`] at open.
 //! - A mid-stream change of sample rate, bit depth or channel count never reaches the decoder:
 //!   symphonia's frame parser rejects frame headers that disagree with STREAMINFO, so for FLAC
 //!   it surfaces as [`DecodeError::CorruptData`], not [`DecodeError::FormatChangedMidStream`].
-//! - Trailing ID3v1 and APEv2 tags are hidden from symphonia (see `trailing_tags`).
+//! - Trailing ID3v1 and APEv2 tags are hidden from symphonia in FLAC and MP3 files (see
+//!   `trailing_tags`); other containers delimit their own audio.
+//! - Containers of lossy codecs often estimate their length, so the end of such a stream is
+//!   not checked against it ([`SourceStreamInfo::is_total_frames_exact`]).
 
 use std::path::{Path, PathBuf};
 
-use symphonia::core::audio::{Audio, GenericAudioBufferRef};
+use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_FLAC;
 use symphonia::core::codecs::audio::{
     AudioCodecParameters, AudioDecoder as SymphoniaAudioDecoder, AudioDecoderOptions,
     VerificationCheck,
@@ -32,15 +41,24 @@ use symphonia::core::packet::Packet;
 use symphonia::core::units::Timestamp;
 
 use super::trailing_tags::TrailingTagTrimmedFile;
-use super::{AudioDecoder, DecodeError, DecodedBlock, DecoderProvider, SourceStreamInfo};
+use super::{
+    AudioDecoder, DecodeError, DecodedBlock, DecoderProvider, SourceCodec, SourceStreamInfo,
+    declared_bits_per_sample, is_supported_audio_file,
+};
 use crate::format::{ChannelMask, StreamFormat};
 
-/// File extension (without the dot) of FLAC files, compared case-insensitively.
-const FLAC_FILE_EXTENSION: &str = "flac";
+/// Extensions of the files whose trailing ID3v1 / APEv2 tags are hidden from symphonia: the
+/// two formats where taggers append them and the parser would read them as damaged audio.
+const TRAILING_TAG_FILE_EXTENSIONS: &[&str] = &["flac", "mp3"];
 /// Highest bit depth the pipeline supports in M1 (plan B4, known limit 1).
 const MAXIMUM_SUPPORTED_BITS_PER_SAMPLE: u32 = 24;
-/// Lowest bit depth RFC 9639 allows.
+/// Lowest bit depth accepted (RFC 9639's minimum; integer PCM starts at 8).
 const MINIMUM_SUPPORTED_BITS_PER_SAMPLE: u32 = 4;
+/// Precision of the integers float decoder output is rounded to: the widest depth the pipeline
+/// carries, so the rounding error stays far below any lossy codec's own noise.
+const FLOAT_DECODE_OUTPUT_BITS_PER_SAMPLE: u8 = 24;
+/// Full scale of a 24-bit sample (2^23): float 1.0 maps to it.
+const FLOAT_DECODE_FULL_SCALE: f32 = 8_388_608.0;
 /// Width of the `i32` word symphonia left-justifies every sample in.
 const SYMPHONIA_SAMPLE_BITS: u32 = i32::BITS;
 /// Offset of the maximum block size (big-endian u16, in frames) in the STREAMINFO body
@@ -49,19 +67,18 @@ const STREAMINFO_MAXIMUM_BLOCK_SIZE_OFFSET: usize = 2;
 /// Block size assumed for buffer pre-sizing when STREAMINFO cannot be read.
 const FALLBACK_BLOCK_SIZE_FRAMES: usize = 4096;
 
-/// Opens FLAC files (recognized by extension) with symphonia.
+/// Opens every supported audio file (recognized by extension, see
+/// [`super::SUPPORTED_AUDIO_FILE_EXTENSIONS`]) with symphonia.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct FlacDecoderProvider;
+pub struct SymphoniaDecoderProvider;
 
-impl DecoderProvider for FlacDecoderProvider {
+impl DecoderProvider for SymphoniaDecoderProvider {
     fn can_open(&self, path: &Path) -> bool {
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case(FLAC_FILE_EXTENSION))
+        is_supported_audio_file(path)
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn AudioDecoder>, DecodeError> {
-        Ok(Box::new(FlacDecoder::open(path)?))
+        Ok(Box::new(SymphoniaDecoder::open(path)?))
     }
 }
 
@@ -139,17 +156,28 @@ struct OpenedStream {
     codec_parameters: AudioCodecParameters,
 }
 
-/// Probes `path` (hiding trailing tags) and selects its audio track.
+/// Probes `path` (hiding trailing tags where they occur) and selects its audio track.
 fn open_stream(path: &Path) -> Result<OpenedStream, DecodeError> {
     let io_error = |source| DecodeError::Io {
         path: path.to_path_buf(),
         source,
     };
     let file = std::fs::File::open(path).map_err(io_error)?;
-    let source = TrailingTagTrimmedFile::new(file).map_err(io_error)?;
-    let media_source = MediaSourceStream::new(Box::new(source), Default::default());
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    let media_source = if TRAILING_TAG_FILE_EXTENSIONS
+        .iter()
+        .any(|tagged| extension.eq_ignore_ascii_case(tagged))
+    {
+        let source = TrailingTagTrimmedFile::new(file).map_err(io_error)?;
+        MediaSourceStream::new(Box::new(source), Default::default())
+    } else {
+        MediaSourceStream::new(Box::new(file), Default::default())
+    };
     let mut hint = Hint::new();
-    hint.with_extension(FLAC_FILE_EXTENSION);
+    hint.with_extension(extension);
     let format_reader = symphonia::default::get_probe()
         .probe(
             &hint,
@@ -164,6 +192,18 @@ fn open_stream(path: &Path) -> Result<OpenedStream, DecodeError> {
     let Some(CodecParameters::Audio(codec_parameters)) = track.codec_params.clone() else {
         return Err(DecodeError::UnsupportedFileType);
     };
+    // Frame indices are packet timestamps: a container counting in other units (Matroska's
+    // milliseconds) cannot be followed frame by frame.
+    let is_counted_in_frames = match (track.time_base, codec_parameters.sample_rate) {
+        (Some(time_base), Some(sample_rate_hz)) => {
+            time_base.numer.get() == 1 && time_base.denom.get() == sample_rate_hz
+        }
+        (None, _) => true,
+        (Some(_), None) => false,
+    };
+    if !is_counted_in_frames {
+        return Err(DecodeError::UnsupportedFileType);
+    }
     let (track_id, total_frames) = (track.id, track.num_frames);
     Ok(OpenedStream {
         format_reader,
@@ -173,32 +213,35 @@ fn open_stream(path: &Path) -> Result<OpenedStream, DecodeError> {
     })
 }
 
-/// Decoder for one FLAC file. Produces right-justified `i32` samples in a reused buffer.
-pub struct FlacDecoder {
+/// Decoder for one audio file. Produces right-justified `i32` samples in a reused buffer.
+pub struct SymphoniaDecoder {
     path: PathBuf,
     format_reader: Box<dyn FormatReader>,
     audio_decoder: Box<dyn SymphoniaAudioDecoder>,
     track_id: u32,
     stream_info: SourceStreamInfo,
-    /// Bits symphonia shifted every sample left by; undone before the samples leave.
+    /// Bits symphonia shifted every integer sample left by; undone before the samples leave.
     left_shift: u32,
     /// Interleaved samples of the last decoded block.
     sample_buffer: Vec<i32>,
+    /// Interleaved float output of the last packet, before rounding (float codecs only).
+    float_buffer: Vec<f32>,
     frame_cursor: FrameCursor,
     /// Set after the end of the stream or after an error was returned: no more blocks.
     finished: bool,
 }
 
-impl FlacDecoder {
+impl SymphoniaDecoder {
     /// Opens `path` and reads the stream information.
     ///
     /// # Errors
     /// [`DecodeError::Io`] when the file cannot be read, [`DecodeError::UnsupportedFileType`]
-    /// when it is not FLAC, [`DecodeError::UnsupportedBitDepth`] above 24 bits,
-    /// [`DecodeError::CorruptData`] when the headers are unusable.
+    /// when no supported container or codec is found, [`DecodeError::UnsupportedBitDepth`]
+    /// above 24 bits, [`DecodeError::CorruptData`] when the headers are unusable.
     pub fn open(path: &Path) -> Result<Self, DecodeError> {
         let opened = open_stream(path)?;
-        let (format, left_shift) = stream_format_from(&opened.codec_parameters)?;
+        let codec = SourceCodec::from_codec_id(opened.codec_parameters.codec);
+        let (format, left_shift) = stream_format_from(&opened.codec_parameters, &codec)?;
         let embedded_md5 = match opened.codec_parameters.verification_check {
             Some(VerificationCheck::Md5(md5)) => Some(md5),
             _ => None,
@@ -217,10 +260,13 @@ impl FlacDecoder {
             stream_info: SourceStreamInfo {
                 format,
                 total_frames: opened.total_frames.filter(|&frames| frames > 0),
+                is_total_frames_exact: !codec.is_lossy,
                 embedded_md5,
+                codec,
             },
             left_shift,
             sample_buffer: Vec::with_capacity(buffer_capacity_samples),
+            float_buffer: Vec::new(),
             frame_cursor: FrameCursor::default(),
             finished: false,
         })
@@ -233,26 +279,48 @@ impl FlacDecoder {
     /// truncated at a frame boundary whose total is 0 (unknown) ends with `Ok(None)` and
     /// cannot be told from a complete one.
     fn decode_next_packet(&mut self) -> Result<Option<u64>, DecodeError> {
+        loop {
+            let Some(first_frame_index) = self.decode_one_packet()? else {
+                return self.check_stream_is_complete();
+            };
+            // Lossy decoders can trim a whole packet away (encoder delay); skip it.
+            if !self.sample_buffer.is_empty() {
+                return Ok(Some(first_frame_index));
+            }
+        }
+    }
+
+    /// Reads and decodes one packet; `None` when there are no packets left.
+    fn decode_one_packet(&mut self) -> Result<Option<u64>, DecodeError> {
         let Some(packet) = self.read_next_track_packet()? else {
-            return self.check_stream_is_complete();
+            return Ok(None);
         };
         // The parser drops frames whose checksum fails and resynchronizes on the next one; the
         // jump in the timestamp is the only trace, and it must not be played over.
-        let first_frame_index =
-            self.frame_cursor
-                .accept_packet(packet.pts.get())
-                .map_err(|gap| {
-                    corrupt_data(
-                        gap.expected_first_frame_index,
-                        format!(
-                            "audio is missing: expected a frame starting at {}, found timestamp {}",
-                            gap.expected_first_frame_index, gap.found_timestamp
-                        ),
-                    )
-                })?;
+        // The first audible frame comes after the encoder delay: an MP3 or Vorbis stream starts
+        // with a packet whose timestamp is minus that delay.
+        let trim_start = i64::try_from(packet.trim_start.get()).unwrap_or(i64::MAX);
+        let first_frame_index = self
+            .frame_cursor
+            .accept_packet(packet.pts.get().saturating_add(trim_start))
+            .map_err(|gap| {
+                corrupt_data(
+                    gap.expected_first_frame_index,
+                    format!(
+                        "audio is missing: expected a frame starting at {}, found timestamp {}",
+                        gap.expected_first_frame_index, gap.found_timestamp
+                    ),
+                )
+            })?;
         self.decode_into_sample_buffer(&packet, first_frame_index)?;
         let channel_count = usize::from(self.stream_info.format.channel_count);
-        let frame_count = (self.sample_buffer.len() / channel_count) as u64;
+        // A lossy decoder primes itself on the first packet after a seek and outputs nothing
+        // for it; the stream still moves on by the packet's duration. A lossless decoder never
+        // does, so there the missing audio surfaces as a gap at the next packet.
+        let frame_count = match (self.sample_buffer.len() / channel_count) as u64 {
+            0 if self.stream_info.codec.is_lossy => packet.dur.get(),
+            decoded_frame_count => decoded_frame_count,
+        };
         self.frame_cursor
             .complete_block(first_frame_index, frame_count);
         Ok(Some(first_frame_index))
@@ -285,14 +353,36 @@ impl FlacDecoder {
             .audio_decoder
             .decode(packet)
             .map_err(|error| classify_decode_error(error, first_frame_index))?;
-        let GenericAudioBufferRef::S32(buffer) = decoded else {
+        let channel_count = usize::from(self.stream_info.format.channel_count);
+        // MP3 and Vorbis frames carry their own rate and layout; playing a frame that changed
+        // either at the opened format would be at the wrong speed or on the wrong speakers.
+        if decoded.spec().channels().count() != channel_count
+            || decoded.spec().rate() != self.stream_info.format.sample_rate_hz
+        {
+            return Err(DecodeError::FormatChangedMidStream);
+        }
+        let valid_frames = valid_frame_range(decoded.frames(), packet);
+        let valid_samples = valid_frames.start * channel_count..valid_frames.end * channel_count;
+        if self.stream_info.codec.is_decoded_as_float {
+            decoded.copy_to_vec_interleaved(&mut self.float_buffer);
+            round_float_samples_to_integers(
+                &self.float_buffer[valid_samples],
+                &mut self.sample_buffer,
+            );
+            return Ok(());
+        }
+        if matches!(
+            decoded,
+            GenericAudioBufferRef::F32(_) | GenericAudioBufferRef::F64(_)
+        ) {
             return Err(corrupt_data(
                 first_frame_index,
-                "the FLAC decoder produced an unexpected sample type".to_owned(),
+                "an integer codec produced floating-point samples".to_owned(),
             ));
-        };
-        buffer.copy_to_vec_interleaved(&mut self.sample_buffer);
-        let channel_count = usize::from(self.stream_info.format.channel_count);
+        }
+        decoded.copy_to_vec_interleaved(&mut self.sample_buffer);
+        self.sample_buffer.truncate(valid_samples.end);
+        self.sample_buffer.drain(..valid_samples.start);
         restore_right_justified(&mut self.sample_buffer, self.left_shift).map_err(|sample_index| {
             corrupt_data(
                 first_frame_index + (sample_index / channel_count) as u64,
@@ -306,12 +396,16 @@ impl FlacDecoder {
     fn check_stream_is_complete(&self) -> Result<Option<u64>, DecodeError> {
         let delivered_frames = self.frame_cursor.expected_first_frame_index();
         match self.stream_info.total_frames {
-            Some(total_frames) if delivered_frames < total_frames => Err(corrupt_data(
-                delivered_frames,
-                format!(
-                    "stream ends at frame {delivered_frames} but STREAMINFO announces {total_frames}"
-                ),
-            )),
+            Some(total_frames)
+                if self.stream_info.is_total_frames_exact && delivered_frames < total_frames =>
+            {
+                Err(corrupt_data(
+                    delivered_frames,
+                    format!(
+                        "stream ends at frame {delivered_frames} but the container announces {total_frames}"
+                    ),
+                ))
+            }
             _ => Ok(None),
         }
     }
@@ -363,7 +457,7 @@ impl FlacDecoder {
     }
 }
 
-impl AudioDecoder for FlacDecoder {
+impl AudioDecoder for SymphoniaDecoder {
     fn stream_info(&self) -> &SourceStreamInfo {
         &self.stream_info
     }
@@ -420,27 +514,43 @@ impl AudioDecoder for FlacDecoder {
     }
 }
 
-/// Maximum block size announced by STREAMINFO, for sizing the sample buffer.
+/// Largest packet in frames, for sizing the sample buffer: STREAMINFO's maximum block size
+/// for FLAC, the container's figure otherwise.
 fn maximum_block_size_frames(parameters: &AudioCodecParameters) -> usize {
-    parameters
-        .extra_data
-        .as_deref()
-        .and_then(|streaminfo| {
-            streaminfo
-                .get(STREAMINFO_MAXIMUM_BLOCK_SIZE_OFFSET..STREAMINFO_MAXIMUM_BLOCK_SIZE_OFFSET + 2)
+    let flac_maximum_block_size = || {
+        parameters
+            .extra_data
+            .as_deref()
+            .filter(|_| parameters.codec == CODEC_ID_FLAC)
+            .and_then(|streaminfo| {
+                streaminfo.get(
+                    STREAMINFO_MAXIMUM_BLOCK_SIZE_OFFSET..STREAMINFO_MAXIMUM_BLOCK_SIZE_OFFSET + 2,
+                )
+            })
+            .map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])))
+    };
+    flac_maximum_block_size()
+        .or_else(|| {
+            parameters
+                .max_frames_per_packet
+                .and_then(|frames| usize::try_from(frames).ok())
         })
-        .map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])))
         .filter(|&frames| frames > 0)
         .unwrap_or(FALLBACK_BLOCK_SIZE_FRAMES)
 }
 
 /// Builds the stream format and the left shift symphonia applied from the codec parameters.
+/// Float decoders get the 24-bit format their output is rounded to, and no shift.
 fn stream_format_from(
     parameters: &AudioCodecParameters,
+    codec: &SourceCodec,
 ) -> Result<(StreamFormat, u32), DecodeError> {
-    let bits_per_sample = parameters
-        .bits_per_sample
-        .ok_or_else(|| corrupt_data(0, "STREAMINFO has no bit depth".to_owned()))?;
+    let bits_per_sample = if codec.is_decoded_as_float {
+        u32::from(FLOAT_DECODE_OUTPUT_BITS_PER_SAMPLE)
+    } else {
+        declared_bits_per_sample(parameters)
+            .ok_or_else(|| corrupt_data(0, "the stream has no bit depth".to_owned()))?
+    };
     if !(MINIMUM_SUPPORTED_BITS_PER_SAMPLE..=MAXIMUM_SUPPORTED_BITS_PER_SAMPLE)
         .contains(&bits_per_sample)
     {
@@ -451,14 +561,14 @@ fn stream_format_from(
     let sample_rate_hz = parameters
         .sample_rate
         .filter(|&rate| rate > 0)
-        .ok_or_else(|| corrupt_data(0, "STREAMINFO has no sample rate".to_owned()))?;
+        .ok_or_else(|| corrupt_data(0, "the stream has no sample rate".to_owned()))?;
     let channel_count = parameters
         .channels
         .as_ref()
         .and_then(|channels| u8::try_from(channels.count()).ok())
-        .ok_or_else(|| corrupt_data(0, "STREAMINFO has an invalid channel count".to_owned()))?;
+        .ok_or_else(|| corrupt_data(0, "the stream has an invalid channel count".to_owned()))?;
     let channel_mask = ChannelMask::default_for_flac_channel_count(channel_count)
-        .ok_or_else(|| corrupt_data(0, format!("{channel_count} channels are not valid FLAC")))?;
+        .ok_or_else(|| corrupt_data(0, format!("{channel_count} channels are not supported")))?;
     let format = StreamFormat {
         sample_rate_hz,
         // Range-checked above: 4..=24.
@@ -466,7 +576,47 @@ fn stream_format_from(
         channel_count,
         channel_mask,
     };
-    Ok((format, SYMPHONIA_SAMPLE_BITS - bits_per_sample))
+    let left_shift = if codec.is_decoded_as_float {
+        0
+    } else {
+        SYMPHONIA_SAMPLE_BITS - bits_per_sample
+    };
+    Ok((format, left_shift))
+}
+
+/// Frames of a decoded packet that are audio, as opposed to encoder delay or padding.
+///
+/// symphonia's MP3 and Vorbis decoders already drop the frames the container marks for
+/// trimming; a decoder that does not returns exactly `dur + trim_start + trim_end` frames, and
+/// only then are the trims applied here.
+fn valid_frame_range(decoded_frames: usize, packet: &Packet) -> std::ops::Range<usize> {
+    let to_frames = |duration: symphonia::core::units::Duration| {
+        usize::try_from(duration.get()).unwrap_or(usize::MAX)
+    };
+    let (trim_start, trim_end) = (to_frames(packet.trim_start), to_frames(packet.trim_end));
+    let is_untrimmed = trim_start.saturating_add(trim_end) > 0
+        && to_frames(packet.dur)
+            .checked_add(trim_start)
+            .and_then(|frames| frames.checked_add(trim_end))
+            == Some(decoded_frames);
+    if is_untrimmed {
+        trim_start..decoded_frames - trim_end
+    } else {
+        0..decoded_frames
+    }
+}
+
+/// Rounds float samples (full scale ±1.0) to right-justified 24-bit integers, without dither,
+/// clamping the overshoot lossy decoders produce on loud masters. NaN becomes 0.
+fn round_float_samples_to_integers(float_samples: &[f32], integer_samples: &mut Vec<i32>) {
+    const MINIMUM: f32 = -FLOAT_DECODE_FULL_SCALE;
+    const MAXIMUM: f32 = FLOAT_DECODE_FULL_SCALE - 1.0;
+    integer_samples.clear();
+    integer_samples.extend(float_samples.iter().map(|&sample| {
+        (sample * FLOAT_DECODE_FULL_SCALE)
+            .round()
+            .clamp(MINIMUM, MAXIMUM) as i32
+    }));
 }
 
 /// Undoes symphonia's left shift in place with an arithmetic right shift, which restores the
@@ -563,6 +713,7 @@ fn classify_seek_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use symphonia::core::units::Duration;
 
     #[test]
     fn restores_right_justified_values_when_low_bits_are_zero() {
@@ -579,12 +730,59 @@ mod tests {
     }
 
     #[test]
-    fn provider_recognizes_flac_extension_case_insensitively() {
-        let provider = FlacDecoderProvider;
+    fn provider_recognizes_supported_extensions_case_insensitively() {
+        let provider = SymphoniaDecoderProvider;
         assert!(provider.can_open(Path::new("a.flac")));
         assert!(provider.can_open(Path::new("A.FLAC")));
-        assert!(!provider.can_open(Path::new("a.wav")));
+        assert!(provider.can_open(Path::new("a.m4a")));
+        assert!(provider.can_open(Path::new("a.mp3")));
+        assert!(!provider.can_open(Path::new("a.txt")));
         assert!(!provider.can_open(Path::new("flac")));
+    }
+
+    fn packet_with_trims(valid_frames: u64, trim_start: u64, trim_end: u64) -> Packet {
+        let mut packet = Packet::new(0, Timestamp::new(0), Duration::from(valid_frames), [0_u8]);
+        packet.trim_start = Duration::from(trim_start);
+        packet.trim_end = Duration::from(trim_end);
+        packet
+    }
+
+    #[test]
+    fn untrimmed_decoder_output_has_its_delay_and_padding_removed() {
+        let packet = packet_with_trims(1_000, 100, 24);
+        assert_eq!(valid_frame_range(1_124, &packet), 100..1_100);
+    }
+
+    #[test]
+    fn output_the_decoder_already_trimmed_is_kept_whole() {
+        let packet = packet_with_trims(1_000, 100, 24);
+        assert_eq!(valid_frame_range(1_000, &packet), 0..1_000);
+        assert_eq!(valid_frame_range(0, &packet_with_trims(0, 0, 0)), 0..0);
+    }
+
+    #[test]
+    fn float_samples_round_to_24_bit_integers_and_clamp() {
+        let mut integers = vec![7];
+        round_float_samples_to_integers(
+            &[
+                0.0,
+                0.5,
+                -0.5,
+                1.0,
+                -1.0,
+                1.5,
+                -1.5,
+                1.0 / 8_388_608.0,
+                f32::NAN,
+            ],
+            &mut integers,
+        );
+        assert_eq!(
+            integers,
+            [
+                0, 4_194_304, -4_194_304, 8_388_607, -8_388_608, 8_388_607, -8_388_608, 1, 0
+            ]
+        );
     }
 
     #[test]

@@ -32,9 +32,38 @@ pub(crate) fn audio_format(bits_per_sample: u32, sample_rate_hz: u32) -> String 
     format!("{bits_per_sample} bits / {} kHz", frequency(sample_rate_hz))
 }
 
+/// A track's codec and format as the LCD and lists show it: "FLAC 24 bits / 96 kHz", or
+/// "MP3 44,1 kHz" for lossy codecs, which have no bit depth of their own.
+pub(crate) fn codec_and_format(track: &pistolame_library::MusicFile) -> String {
+    if track.is_lossy || track.bits_per_sample == 0 {
+        format!("{} {} kHz", track.codec, frequency(track.sample_rate_hz))
+    } else {
+        format!(
+            "{} {}",
+            track.codec,
+            audio_format(track.bits_per_sample, track.sample_rate_hz)
+        )
+    }
+}
+
+/// The source as the badge and the popover name it: bits and rate, or for a lossy codec its
+/// name and rate (the 24 bits it is rounded to are not the file's).
+fn source_description(value: &SignalPathAssessment) -> String {
+    let source = value.source_format;
+    if value.source_codec.is_lossy {
+        format!(
+            "{} · {} kHz",
+            value.source_codec.display_name,
+            frequency(source.sample_rate_hz)
+        )
+    } else {
+        audio_format(u32::from(source.bits_per_sample), source.sample_rate_hz)
+    }
+}
+
 pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool) {
     let source = value.source_format;
-    let format = audio_format(u32::from(source.bits_per_sample), source.sample_rate_hz);
+    let format = source_description(value);
     let is_perfect = value.verdict == BitPerfectVerdict::BitPerfect;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
     let is_exact_float = is_exclusive_with_exact_float_delivery(value);
@@ -42,6 +71,8 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
         "{} · {format}",
         if is_perfect {
             "Bit-perfect"
+        } else if value.source_codec.is_lossy {
+            "Avec perte"
         } else if shared {
             "Mode partagé"
         } else if is_exact_float {
@@ -50,6 +81,14 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
             "Traité"
         }
     );
+    let decoding = if value.source_codec.is_decoded_as_float {
+        format!(
+            "{} décodé en flottant, arrondi à 24 bits : ce ne sont pas les échantillons d’origine. ",
+            value.source_codec.display_name
+        )
+    } else {
+        String::new()
+    };
     let backend = value.negotiated.backend_name;
     let reason = if shared {
         let cause = match value.negotiated.shared_mode_cause {
@@ -75,11 +114,11 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
             })
             .unwrap_or_default();
         format!(
-            "{cause}Le système peut convertir, rééchantillonner ou mixer le signal ; le bit-perfect n’est pas garanti.{mix}"
+            "{decoding}{cause}Le système peut convertir, rééchantillonner ou mixer le signal ; le bit-perfect n’est pas garanti.{mix}"
         )
     } else if value.negotiated.sample_delivery == DeviceSampleDelivery::ExactFloat32Conversion {
         format!(
-            "{} bits / {} kHz → flottants 32 bits, conversion exacte / {} kHz · {backend} exclusif. Ce périphérique n’accepte que des flottants : le système les traite ensuite, ce chemin n’est pas vérifiable jusqu’au DAC.",
+            "{decoding}{} bits / {} kHz → flottants 32 bits, conversion exacte / {} kHz · {backend} exclusif. Ce périphérique n’accepte que des flottants : le système les traite ensuite, ce chemin n’est pas vérifiable jusqu’au DAC.",
             source.bits_per_sample,
             frequency(source.sample_rate_hz),
             frequency(value.negotiated.render_format.sample_rate_hz)
@@ -87,7 +126,7 @@ pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool)
     } else {
         let output = value.negotiated.render_format;
         format!(
-            "{} bits / {} kHz → {} bits dans {} / {} kHz · {backend} exclusif",
+            "{decoding}{} bits / {} kHz → {} bits dans {} / {} kHz · {backend} exclusif",
             source.bits_per_sample,
             frequency(source.sample_rate_hz),
             output.valid_bits_per_sample,
@@ -257,19 +296,30 @@ pub(crate) fn signal_steps(
     value: &SignalPathAssessment,
     volume: SharedModeVolume,
 ) -> Vec<(&'static str, String, bool)> {
-    let source = value.source_format;
     let shared = value.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer;
     vec![
         (
             "Source",
-            format!(
-                "FLAC · {} bits / {} kHz",
-                source.bits_per_sample,
-                frequency(source.sample_rate_hz)
-            ),
-            true,
+            if value.source_codec.is_lossy {
+                format!("{} (avec perte)", source_description(value))
+            } else {
+                format!(
+                    "{} · {}",
+                    value.source_codec.display_name,
+                    source_description(value)
+                )
+            },
+            !value.source_codec.is_lossy,
         ),
-        ("Décodage", "PCM entier, sans perte".into(), true),
+        if value.source_codec.is_decoded_as_float {
+            (
+                "Décodage",
+                "flottant, arrondi à 24 bits entiers".into(),
+                false,
+            )
+        } else {
+            ("Décodage", "PCM entier, sans perte".into(), true)
+        },
         if shared {
             (
                 "Volume",
@@ -314,18 +364,31 @@ pub(crate) fn track_info_cells(
 ) -> Vec<(String, String)> {
     /// Bits per byte, for the average bitrate.
     const BITS_PER_BYTE: f64 = 8.0;
-    let mut cells = vec![
-        ("Format".to_owned(), "FLAC (sans perte)".to_owned()),
-        (
+    let mut cells = vec![(
+        "Format".to_owned(),
+        format!(
+            "{} ({})",
+            track.codec,
+            if track.is_lossy {
+                "avec perte"
+            } else {
+                "sans perte"
+            }
+        ),
+    )];
+    if track.bits_per_sample > 0 {
+        cells.push((
             "Résolution".to_owned(),
             format!("{} bits", track.bits_per_sample),
-        ),
+        ));
+    }
+    cells.extend([
         (
             "Fréquence".to_owned(),
             format!("{} kHz", frequency(track.sample_rate_hz)),
         ),
         ("Durée".to_owned(), clock(track.duration_seconds)),
-    ];
+    ]);
     if let Some(size) = file_size_bytes {
         if track.duration_seconds > 0 {
             let kilobits_per_second =
@@ -549,7 +612,12 @@ mod tests {
             device_period_in_hundred_nanoseconds: 53_333,
             negotiation_log: Vec::new(),
         };
-        assess_signal_path(&source, &negotiated, &ProcessingState::default())
+        assess_signal_path(
+            &source,
+            &pistolame_core::SourceCodec::FLAC,
+            &negotiated,
+            &ProcessingState::default(),
+        )
     }
     #[test]
     fn exact_float_delivery_shows_exclusive_never_bit_perfect() {

@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Dacryoserum/pistolame"
-version = "0.4.1"
+version = "0.5.0"
 
 [workspace.dependencies]
 pistolame-core    = { path = "crates/pistolame-core" }
@@ -16,7 +16,7 @@ pistolame-output  = { path = "crates/pistolame-output" }
 pistolame-library = { path = "crates/pistolame-library" }
 pistolame-analysis = { path = "crates/pistolame-analysis" }
 
-symphonia         = { version = "0.6.1", default-features = false, features = ["flac"] }
+symphonia         = { version = "0.6.1", default-features = false, features = ["flac", "pcm", "alac", "aac", "mp3", "vorbis", "wav", "aiff", "caf", "isomp4", "ogg", "id3v1", "id3v2", "ape"] }
 rtrb              = "0.4.0"
 md-5              = "0.11.0"
 crossbeam-channel = "0.5.17"

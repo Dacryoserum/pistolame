@@ -1,14 +1,18 @@
-//! Decoder contract: turns an encoded file into integer PCM. Implementations (FLAC first)
-//! plug in through [`DecoderProvider`].
+//! Decoder contract: turns an encoded file into integer PCM. Implementations plug in through
+//! [`DecoderProvider`]; today symphonia covers every supported format.
 
 use crate::format::StreamFormat;
 
-mod flac;
+mod codec;
 mod registry;
+mod symphonia_decoder;
 mod trailing_tags;
 
-pub use flac::{FlacDecoder, FlacDecoderProvider};
+pub use codec::{
+    SUPPORTED_AUDIO_FILE_EXTENSIONS, SourceCodec, declared_bits_per_sample, is_supported_audio_file,
+};
 pub use registry::DecoderRegistry;
+pub use symphonia_decoder::{SymphoniaDecoder, SymphoniaDecoderProvider};
 
 /// Facts about the source the rest of the pipeline relies on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,9 +21,14 @@ pub struct SourceStreamInfo {
     pub format: StreamFormat,
     /// Total frames if the container states it (FLAC STREAMINFO "total samples", 0 = unknown).
     pub total_frames: Option<u64>,
+    /// Whether `total_frames` is exact. Containers of lossy codecs often estimate it (an MP3
+    /// without a Xing header), so a stream ending elsewhere is not treated as damaged.
+    pub is_total_frames_exact: bool,
     /// MD5 of the decoded audio as stored by the encoder; `None` if absent or all zeros
     /// (RFC 9639 section 8.2: "A value of 0 signifies that the value is not known").
     pub embedded_md5: Option<[u8; 16]>,
+    /// The codec, and whether its samples are exact integers (see [`SourceCodec`]).
+    pub codec: SourceCodec,
 }
 
 /// A block of decoded samples, borrowed from the decoder's internal buffer.
@@ -30,8 +39,10 @@ pub struct DecodedBlock<'decoder> {
     pub interleaved_samples: &'decoder [i32],
 }
 
-/// Turns an encoded file into integer PCM. Implementations must be bit-exact: no dither,
-/// no float, no gain. Runs on the decode thread (allocation allowed, but buffers are reused).
+/// Turns an encoded file into integer PCM. Implementations must be bit-exact for integer
+/// codecs: no dither, no float, no gain. Codecs that only decode to float are rounded to
+/// integers and say so in [`SourceStreamInfo::codec`]. Runs on the decode thread (allocation
+/// allowed, but buffers are reused).
 pub trait AudioDecoder: Send {
     /// Facts about the opened source.
     fn stream_info(&self) -> &SourceStreamInfo;

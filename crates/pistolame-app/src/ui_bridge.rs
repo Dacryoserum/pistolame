@@ -257,7 +257,7 @@ impl UiBridge {
         state.set_playing_album_index(-1);
         state.set_playing_track_index(-1);
         state.set_no_results_text(
-            "Ajoutez un dossier ou des fichiers FLAC pour retrouver vos albums.".into(),
+            "Ajoutez un dossier ou des fichiers audio pour retrouver vos albums.".into(),
         );
         state.set_transmission_text("Transmission : aucune lecture".into());
         state.set_integrity_text("Fichier : aucune lecture".into());
@@ -279,7 +279,7 @@ impl UiBridge {
         state.on_import_files(move || {
             if !handle.is_importing.get()
                 && let Some(paths) = rfd::FileDialog::new()
-                    .add_filter("FLAC", &["flac"])
+                    .add_filter("Audio", pistolame_core::SUPPORTED_AUDIO_FILE_EXTENSIONS)
                     .pick_files()
             {
                 handle.synchronize_library(paths);
@@ -1281,7 +1281,7 @@ impl UiBridge {
         drop(albums);
         *self.search_results.borrow_mut() = results;
         state.set_no_results_text(if words.is_empty() {
-            "Ajoutez un dossier ou des fichiers FLAC pour retrouver vos albums.".into()
+            "Ajoutez un dossier ou des fichiers audio pour retrouver vos albums.".into()
         } else {
             format!("Rien trouvé pour « {query} ».").into()
         });
@@ -1469,8 +1469,8 @@ impl UiBridge {
             artist: album.artist.as_str().into(),
             artwork: album.artwork.clone(),
             meta_line: match album_year(album) {
-                Some(year) => format!("{year} · {} morceaux · FLAC", album.tracks.len()),
-                None => format!("{} morceaux · FLAC", album.tracks.len()),
+                Some(year) => format!("{year} · {} morceaux · {}", album.tracks.len(), album_codecs(album)),
+                None => format!("{} morceaux · {}", album.tracks.len(), album_codecs(album)),
             }
             .into(),
             footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
@@ -2556,13 +2556,7 @@ impl UiBridge {
         state.set_current_track_path(track.path.to_string_lossy().as_ref().into());
         state.set_current_artist(track.artist.as_str().into());
         state.set_current_album(album.title.as_str().into());
-        state.set_current_format(
-            format!(
-                "FLAC {}",
-                presentation::audio_format(track.bits_per_sample, track.sample_rate_hz)
-            )
-            .into(),
-        );
+        state.set_current_format(presentation::codec_and_format(track).into());
         state.set_current_duration(presentation::clock(track.duration_seconds).into());
         state.set_current_filename(
             track
@@ -3287,6 +3281,17 @@ fn should_write_progress(shown: f32, new: f32) -> bool {
 /// The album's year: the earliest year of its tracks.
 fn album_year(album: &Album) -> Option<u32> {
     album.sort_keys.year
+}
+
+/// The codecs of an album's tracks, in track order without repeats ("FLAC", "MP3 / AAC").
+fn album_codecs(album: &Album) -> String {
+    let mut codecs: Vec<&str> = Vec::new();
+    for track in &album.tracks {
+        if !codecs.contains(&track.codec.as_str()) {
+            codecs.push(&track.codec);
+        }
+    }
+    codecs.join(" / ")
 }
 
 /// The first cover found in an album's files (embedded or beside them).

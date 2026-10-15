@@ -560,7 +560,9 @@ mod tests {
             info: SourceStreamInfo {
                 format: format(),
                 total_frames: None,
+                is_total_frames_exact: true,
                 embedded_md5: None,
+                codec: crate::decoder::SourceCodec::FLAC,
             },
             blocks,
             next_block_index: 0,
