@@ -7,6 +7,8 @@ use crate::{OutputError, OutputFailure};
 
 /// No such file or directory: the PCM name does not exist.
 const ENOENT: i32 = 2;
+/// Try again: a suspended device is not ready to resume yet.
+pub(super) const EAGAIN: i32 = 11;
 /// No such device or address.
 const ENXIO: i32 = 6;
 /// Device or resource busy: another program holds the device.

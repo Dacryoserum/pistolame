@@ -24,7 +24,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use pistolame_core::timing::{DEVICE_EVENT_TIMEOUT, QUEUED_AUDIO_PLAY_OUT_TIMEOUT};
 
 use super::devices::{DeviceRoute, is_device_listed};
-use super::errors::{EPIPE, ESTRPIPE, errno_of, output_error, output_failure};
+use super::errors::{EAGAIN, EPIPE, ESTRPIPE, errno_of, output_error, output_failure};
 use super::pcm_setup::ConfiguredPcm;
 use crate::sample_gain::apply_gain_to_integer_samples;
 use crate::stream_state::{RequestedStreamState, StreamStateCell};
@@ -61,16 +61,17 @@ struct StreamControl {
     state: StreamStateCell,
     /// Shared-mode volume as `f32` bits (unity by default).
     shared_mode_gain_bits: AtomicU32,
-    /// Underruns and suspends recovered while playing (AGENTS.md: count, never swallow).
-    recovered_device_errors: AtomicU64,
+    /// Underruns and suspends recovered while playing, shared by every stream of the backend
+    /// (`AlsaOutput::recovered_device_error_count`; AGENTS.md: count, never swallow).
+    recovered_device_errors: Arc<AtomicU64>,
 }
 
 impl StreamControl {
-    fn new() -> StreamControl {
+    fn new(recovered_device_errors: Arc<AtomicU64>) -> StreamControl {
         StreamControl {
             state: StreamStateCell::new(),
             shared_mode_gain_bits: AtomicU32::new(1.0_f32.to_bits()),
-            recovered_device_errors: AtomicU64::new(0),
+            recovered_device_errors,
         }
     }
 
@@ -102,8 +103,9 @@ pub(super) struct AlsaOutputStream {
 pub(super) fn open_alsa_stream(
     plan: StreamPlan,
     render_source: Box<dyn RenderSource>,
+    recovered_device_errors: Arc<AtomicU64>,
 ) -> Result<Box<dyn OutputStream>, OpenStreamError> {
-    let control = Arc::new(StreamControl::new());
+    let control = Arc::new(StreamControl::new(recovered_device_errors));
     let negotiated = plan.negotiated.clone();
     let route = plan.route.clone();
     let (open_result_sender, open_result_receiver) = bounded::<Result<(), OutputError>>(1);
@@ -218,8 +220,9 @@ fn run_stream(
         render_format: format,
         access_mode: plan.negotiated.access_mode,
     });
+    let bytes_per_frame = format.bytes_per_frame();
     // The only allocation of the stream, before the real-time loop: one device buffer.
-    let mut bytes = vec![0u8; configured.buffer_frame_count as usize * format.bytes_per_frame()];
+    let mut bytes = vec![0u8; configured.buffer_frame_count as usize * bytes_per_frame];
     let writer = DeviceWriter {
         pcm: &configured.pcm,
         io: configured.pcm.io_bytes(),
@@ -227,8 +230,17 @@ fn run_stream(
         format,
         is_shared: plan.negotiated.access_mode == DeviceAccessMode::SharedThroughSystemMixer,
     };
-    // Prefill the whole buffer; the PCM starts only on `play` (start threshold = boundary).
-    if let Err(error) = writer.render_and_write(render_source, &mut bytes) {
+    // Prefill the free room: the whole buffer on a `hw:` PCM, maybe less behind a plugin. A
+    // blocking write beyond it would wait forever, since the PCM starts only on `play` (start
+    // threshold = boundary).
+    let free_frames = configured
+        .pcm
+        .avail_update()
+        .map_or(0, |frames| usize::try_from(frames).unwrap_or(0))
+        .min(bytes.len() / bytes_per_frame);
+    if let Err(error) =
+        writer.render_and_write(render_source, &mut bytes[..free_frames * bytes_per_frame])
+    {
         // `render` may already have consumed frames that never played: the engine treats the
         // next open as a discontinuity (contract of `OpenStreamError`).
         let _ = open_result.try_send(Err(output_error("snd_pcm_writei", error)));
@@ -284,24 +296,44 @@ impl DeviceWriter<'_> {
                     if failed_attempts >= MAXIMUM_WRITE_ATTEMPTS {
                         return Err(error);
                     }
-                    self.recover(error)?;
+                    if self.recover(error)? == Recovery::StillSuspended {
+                        thread::park_timeout(IDLE_CHECK_INTERVAL);
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// Recovers from an underrun (`EPIPE`) or a suspend (`ESTRPIPE`); the PCM is then
-    /// prepared again and must be restarted once refilled. Any other error is returned.
-    fn recover(&self, error: alsa::Error) -> Result<(), alsa::Error> {
-        let errno = errno_of(&error);
-        if errno != EPIPE && errno != ESTRPIPE {
-            return Err(error);
+    /// Recovers from an underrun (`EPIPE`: prepared again, to restart once refilled) or a
+    /// suspend (`ESTRPIPE`: resumed, or prepared when the driver cannot resume). One attempt,
+    /// as MPD's ALSA output does, never `snd_pcm_recover`, whose resume loop sleeps without
+    /// bound while the system is suspended (a close request would wait for it). Any other error
+    /// is returned.
+    fn recover(&self, error: alsa::Error) -> Result<Recovery, alsa::Error> {
+        match errno_of(&error) {
+            EPIPE => self.pcm.prepare()?,
+            ESTRPIPE => match self.pcm.resume() {
+                Ok(()) => {}
+                Err(resume_error) if errno_of(&resume_error) == EAGAIN => {
+                    return Ok(Recovery::StillSuspended);
+                }
+                Err(_) => self.pcm.prepare()?,
+            },
+            _ => return Err(error),
         }
-        self.pcm.try_recover(error, true)?;
         self.control.count_recovered_device_error();
-        Ok(())
+        Ok(Recovery::Recovered)
     }
+}
+
+/// What one recovery attempt achieved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Recovery {
+    /// The PCM can be written again.
+    Recovered,
+    /// The system is still suspended: try again later.
+    StillSuspended,
 }
 
 /// Why the loop ended.
@@ -332,7 +364,7 @@ impl RenderLoop<'_> {
                     if !is_started && let Err(error) = pcm.start() {
                         return self.fail_with(&error);
                     }
-                    return self.play_out();
+                    return self.play_out(bytes);
                 }
                 RequestedStreamState::Idle => {
                     thread::park_timeout(IDLE_CHECK_INTERVAL);
@@ -372,16 +404,23 @@ impl RenderLoop<'_> {
         let pcm = self.writer.pcm;
         let bytes_per_frame = self.writer.format.bytes_per_frame();
         let free_frames = match pcm.avail_update() {
-            Ok(frames) => usize::try_from(frames).unwrap_or(0),
+            Ok(frames) => frames,
             Err(error) => {
-                self.writer.recover(error)?;
-                bytes.len() / bytes_per_frame
+                if self.writer.recover(error)? == Recovery::StillSuspended {
+                    thread::park_timeout(IDLE_CHECK_INTERVAL);
+                    return Ok(false);
+                }
+                // Prepared (whole buffer free) or resumed (only what played since): read again.
+                pcm.avail_update()?
             }
         };
+        let free_frames = usize::try_from(free_frames).unwrap_or(0);
         let is_waiting_for_restart = pcm.state() == State::Prepared;
         if free_frames < self.period_frame_count && !is_waiting_for_restart {
-            if let Err(error) = pcm.wait(Some(ROOM_WAIT_MILLISECONDS)) {
-                self.writer.recover(error)?;
+            if let Err(error) = pcm.wait(Some(ROOM_WAIT_MILLISECONDS))
+                && self.writer.recover(error)? == Recovery::StillSuspended
+            {
+                thread::park_timeout(IDLE_CHECK_INTERVAL);
             }
             return Ok(false);
         }
@@ -395,19 +434,39 @@ impl RenderLoop<'_> {
         Ok(true)
     }
 
-    /// Lets the device play every queued frame, then stops (`PlayOut`). Nothing more is
-    /// written: when the buffer runs dry ALSA stops the PCM (`XRUN`), so everything played.
-    fn play_out(&self) -> LoopExit {
+    /// Lets the device play every queued frame, then stops (`PlayOut`). The room it frees is
+    /// filled with silence (as MPD pads its last period), so the device never replays old
+    /// samples left in its ring, which would click at each pause. Once only that silence is
+    /// queued, everything played.
+    fn play_out(&self, bytes: &mut [u8]) -> LoopExit {
         let pcm = self.writer.pcm;
+        let bytes_per_frame = self.writer.format.bytes_per_frame();
         let began_at = Instant::now();
+        let mut silent_frames_queued: i64 = 0;
+        // Zero bytes are silence in every signed integer layout.
+        bytes.fill(0);
         loop {
             let is_drained = match pcm.state() {
                 State::XRun | State::Setup | State::Prepared | State::Open => true,
-                State::Running | State::Draining => pcm.delay().map_or(true, |delay| delay <= 0),
+                State::Running | State::Draining => pcm
+                    .delay()
+                    .map_or(true, |delay| delay <= silent_frames_queued),
                 State::Paused | State::Suspended | State::Disconnected => false,
             };
             if is_drained {
                 return LoopExit::QueuedAudioPlayedOut;
+            }
+            let free_frames = pcm
+                .avail_update()
+                .map_or(0, |frames| usize::try_from(frames).unwrap_or(0))
+                .min(bytes.len() / bytes_per_frame);
+            if free_frames > 0
+                && let Ok(frames_written) = self
+                    .writer
+                    .io
+                    .writei(&bytes[..free_frames * bytes_per_frame])
+            {
+                silent_frames_queued += i64::try_from(frames_written).unwrap_or(0);
             }
             let elapsed = began_at.elapsed();
             if elapsed >= QUEUED_AUDIO_PLAY_OUT_TIMEOUT {

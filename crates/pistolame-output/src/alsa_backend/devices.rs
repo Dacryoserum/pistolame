@@ -14,21 +14,18 @@ use crate::{OutputDeviceId, OutputDeviceInfo, OutputError};
 pub(super) const SYSTEM_DEFAULT_PCM_NAME: &str = "default";
 /// Prefix of a direct hardware PCM (no conversion, no mixing).
 const HARDWARE_PCM_PREFIX: &str = "hw:";
-/// Prefix of the same hardware behind ALSA's `plug` converter (shared mode on a chosen card).
-const CONVERTING_PCM_PREFIX: &str = "plughw:";
 /// Shown for the `default` PCM in the device list.
 const SYSTEM_DEFAULT_DISPLAY_NAME: &str = "Sortie par défaut (serveur de son)";
 
-/// Which PCM opens a device.
+/// Which PCM opens a device in exclusive mode. Shared mode always plays through the sound
+/// server (`default`): opening a card's `plughw:` would lock the card away from the server
+/// (it is a direct open) while calling itself shared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DeviceRoute {
     /// The `default` PCM: only shared mode exists there.
     SystemDefault,
-    /// A sound card: `hw:` for exclusive mode, `plughw:` for shared mode.
-    Hardware {
-        exclusive_pcm_name: String,
-        shared_pcm_name: String,
-    },
+    /// A sound card, opened exclusively through its `hw:` PCM.
+    Hardware { exclusive_pcm_name: String },
 }
 
 impl DeviceRoute {
@@ -45,18 +42,7 @@ impl DeviceRoute {
         }
         Some(DeviceRoute::Hardware {
             exclusive_pcm_name: id.to_owned(),
-            shared_pcm_name: format!("{CONVERTING_PCM_PREFIX}{card_and_device}"),
         })
-    }
-
-    /// The PCM to open in shared mode.
-    pub(super) fn shared_pcm_name(&self) -> &str {
-        match self {
-            DeviceRoute::SystemDefault => SYSTEM_DEFAULT_PCM_NAME,
-            DeviceRoute::Hardware {
-                shared_pcm_name, ..
-            } => shared_pcm_name,
-        }
     }
 }
 
@@ -145,23 +131,21 @@ mod tests {
     }
 
     #[test]
-    fn a_card_opens_hw_exclusively_and_plughw_shared() {
-        let route = DeviceRoute::of(&id("hw:CARD=K11,DEV=0")).expect("route");
+    fn a_card_opens_its_hw_pcm() {
         assert_eq!(
-            route,
-            DeviceRoute::Hardware {
+            DeviceRoute::of(&id("hw:CARD=K11,DEV=0")),
+            Some(DeviceRoute::Hardware {
                 exclusive_pcm_name: "hw:CARD=K11,DEV=0".into(),
-                shared_pcm_name: "plughw:CARD=K11,DEV=0".into(),
-            }
+            })
         );
-        assert_eq!(route.shared_pcm_name(), "plughw:CARD=K11,DEV=0");
     }
 
     #[test]
     fn the_default_pcm_is_the_system_default() {
-        let route = DeviceRoute::of(&id("default")).expect("route");
-        assert_eq!(route, DeviceRoute::SystemDefault);
-        assert_eq!(route.shared_pcm_name(), "default");
+        assert_eq!(
+            DeviceRoute::of(&id("default")),
+            Some(DeviceRoute::SystemDefault)
+        );
     }
 
     #[test]

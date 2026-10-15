@@ -1,19 +1,28 @@
 //! ALSA backend (Linux), plan `walking-skeleton.md` (B3 "Fit with the other platforms"):
-//! - exclusive mode: the card's `hw:` PCM, no conversion and no mixing, at the source rate in a
-//!   lossless integer format (bit-perfect); the sound server cannot use the card meanwhile;
-//! - shared mode: the `default` PCM (PipeWire or PulseAudio, which mix and convert), or the
-//!   card behind ALSA's `plug` converter (`plughw:`) when a card was chosen.
+//! - exclusive mode: the chosen card's `hw:` PCM, no conversion and no mixing, at the source
+//!   rate in a lossless integer format (bit-perfect); the sound server cannot use the card
+//!   meanwhile;
+//! - shared mode: the `default` PCM, that is the sound server (PipeWire or PulseAudio), which
+//!   mixes, converts and picks the output device itself.
 //!
 //! When exclusive mode cannot be had, the stream falls back to shared mode like on the other
-//! platforms. Device changes are not watched (no notification API in libasound); the engine
+//! platforms. Device changes are not watched (libasound has no notification API); the engine
 //! re-reads the devices before every open.
+//!
+//! Reference implementation consulted for ALSA usage: MPD's ALSA output plugin
+//! (`src/output/plugins/AlsaOutputPlugin.cxx`, behavior only).
 
 mod devices;
 mod errors;
 mod pcm_setup;
 mod stream;
 
-use self::devices::{DeviceRoute, device_info, ensure_listed, list_output_devices};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use self::devices::{
+    DeviceRoute, SYSTEM_DEFAULT_PCM_NAME, device_info, ensure_listed, list_output_devices,
+};
 use self::pcm_setup::{ConfiguredPcm, negotiate, open_pcm, probe};
 use self::stream::{StreamPlan, open_alsa_stream};
 use crate::alsa_layouts::alsa_candidates;
@@ -28,15 +37,29 @@ use crate::{
 const ALSA_BACKEND_NAME: &str = "ALSA";
 /// Number of 100 ns units in one second, to express periods in the contract's WASAPI unit.
 const HUNDRED_NANOSECONDS_PER_SECOND: u64 = 10_000_000;
+/// Most channels sent to a `hw:` PCM. Beyond stereo, the card's default channel order (ALSA:
+/// front, rear, centre, LFE for 5.1) differs from the files' WAVE order (front, centre, LFE,
+/// rear); until channel maps are set, multichannel files play through the sound server, which
+/// maps them, rather than reach the wrong speakers while called bit-perfect.
+const MAXIMUM_EXCLUSIVE_CHANNEL_COUNT: u8 = 2;
 
 /// The ALSA output backend. Holds no ALSA object between calls.
 #[derive(Debug, Default)]
-pub struct AlsaOutput;
+pub struct AlsaOutput {
+    /// Underruns and suspends recovered by every stream of this backend.
+    recovered_device_errors: Arc<AtomicU64>,
+}
 
 impl AlsaOutput {
     /// Creates the backend. Nothing touches ALSA until a method is called.
     pub fn new() -> AlsaOutput {
-        AlsaOutput
+        AlsaOutput::default()
+    }
+
+    /// Underruns and suspends the streams recovered from so far: playback went on, but the
+    /// listener may have heard a gap.
+    pub fn recovered_device_error_count(&self) -> u64 {
+        self.recovered_device_errors.load(Ordering::Relaxed)
     }
 }
 
@@ -61,10 +84,7 @@ impl AudioOutput for AlsaOutput {
             access_mode: DeviceAccessMode::Exclusive,
             outcome,
         };
-        let DeviceRoute::Hardware {
-            exclusive_pcm_name, ..
-        } = ensure_listed(device_id)?
-        else {
+        let DeviceRoute::Hardware { exclusive_pcm_name } = ensure_listed(device_id)? else {
             return Ok(candidates
                 .iter()
                 .map(|candidate| answer(candidate, FormatProbeOutcome::Refused))
@@ -73,7 +93,14 @@ impl AudioOutput for AlsaOutput {
         let pcm = open_pcm(&exclusive_pcm_name)?;
         Ok(candidates
             .iter()
-            .map(|candidate| answer(candidate, probe(&pcm, candidate)))
+            .map(|candidate| {
+                let outcome = if candidate.channel_count > MAXIMUM_EXCLUSIVE_CHANNEL_COUNT {
+                    FormatProbeOutcome::Refused
+                } else {
+                    probe(&pcm, candidate)
+                };
+                answer(candidate, outcome)
+            })
             .collect())
     }
 
@@ -83,7 +110,11 @@ impl AudioOutput for AlsaOutput {
         render_source: Box<dyn RenderSource>,
     ) -> Result<Box<dyn OutputStream>, OpenStreamError> {
         match plan_stream(&request) {
-            Ok(plan) => open_alsa_stream(plan, render_source),
+            Ok(plan) => open_alsa_stream(
+                plan,
+                render_source,
+                Arc::clone(&self.recovered_device_errors),
+            ),
             Err(error) => Err(OpenStreamError {
                 error,
                 render_source,
@@ -95,53 +126,39 @@ impl AudioOutput for AlsaOutput {
 /// Decides the mode and the format, and opens the PCM.
 fn plan_stream(request: &OpenStreamRequest) -> Result<StreamPlan, OutputError> {
     let route = ensure_listed(&request.device_id)?;
-    let device = device_info(&request.device_id)?;
     let source = &request.source_format;
     let may_fall_back = request.policy == OpenPolicy::ExclusiveThenShared;
-    match (request.policy, &route) {
-        (OpenPolicy::SharedOnly, _) => plan_shared(
-            route.clone(),
-            device,
-            source,
-            SharedModeCause::UserPreference,
-            Vec::new(),
-        ),
+    let fall_back = |cause: SharedModeCause, log: Vec<FormatProbeResult>| {
+        if may_fall_back {
+            plan_shared(source, cause, log)
+        } else {
+            Err(match cause {
+                SharedModeCause::DeviceBusyInSharedMode => OutputError::DeviceInUse,
+                SharedModeCause::ExclusiveModeDisabledBySystem => {
+                    OutputError::ExclusiveModeNotAllowed
+                }
+                _ => OutputError::FormatNotSupported { tried: log },
+            })
+        }
+    };
+    let exclusive_pcm_name = match (request.policy, &route) {
+        (OpenPolicy::SharedOnly, _) => {
+            return plan_shared(source, SharedModeCause::UserPreference, Vec::new());
+        }
         // The sound server owns the system default: exclusive mode needs a chosen card.
-        (_, DeviceRoute::SystemDefault) if may_fall_back => plan_shared(
-            route.clone(),
-            device,
-            source,
-            SharedModeCause::ExclusiveModeDisabledBySystem,
-            Vec::new(),
-        ),
-        (_, DeviceRoute::SystemDefault) => Err(OutputError::ExclusiveModeNotAllowed),
-        (
-            _,
-            DeviceRoute::Hardware {
-                exclusive_pcm_name, ..
-            },
-        ) => plan_exclusive(&route, exclusive_pcm_name, device, source, may_fall_back),
+        (_, DeviceRoute::SystemDefault) => {
+            return fall_back(SharedModeCause::ExclusiveModeDisabledBySystem, Vec::new());
+        }
+        (_, DeviceRoute::Hardware { exclusive_pcm_name }) => exclusive_pcm_name,
+    };
+    if source.channel_count > MAXIMUM_EXCLUSIVE_CHANNEL_COUNT {
+        return fall_back(SharedModeCause::ExclusiveFormatRefused, Vec::new());
     }
-}
-
-fn plan_exclusive(
-    route: &DeviceRoute,
-    exclusive_pcm_name: &str,
-    device: OutputDeviceInfo,
-    source: &StreamFormat,
-    may_fall_back: bool,
-) -> Result<StreamPlan, OutputError> {
     let pcm = match open_pcm(exclusive_pcm_name) {
         Ok(pcm) => pcm,
-        // The sound server (or another player) plays through the card.
-        Err(OutputError::DeviceInUse) if may_fall_back => {
-            return plan_shared(
-                route.clone(),
-                device,
-                source,
-                SharedModeCause::DeviceBusyInSharedMode,
-                Vec::new(),
-            );
+        // The sound server (or another player) is playing through the card.
+        Err(OutputError::DeviceInUse) => {
+            return fall_back(SharedModeCause::DeviceBusyInSharedMode, Vec::new());
         }
         Err(error) => return Err(error),
     };
@@ -152,49 +169,42 @@ fn plan_exclusive(
     );
     match configured {
         Some(configured) => Ok(stream_plan(
-            route.clone(),
-            device,
+            route,
+            device_info(&request.device_id)?,
             configured,
             DeviceAccessMode::Exclusive,
             None,
             log,
         )),
-        None if may_fall_back => plan_shared(
-            route.clone(),
-            device,
-            source,
-            SharedModeCause::ExclusiveFormatRefused,
-            log,
-        ),
-        None => Err(OutputError::FormatNotSupported { tried: log }),
+        None => fall_back(SharedModeCause::ExclusiveFormatRefused, log),
     }
 }
 
+/// Plays through the sound server (`default`), which then decides the output device.
 fn plan_shared(
-    route: DeviceRoute,
-    device: OutputDeviceInfo,
     source: &StreamFormat,
     cause: SharedModeCause,
     mut log: Vec<FormatProbeResult>,
 ) -> Result<StreamPlan, OutputError> {
-    let pcm = open_pcm(route.shared_pcm_name())?;
+    let pcm = open_pcm(SYSTEM_DEFAULT_PCM_NAME)?;
     let (configured, attempts) = negotiate(
         pcm,
         &alsa_candidates(source, false),
         DeviceAccessMode::SharedThroughSystemMixer,
     );
     log.extend(attempts);
-    match configured {
-        Some(configured) => Ok(stream_plan(
-            route,
-            device,
-            configured,
-            DeviceAccessMode::SharedThroughSystemMixer,
-            Some(cause),
-            log,
-        )),
-        None => Err(OutputError::FormatNotSupported { tried: log }),
-    }
+    let Some(configured) = configured else {
+        return Err(OutputError::FormatNotSupported { tried: log });
+    };
+    let system_default = OutputDeviceId(SYSTEM_DEFAULT_PCM_NAME.to_owned());
+    Ok(stream_plan(
+        DeviceRoute::SystemDefault,
+        device_info(&system_default)?,
+        configured,
+        DeviceAccessMode::SharedThroughSystemMixer,
+        Some(cause),
+        log,
+    ))
 }
 
 /// The plan for a configured PCM. In shared mode the sound server's own format is unknown to
