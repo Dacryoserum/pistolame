@@ -264,7 +264,7 @@ export component Badge inherits Rectangle {
         alignment: center;
         Icon {
             width: root.is-icon-only ? 14px : 12px;
-            source: root.is-idle ? Icons.seal-check : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
+            source: root.is-idle ? Icons.speaker-hifi : root.kind == BadgeKind.shared ? Icons.intersect : root.kind == BadgeKind.unknown ? Icons.waveform : root.kind == BadgeKind.processed ? Icons.sliders-horizontal : root.kind == BadgeKind.doubtful ? Icons.warning-fill : Icons.seal-check-fill;
             colorize: root.is-idle ? Tokens.text-tertiary : root.foreground;
         }
 
@@ -763,9 +763,10 @@ export component VolumeSlider inherits Rectangle {
 }
 
 export component Lcd inherits Rectangle {
-    // The badge slot follows the badge ("Bit-perfect · 24/96"): the title column shrinks with
-    // it. It changes only when the stream format changes, never while a track plays.
-    property <length> badge-slot-width: badge.width + 16px;
+    // Fixed slot for the badge: the title and the progress rail never move when the badge text
+    // changes ("Sortie libérée", "Mode partagé · 24 bits / 48 kHz"…). The badge is right-aligned
+    // in it and its text is elided if ever too long.
+    property <length> badge-slot-width: 46px;
     property <length> column-width: root.width - 68px - root.badge-slot-width;
     property <bool> is-seeking;
     property <bool> are-extras-visible: touch.has-hover || title-touch.has-hover || badge-touch.has-hover || root.is-seeking;
@@ -898,10 +899,10 @@ export component Lcd inherits Rectangle {
     badge := Badge {
         x: root.width - 8px - self.width;
         y: 12px;
-        is-icon-only: !AppState.is-output-active || AppState.lcd-badge-label == "";
+        is-icon-only: true;
         is-idle: !AppState.is-output-active;
         kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
-        label: AppState.lcd-badge-label;
+        label: AppState.badge-label;
         is-hovered: badge-touch.has-hover;
         accessible-role: button;
         accessible-label: AppState.badge-label;

@@ -298,9 +298,7 @@ Exact geometry lives in `docs/plans/maquette-apple-music.md`; this is the contra
   cover. Centre: title (body-medium) over "Artiste — Album" (callout, secondary), centered,
   elided; under them a 3 px progress rail (`rail` / `rail-fill`). On hover: elapsed and
   remaining times appear at both ends of line 2 and a 9 px thumb on the rail (drag to seek).
-  Right: the quality badge, with its word and a compact format ("Bit-perfect · 24/96"); the
-  title column shrinks to make room. Thumbnail radius 4. Idle (no stream): the seal icon alone,
-  in `text-tertiary`.
+  Right: the quality badge. Thumbnail radius 4.
 - **Quality badge** — pill, 20 high, padding 8, gap 4, icon 12 + label role text.
   *Bit-perfect · 24 bits / 96 kHz*: `status-ok-tint` / `status-ok` / seal-check-fill.
   *Traité · 24 bits / 96 kHz*: `fill-control` / `text-primary` / sliders-horizontal.

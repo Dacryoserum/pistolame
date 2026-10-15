@@ -141,21 +141,6 @@ fn verdict_word(value: &SignalPathAssessment) -> &'static str {
     }
 }
 
-/// The LCD badge: the verdict word and the compact source format ("Bit-perfect · 24/96"), so
-/// the proof is read at a glance; the full wording is in the badge's hover bubble.
-pub(crate) fn lcd_badge(value: &SignalPathAssessment) -> String {
-    let source = value.source_format;
-    let format = compact_format(
-        u32::from(source.bits_per_sample),
-        source.sample_rate_hz,
-        value
-            .source_codec
-            .is_lossy
-            .then_some(value.source_codec.display_name),
-    );
-    format!("{} · {format}", verdict_word(value))
-}
-
 pub(crate) fn assessment(value: &SignalPathAssessment) -> (String, String, bool) {
     let source = value.source_format;
     let format = source_description(value);
@@ -717,13 +702,6 @@ mod tests {
         assert_eq!(badge, "Bit-perfect · 24 bits / 96 kHz");
         assert!(is_perfect);
         assert!(reason.ends_with("CoreAudio exclusif"));
-    }
-    #[test]
-    fn lcd_badge_keeps_the_verdict_word_with_a_compact_format() {
-        let exact_float = exclusive_assessment(DeviceSampleDelivery::ExactFloat32Conversion);
-        let unchanged = exclusive_assessment(DeviceSampleDelivery::Unchanged);
-        assert_eq!(lcd_badge(&exact_float), "Exclusif · 24/96");
-        assert_eq!(lcd_badge(&unchanged), "Bit-perfect · 24/96");
     }
     #[test]
     fn compact_format_uses_the_decimal_comma_and_names_lossy_codecs() {

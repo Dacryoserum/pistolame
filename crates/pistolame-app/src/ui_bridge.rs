@@ -3159,7 +3159,6 @@ impl UiBridge {
                 assessment: Some(value),
             } => {
                 let (badge, description, perfect) = presentation::assessment(&value);
-                state.set_lcd_badge_label(presentation::lcd_badge(&value).into());
                 state.set_badge_label(badge.clone().into());
                 state.set_signal_title(badge.into());
                 state.set_signal_description(description.into());
@@ -3178,7 +3177,6 @@ impl UiBridge {
                 state.set_is_shared(false);
                 state.set_is_bit_perfect(false);
                 state.set_badge_label("Sortie libérée".into());
-                state.set_lcd_badge_label("".into());
                 state.set_signal_title("Sortie libérée".into());
                 state.set_signal_description(
                     "Aucun flux audio actif ; le périphérique est disponible.".into(),
