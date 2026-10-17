@@ -21,6 +21,8 @@ pub(super) enum UndoableChange {
         paths: Vec<PathBuf>,
         previous_favorites: Vec<PathBuf>,
     },
+    /// Tracks removed from the library, to show again.
+    LibraryRemoval { paths: Vec<PathBuf> },
 }
 
 impl UiBridge {
@@ -73,6 +75,14 @@ impl UiBridge {
                 paths,
                 previous_favorites,
             } => self.restore_favorites(&paths, &previous_favorites),
+            UndoableChange::LibraryRemoval { paths } => {
+                if let Some(snapshot) = self.with_library(|store| {
+                    store.restore_tracks(&paths)?;
+                    store.snapshot()
+                }) {
+                    self.replace_albums(snapshot);
+                }
+            }
         }
     }
 

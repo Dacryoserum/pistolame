@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod album_editor;
+mod artist_editor;
 mod browsing;
 mod library_sync;
 mod media_session;
@@ -617,6 +618,7 @@ impl UiBridge {
         self.connect_queue(&state);
         self.connect_selection(&state);
         self.connect_undo(&state);
+        self.connect_artist_editor(&state);
         self.connect_sleep_timer(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {

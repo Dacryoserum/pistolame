@@ -103,6 +103,8 @@ export enum TrackAction {
     toggle-favorite,
     go-to-album,
     go-to-artist,
+    // Forgets the tracks (the files stay on disk), for files deleted or not wanted.
+    remove-from-library,
 }
 
 export struct QueueRow {
@@ -310,6 +312,13 @@ export global AppState {
     // "Aléatoire" (true).
     in property <image> artist-page-photo;
     in property <string> artist-page-detail;
+    // "Renommer l'artiste" sheet of an artist's page.
+    in-out property <bool> is-artist-editor-open;
+    in-out property <string> artist-editor-name;
+    // The same artist written differently ("" when none): one click to merge them.
+    in property <string> artist-editor-namesake;
+    callback begin-artist-edit();
+    callback save-artist-edit();
     callback play-artist(bool);
     // Artist photos looked up online (Réglages).
     in property <bool> are-artist-photos-on: true;
