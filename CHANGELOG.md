@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.6
+
+### Features
+- "Retirer de la bibliothèque" in the "…" menu of a track, an album or a selection: the tracks leave the library (the files stay on disk) and are not read again until their folder is added again; "Annuler" brings them back
+- rename an artist from their page (pencil next to "Aléatoire"), on all their albums; giving the name of another artist merges the two, and a spelling that differs only by case is offered in one click
+
+### Fixes
+- a folder or file added from inside a folder already in the library no longer becomes a separate library folder: once deleted from the disk, its tracks stayed shown and could not be played (and showed as a namesake album with "AAC" or "24/44,1" next to the artist)
+
 ## 0.6.5
 
 ### Performance
