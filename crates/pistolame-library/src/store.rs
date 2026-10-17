@@ -18,7 +18,7 @@ const TRACKS_PER_TRANSACTION: usize = 256;
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS album_text_overrides (
     title TEXT,
     artist TEXT,
     PRIMARY KEY (directory, album)
+);
+-- Files the user removed from the library: hidden from the snapshot (their row, play count
+-- included, stays for undo) and never read again until their folder is added again.
+CREATE TABLE IF NOT EXISTS excluded_tracks (
+    path TEXT PRIMARY KEY NOT NULL
 );
 CREATE TABLE IF NOT EXISTS album_artwork_overrides (
     directory TEXT NOT NULL,
@@ -206,7 +211,9 @@ impl LibraryStore {
         Ok(LibraryStore { connection })
     }
 
-    /// Remembers files or folders to keep in the library. Already known roots are ignored.
+    /// Remembers files or folders to keep in the library. Already known roots are ignored, a
+    /// root inside another one joins it (see [`LibraryStore::merge_nested_roots`]), and the files
+    /// removed by hand under them come back.
     ///
     /// # Errors
     /// Fails when the database cannot be written.
@@ -217,9 +224,91 @@ impl LibraryStore {
                 "INSERT OR IGNORE INTO roots (path) VALUES (?1)",
                 params![path_text(root)],
             )?;
+            let (exact, first_under, past_under) = path_and_range_under(root);
+            transaction.execute(
+                "DELETE FROM excluded_tracks WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+                params![exact, first_under, past_under],
+            )?;
+        }
+        transaction.commit()?;
+        self.merge_nested_roots()
+    }
+
+    /// Makes every root found inside another root part of it. A folder or file dropped from a
+    /// folder already in the library was otherwise a root of its own, and a missing root keeps
+    /// its tracks (an unplugged drive), so deleting that folder left its tracks shown forever.
+    fn merge_nested_roots(&mut self) -> Result<(), LibraryError> {
+        let roots = self.roots()?;
+        let transaction = self.connection.transaction()?;
+        for root in &roots {
+            // Sorted, the shortest enclosing root comes first: the outermost one.
+            let Some(enclosing) = roots
+                .iter()
+                .find(|other| *other != root && root.starts_with(other))
+            else {
+                continue;
+            };
+            transaction.execute(
+                "UPDATE tracks SET root = ?2 WHERE root = ?1",
+                params![path_text(root), path_text(enclosing)],
+            )?;
+            transaction.execute(
+                "DELETE FROM roots WHERE path = ?1",
+                params![path_text(root)],
+            )?;
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Removes `paths` from the library and keeps them out of later synchronizations (the files
+    /// stay on disk). Adding their folder again brings them back. Their rows are only hidden, so
+    /// [`LibraryStore::restore_tracks`] gives back their play counts and dates; a row goes for
+    /// good once its file is gone.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn remove_tracks(&mut self, paths: &[PathBuf]) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        {
+            let mut exclude = transaction
+                .prepare_cached("INSERT OR IGNORE INTO excluded_tracks (path) VALUES (?1)")?;
+            for path in paths {
+                exclude.execute(params![path_text(path)])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Shows `paths`, removed by [`LibraryStore::remove_tracks`], in the library again, as they
+    /// were.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn restore_tracks(&mut self, paths: &[PathBuf]) -> Result<(), LibraryError> {
+        let transaction = self.connection.transaction()?;
+        {
+            let mut include =
+                transaction.prepare_cached("DELETE FROM excluded_tracks WHERE path = ?1")?;
+            for path in paths {
+                include.execute(params![path_text(path)])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The files removed by hand (see [`LibraryStore::remove_tracks`]).
+    fn excluded_paths(&self) -> Result<HashSet<PathBuf>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT path FROM excluded_tracks")?;
+        let paths = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .map(|path| path.map(PathBuf::from))
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
     }
 
     /// Forgets a root and every track found under it (the files themselves stay on disk).
@@ -265,7 +354,7 @@ impl LibraryStore {
                     bits_per_sample, duration_seconds, artwork_hash, year, sort_album,
                     sort_album_artist, genre, added_seconds, play_count, last_played_seconds,
                     codec, is_lossy
-             FROM tracks ORDER BY path",
+             FROM tracks WHERE path NOT IN (SELECT path FROM excluded_tracks) ORDER BY path",
         )?;
         let tracks = statement
             .query_map([], |row| {
@@ -368,8 +457,11 @@ impl LibraryStore {
     /// Fails when the database cannot be read or written; unreadable files are reported in the
     /// returned errors instead.
     pub fn synchronize(&mut self) -> Result<SynchronizationReport, LibraryError> {
+        // Libraries written before roots were merged on adding may still hold nested ones.
+        self.merge_nested_roots()?;
         let mut report = SynchronizationReport::default();
         let known = self.known_file_stamps()?;
+        let excluded = self.excluded_paths()?;
         let mut changes = PendingChanges::default();
         let mut seen = HashSet::new();
         for root in self.roots()? {
@@ -382,6 +474,9 @@ impl LibraryStore {
             report.errors.extend(errors);
             for file in files {
                 seen.insert(file.path.clone());
+                if excluded.contains(&file.path) {
+                    continue;
+                }
                 let known_stamp = known.get(&file.path).copied();
                 changes.consider(&root, file, known_stamp, &mut report.errors);
             }
@@ -408,6 +503,7 @@ impl LibraryStore {
     ) -> Result<SynchronizationReport, LibraryError> {
         let mut report = SynchronizationReport::default();
         let roots = self.roots()?;
+        let excluded = self.excluded_paths()?;
         let mut changes = PendingChanges::default();
         for path in changed {
             let Some(root) = roots
@@ -433,6 +529,9 @@ impl LibraryStore {
             let mut seen = HashSet::new();
             for file in files {
                 seen.insert(file.path.clone());
+                if excluded.contains(&file.path) {
+                    continue;
+                }
                 let known_stamp = known.get(&file.path).copied();
                 changes.consider(root, file, known_stamp, &mut report.errors);
             }
@@ -862,27 +961,18 @@ impl LibraryStore {
     }
 
     /// The stamps of the tracks at `path` or anywhere under it, through a range on the primary
-    /// key: every path under a folder sorts between the folder followed by the separator and
-    /// the folder followed by the next character.
+    /// key (see [`path_and_range_under`]).
     fn known_file_stamps_at_or_under(
         &self,
         path: &Path,
     ) -> Result<HashMap<PathBuf, FileStamp>, LibraryError> {
-        let exact = path_text(path);
-        let after_separator = char::from_u32(u32::from(MAIN_SEPARATOR) + 1).unwrap_or(char::MAX);
+        let (exact, first_under, past_under) = path_and_range_under(path);
         let mut statement = self.connection.prepare_cached(
             "SELECT path, file_size, modified_nanoseconds FROM tracks
              WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
         )?;
         let stamps = statement
-            .query_map(
-                params![
-                    exact,
-                    format!("{exact}{MAIN_SEPARATOR}"),
-                    format!("{exact}{after_separator}")
-                ],
-                path_and_stamp,
-            )?
+            .query_map(params![exact, first_under, past_under], path_and_stamp)?
             .collect::<Result<_, _>>()?;
         Ok(stamps)
     }
@@ -1012,6 +1102,17 @@ impl PendingChanges {
             stamp,
         });
     }
+}
+
+/// `path` as stored, then the bounds of the stored paths under it: every path under a folder
+/// sorts between the folder followed by the separator (included) and the folder followed by the
+/// next character (excluded).
+fn path_and_range_under(path: &Path) -> (String, String, String) {
+    let exact = path_text(path);
+    let after_separator = char::from_u32(u32::from(MAIN_SEPARATOR) + 1).unwrap_or(char::MAX);
+    let first_under = format!("{exact}{MAIN_SEPARATOR}");
+    let past_under = format!("{exact}{after_separator}");
+    (exact, first_under, past_under)
 }
 
 /// A `tracks` row reduced to its path and stamp.

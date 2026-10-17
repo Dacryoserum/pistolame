@@ -468,6 +468,85 @@ fn removing_a_root_forgets_its_tracks_only() {
 }
 
 #[test]
+fn a_root_inside_another_joins_it_and_its_deleted_tracks_leave() {
+    // Regression: an album folder dropped from a folder already in the library became a root
+    // of its own; once deleted, it counted as an unplugged drive and its tracks stayed.
+    let library = TestLibrary::new("nested-root", 2);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    store
+        .add_roots(&[library.folder.clone(), library.track(1)])
+        .unwrap();
+    assert_eq!(store.roots().unwrap(), vec![library.folder.clone()]);
+    std::fs::remove_dir_all(&library.music).unwrap();
+    assert!(store.synchronize().unwrap().has_changed);
+    assert!(paths(&store).is_empty());
+}
+
+#[test]
+fn a_deleted_folder_inside_a_root_leaves_with_the_watcher_paths() {
+    let library = TestLibrary::new("nested-root-paths", 2);
+    let mut store = library.open();
+    store
+        .add_roots(&[library.music.clone(), library.folder.clone()])
+        .unwrap();
+    store.synchronize().unwrap();
+    std::fs::remove_dir_all(&library.music).unwrap();
+    store
+        .synchronize_paths(std::slice::from_ref(&library.music))
+        .unwrap();
+    assert!(paths(&store).is_empty());
+}
+
+#[test]
+fn removed_tracks_stay_out_until_restored_or_their_folder_is_added_again() {
+    let library = TestLibrary::new("removed-tracks", 2);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    store.remove_tracks(&[library.track(1)]).unwrap();
+    assert_eq!(paths(&store), vec![library.track(2)]);
+    store.synchronize().unwrap();
+    store.synchronize_paths(&[library.track(1)]).unwrap();
+    assert_eq!(paths(&store), vec![library.track(2)]);
+    assert!(library.track(1).exists(), "files are never deleted");
+
+    // "Annuler" gives the track back as it was, play count included.
+    store.record_play(&library.track(1)).unwrap();
+    store.restore_tracks(&[library.track(1)]).unwrap();
+    let restored = store.snapshot().unwrap().tracks;
+    assert_eq!(restored.len(), 2);
+    assert_eq!(restored[0].play_count, 1);
+
+    store.remove_tracks(&[library.track(1)]).unwrap();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    assert_eq!(paths(&store).len(), 2);
+}
+
+#[test]
+fn a_removed_track_whose_file_is_gone_leaves_for_good() {
+    let library = TestLibrary::new("removed-gone", 2);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    store.remove_tracks(&[library.track(1)]).unwrap();
+    std::fs::remove_file(library.track(1)).unwrap();
+    store.synchronize().unwrap();
+    store.restore_tracks(&[library.track(1)]).unwrap();
+    assert_eq!(paths(&store), vec![library.track(2)]);
+}
+
+#[test]
 fn favorites_survive_reopening_and_can_be_removed() {
     let library = TestLibrary::new("favorites", 2);
     let mut store = library.open();

@@ -53,6 +53,31 @@ pub(crate) fn suggestions<'a>(
     suggested
 }
 
+/// `artists` with `old` called `new`; when `new` already is among them, the two become one
+/// (renaming "WeRenoi" to "Werenoi" merges the two spellings).
+pub(crate) fn renamed(artists: &[String], old: &str, new: &str) -> Vec<String> {
+    let names: Vec<&str> = artists
+        .iter()
+        .map(|name| {
+            // The new spelling also replaces the old ones of `new` itself.
+            if name == old || name.eq_ignore_ascii_case(new) {
+                new
+            } else {
+                name.as_str()
+            }
+        })
+        .collect();
+    split(&names.join(";"))
+}
+
+/// Another artist of `known` whose name differs from `artist` only by case: the likely
+/// spelling to merge it with.
+pub(crate) fn namesake<'a>(artist: &str, known: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    known
+        .into_iter()
+        .find(|name| *name != artist && name.eq_ignore_ascii_case(artist))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +104,30 @@ mod tests {
         assert_eq!(display(&names(&["Howard Shore"])), "Howard Shore");
         assert_eq!(display(&names(&["A", "B"])), "A & B");
         assert_eq!(display(&names(&["A", "B", "C"])), "A, B & C");
+    }
+
+    #[test]
+    fn renaming_an_artist_keeps_the_others_and_merges_spellings() {
+        assert_eq!(
+            renamed(&names(&["WeRenoi", "Gims"]), "WeRenoi", "Werenoi"),
+            names(&["Werenoi", "Gims"])
+        );
+        assert_eq!(
+            renamed(&names(&["Gims", "WeRenoi"]), "Gims", "werenoi"),
+            names(&["werenoi"])
+        );
+        assert_eq!(
+            renamed(&names(&["WeRenoi", "Gims"]), "Gims", "werenoi"),
+            names(&["werenoi"])
+        );
+        assert_eq!(renamed(&names(&["Air"]), "Beck", "B"), names(&["Air"]));
+    }
+
+    #[test]
+    fn a_namesake_differs_only_by_case() {
+        let known = ["Werenoi", "WeRenoi", "Gims"];
+        assert_eq!(namesake("WeRenoi", known.into_iter()), Some("Werenoi"));
+        assert_eq!(namesake("Gims", known.into_iter()), None);
     }
 
     #[test]

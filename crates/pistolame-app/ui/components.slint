@@ -509,6 +509,8 @@ export component ActionMenuButton inherits Rectangle {
     in property <bool> is-favorite;
     // "Aller à l’album" makes no sense inside that album's own page.
     in property <bool> can-go-to-album;
+    // A playlist's own menu does not offer to empty the library of its tracks.
+    in property <bool> can-remove-from-library: true;
     in property <color> icon-color: Tokens.text-secondary;
     callback action(TrackAction);
     width: 28px;
@@ -565,6 +567,10 @@ export component ActionMenuButton inherits Rectangle {
                 if root.can-remove: MenuRow {
                     icon: Icons.x; label: "Retirer de la playlist"; is-destructive: true;
                     clicked => { root.action(TrackAction.remove-from-playlist); }
+                }
+                if root.can-remove-from-library: MenuRow {
+                    icon: Icons.trash; label: "Retirer de la bibliothèque"; is-destructive: true;
+                    clicked => { root.action(TrackAction.remove-from-library); }
                 }
             }
         }
@@ -1383,6 +1389,12 @@ export component AlbumsGrid inherits Rectangle {
             alignment: start;
             PillButton { label: "Tout lire"; icon: Icons.play-fill; is-primary: true; clicked => { AppState.play-artist(false); } }
             PillButton { label: "Aléatoire"; icon: Icons.shuffle; clicked => { AppState.play-artist(true); } }
+            IconButton {
+                width: 32px; height: 32px;
+                icon: Icons.pencil-simple; icon-color: Tokens.text-secondary;
+                label: "Renommer l’artiste";
+                clicked => { AppState.begin-artist-edit(); }
+            }
         }
     }
 
@@ -2546,6 +2558,7 @@ export component PlaylistView inherits Rectangle {
         ActionMenuButton {
             x: root.width - 32px - 28px - 8px - 28px; y: 24px;
             label: "Actions pour la playlist";
+            can-remove-from-library: false;
             action(kind) => {
                 AppState.track-action({ source: TrackSource.playlist, album: 0, track: 0, position: 0 }, kind);
             }
@@ -2670,6 +2683,42 @@ export component PlaylistEditor inherits Sheet {
         is-primary: true;
         label: "Enregistrer";
         clicked => { AppState.save-playlist-edit(); }
+    }
+}
+
+// Renames an artist on all their albums; the name of another artist merges the two.
+export component ArtistEditor inherits Sheet {
+    title: "Renommer l’artiste";
+    width: 420px;
+    height: AppState.artist-editor-namesake != "" ? 214px : 184px;
+    LabeledField { x: 24px; y: 64px; width: root.width - 48px; caption: "NOM"; text <=> AppState.artist-editor-name; }
+    Txt {
+        x: 24px; y: 124px; width: root.width - 48px;
+        role: TextRole.callout; color: Tokens.text-secondary; wrap: word-wrap;
+        text: "Le nom d’un autre artiste réunit les deux. Les fichiers ne sont pas modifiés.";
+    }
+    if AppState.artist-editor-namesake != "": Rectangle {
+        x: 24px; y: 154px; width: root.width - 48px; height: 20px;
+        Txt {
+            role: TextRole.callout; vertical-alignment: center;
+            text: "Réunir avec « " + AppState.artist-editor-namesake + " »";
+            color: namesake-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+        }
+        namesake-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { AppState.artist-editor-name = AppState.artist-editor-namesake; }
+        }
+    }
+    PillButton {
+        x: root.width - 24px - 112px - 10px - 112px; y: root.height - 48px;
+        label: "Annuler";
+        clicked => { AppState.is-artist-editor-open = false; }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 48px;
+        is-primary: true;
+        label: "Enregistrer";
+        clicked => { AppState.save-artist-edit(); }
     }
 }
 

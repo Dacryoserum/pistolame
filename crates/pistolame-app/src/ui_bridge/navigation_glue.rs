@@ -160,6 +160,7 @@ impl UiBridge {
     fn is_modal_sheet_open(state: &AppState<'_>) -> bool {
         state.get_is_album_editor_open()
             || state.get_is_playlist_editor_open()
+            || state.get_is_artist_editor_open()
             || state.get_is_add_to_playlist_open()
     }
 

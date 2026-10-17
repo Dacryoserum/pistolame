@@ -79,8 +79,25 @@ impl UiBridge {
                     }
                 }
             }
+            TrackAction::RemoveFromLibrary => self.remove_from_library(paths, &subject),
             TrackAction::RemoveFromPlaylist => {}
         }
+    }
+
+    /// Forgets `paths` (the files stay on disk) and keeps them out of later rescans; "Annuler"
+    /// lets them in again.
+    fn remove_from_library(&self, paths: Vec<PathBuf>, subject: &str) {
+        let Some(snapshot) = self.with_library(|store| {
+            store.remove_tracks(&paths)?;
+            store.snapshot()
+        }) else {
+            return;
+        };
+        self.replace_albums(snapshot);
+        self.notice_with_undo(
+            format!("{subject} : retiré de la bibliothèque"),
+            super::undo::UndoableChange::LibraryRemoval { paths },
+        );
     }
 
     /// Reads the favorites from the library. A read failure keeps the ones in memory.
