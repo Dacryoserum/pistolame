@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use pistolame_core::testing::{CD_STEREO, generate_fixture};
-use pistolame_library::{AlbumKey, AlbumTextOverride, LibraryStore};
+use pistolame_library::{AlbumKey, AlbumTextOverride, ArtworkId, LibraryStore};
 
 /// A fresh folder with a music subfolder holding `track_count` copies of a generated FLAC,
 /// and the database path beside it.
@@ -112,6 +112,120 @@ fn new_files_are_added_and_deleted_files_removed() {
 }
 
 #[test]
+fn synchronizing_changed_paths_adds_updates_and_removes_only_them() {
+    let library = TestLibrary::new("changed-paths", 2);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let disc = library.music.join("Disc 2");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::copy(library.track(1), disc.join("01.flac")).unwrap();
+    std::fs::copy(library.track(1), disc.join("02.flac")).unwrap();
+    std::fs::copy(library.track(1), library.track(3)).unwrap();
+    // A new folder, a new file, and a path outside every root (ignored).
+    let report = store
+        .synchronize_paths(&[
+            disc.clone(),
+            library.track(3),
+            disc.join("01.flac"),
+            library.folder.join("outside.flac"),
+        ])
+        .unwrap();
+    assert!(report.has_changed);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(paths(&store).len(), 5);
+    // Unchanged paths: nothing to do.
+    assert!(
+        !store
+            .synchronize_paths(std::slice::from_ref(&disc))
+            .unwrap()
+            .has_changed
+    );
+    // A removed folder takes its tracks along, and only them; a removed file too.
+    std::fs::remove_dir_all(&disc).unwrap();
+    std::fs::remove_file(library.track(2)).unwrap();
+    let report = store
+        .synchronize_paths(&[disc.clone(), library.track(2)])
+        .unwrap();
+    assert!(report.has_changed);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(paths(&store), vec![library.track(1), library.track(3)]);
+}
+
+#[test]
+fn a_rename_that_only_changes_case_keeps_one_copy_of_each_track() {
+    let library = TestLibrary::new("case-rename", 1);
+    let disc = library.music.join("disc 2");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::copy(library.track(1), disc.join("01.flac")).unwrap();
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    let renamed = library.music.join("Disc 2");
+    std::fs::rename(&disc, &renamed).unwrap();
+    // A watcher reports both spellings.
+    store
+        .synchronize_paths(&[disc.clone(), renamed.clone()])
+        .unwrap();
+    assert_eq!(
+        paths(&store),
+        vec![library.track(1), renamed.join("01.flac")]
+    );
+}
+
+#[test]
+fn a_folder_sharing_a_prefix_is_not_taken_for_a_subfolder() {
+    let library = TestLibrary::new("prefix", 1);
+    let sibling = library.folder.join("Album 2");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::copy(library.track(1), sibling.join("01.flac")).unwrap();
+    let mut store = library.open();
+    store
+        .add_roots(&[library.music.clone(), sibling.clone()])
+        .unwrap();
+    store.synchronize().unwrap();
+    // "Album" is gone, but "Album 2" (same prefix) must keep its track.
+    std::fs::remove_file(library.track(1)).unwrap();
+    store
+        .synchronize_paths(std::slice::from_ref(&library.music))
+        .unwrap();
+    assert_eq!(paths(&store), vec![sibling.join("01.flac")]);
+}
+
+#[test]
+fn changed_paths_under_a_missing_root_remove_nothing() {
+    let library = TestLibrary::new("unplugged-paths", 2);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    store.synchronize().unwrap();
+    std::fs::rename(&library.music, library.folder.join("elsewhere")).unwrap();
+    let report = store
+        .synchronize_paths(&[library.music.clone(), library.track(1)])
+        .unwrap();
+    assert!(!report.has_changed);
+    assert_eq!(paths(&store).len(), 2);
+}
+
+#[test]
+fn imports_larger_than_one_batch_are_complete() {
+    // More files than one write batch (256), all of them stored.
+    let library = TestLibrary::new("batches", 300);
+    let mut store = library.open();
+    store
+        .add_roots(std::slice::from_ref(&library.music))
+        .unwrap();
+    let report = store.synchronize().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(paths(&store).len(), 300);
+}
+
+#[test]
 fn tracks_of_a_missing_root_are_kept() {
     let library = TestLibrary::new("unplugged", 2);
     let mut store = library.open();
@@ -140,8 +254,19 @@ fn a_chosen_cover_replaces_and_restores_the_album_cover() {
     store.set_album_artwork(&album, b"second cover").unwrap();
     let snapshot = store.snapshot().unwrap();
     assert_eq!(snapshot.artwork_overrides.len(), 1);
-    assert_eq!(&*snapshot.artwork_overrides[&album], b"second cover");
+    let chosen = &snapshot.artwork_overrides[&album];
+    assert_eq!(*chosen, ArtworkId::of_bytes(b"second cover"));
+    assert_eq!(
+        store.artwork_bytes(chosen).unwrap().as_deref(),
+        Some(&b"second cover"[..])
+    );
     // The replaced image is no longer stored.
+    assert_eq!(
+        store
+            .artwork_bytes(&ArtworkId::of_bytes(b"first cover"))
+            .unwrap(),
+        None
+    );
     assert_eq!(
         store.album_artwork_override(&album).unwrap().as_deref(),
         Some(&b"second cover"[..])
@@ -166,9 +291,21 @@ fn a_cover_shared_by_an_album_is_stored_once() {
         .iter()
         .map(|track| track.artwork.clone().unwrap())
         .collect();
-    assert_eq!(&*covers[0], b"jpeg bytes");
-    // One shared allocation, not one copy per track.
-    assert!(std::sync::Arc::ptr_eq(&covers[0], &covers[2]));
+    assert_eq!(covers[0], ArtworkId::of_bytes(b"jpeg bytes"));
+    assert_eq!(covers[0], covers[2]);
+    // One stored image, not one copy per track.
+    assert_eq!(
+        store
+            .stored_artwork_ids()
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![covers[0].clone()]
+    );
+    assert_eq!(
+        store.artwork_bytes(&covers[0]).unwrap().as_deref(),
+        Some(&b"jpeg bytes"[..])
+    );
 }
 
 #[test]
@@ -265,7 +402,7 @@ fn a_playlist_cover_is_stored_and_cleared() {
     let id = store.create_playlist("Vinyles").unwrap();
     store.set_playlist_artwork(id, b"png bytes").unwrap();
     let playlist = &store.snapshot().unwrap().playlists[0];
-    assert_eq!(playlist.artwork.as_deref(), Some(&b"png bytes"[..]));
+    assert_eq!(playlist.artwork, Some(ArtworkId::of_bytes(b"png bytes")));
     store.clear_playlist_artwork(id).unwrap();
     assert!(store.snapshot().unwrap().playlists[0].artwork.is_none());
 }
@@ -368,5 +505,9 @@ fn artist_photos_are_kept_and_lookups_are_not_repeated() {
     let reopened = library.open();
     let images = reopened.snapshot().unwrap().artist_images;
     assert_eq!(images.len(), 1);
-    assert_eq!(&*images["Howard Shore"], &[1, 2, 3]);
+    assert_eq!(images["Howard Shore"], ArtworkId::of_bytes(&[1, 2, 3]));
+    assert_eq!(
+        reopened.artwork_bytes(&images["Howard Shore"]).unwrap(),
+        Some(vec![1, 2, 3])
+    );
 }

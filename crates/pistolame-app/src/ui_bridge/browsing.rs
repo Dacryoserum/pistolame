@@ -38,7 +38,7 @@ impl UiBridge {
             (self.selected_track.get(), albums.get(index))
             && album_index == index
         {
-            state.set_lcd_artwork(album.artwork.clone());
+            self.show_lcd_artwork(album.artwork.as_ref());
             state.set_current_album(album.title.as_str().into());
             state.set_current_artist(album.artist.as_str().into());
         }
@@ -58,7 +58,7 @@ impl UiBridge {
         let is_artist_page = !artist_filter.is_empty() && words.is_empty();
         let albums = self.albums.borrow();
         let labels = distinguishing_labels(&albums);
-        let mut cards: Vec<(Option<u32>, AlbumCard)> = albums
+        let mut cards: Vec<(Option<u32>, AlbumCardRow)> = albums
             .iter()
             .enumerate()
             .filter(|(_, album)| artist_filter.is_empty() || album.artists.contains(&artist_filter))
@@ -84,7 +84,7 @@ impl UiBridge {
             // An artist's page lists the newest albums first, undated ones last.
             cards.sort_by_key(|(year, _)| std::cmp::Reverse(*year));
         }
-        let cards: Vec<AlbumCard> = cards.into_iter().map(|(_, card)| card).collect();
+        let cards: Vec<_> = cards.into_iter().map(|(_, card)| card).collect();
         let current_path = self.current_path();
         let mut results = Vec::new();
         let mut rows = Vec::new();
@@ -126,7 +126,7 @@ impl UiBridge {
             format!("Rien trouvé pour « {query} ».").into()
         });
         state.set_search_tracks(ModelRc::new(VecModel::from(rows)));
-        state.set_albums(ModelRc::new(VecModel::from(cards)));
+        state.set_albums(album_card_model(&self.artwork, cards));
         if is_artist_page {
             self.show_artist_header(&state, &artist_filter);
         }
@@ -171,9 +171,13 @@ impl UiBridge {
                 artist_albums
                     .iter()
                     .max_by_key(|album| album_year(album))
-                    .map(|album| album.artwork.clone())
+                    .and_then(|album| album.artwork.clone())
             });
-        state.set_artist_page_photo(photo.unwrap_or_default());
+        self.show_artwork_in(
+            &self.artwork_slots.artist_page,
+            photo.as_ref(),
+            |state, image| state.set_artist_page_photo(image),
+        );
         state.set_artist_page_detail(
             format!(
                 "{} · {}",
@@ -222,9 +226,11 @@ impl UiBridge {
             return;
         };
         let cards = artist_cards(&self.albums.borrow(), &self.artist_photos.borrow());
-        window
-            .global::<AppState>()
-            .set_artists(ModelRc::new(VecModel::from(cards)));
+        window.global::<AppState>().set_artists(lazy_artwork_model(
+            &self.artwork,
+            cards,
+            |card, image| card.artwork = image,
+        ));
     }
 
     /// Fills the "Morceaux" table with every track, in the chosen column order.
@@ -410,7 +416,7 @@ impl UiBridge {
         state.set_detail(DetailInfo {
             title: album.title.as_str().into(),
             artist: album.artist.as_str().into(),
-            artwork: album.artwork.clone(),
+            artwork: slint::Image::default(),
             meta_line: match album_year(album) {
                 Some(year) => format!("{year} · {} morceaux · {}", album.tracks.len(), album_codecs(album)),
                 None => format!("{} morceaux · {}", album.tracks.len(), album_codecs(album)),
@@ -422,6 +428,15 @@ impl UiBridge {
             cells: ModelRc::new(VecModel::from(["Résolution effective", "Coupure spectrale", "Plage dynamique", "Écrêtage", "Contrôle MD5"].map(|label| crate::DataCell { label: label.into(), value: "Non analysé".into() }).to_vec())),
             ..Default::default()
         });
+        self.show_artwork_in(
+            &self.artwork_slots.album_page,
+            album.artwork.as_ref(),
+            |state, image| {
+                let mut detail = state.get_detail();
+                detail.artwork = image;
+                state.set_detail(detail);
+            },
+        );
         let is_multi_disc = album
             .tracks
             .iter()

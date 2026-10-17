@@ -15,7 +15,11 @@ impl UiBridge {
         let state = window.global::<AppState>();
         state.set_editor_title(album.title.as_str().into());
         state.set_editor_new_artist("".into());
-        state.set_editor_artwork(album.artwork.clone());
+        self.show_artwork_in(
+            &self.artwork_slots.album_editor,
+            album.artwork.as_ref(),
+            |state, image| state.set_editor_artwork(image),
+        );
         state.set_editor_has_custom_artwork(album.has_custom_artwork);
         state.set_is_album_editor_open(true);
         *self.album_edit.borrow_mut() = Some(AlbumEditDraft {
@@ -92,11 +96,12 @@ impl UiBridge {
         };
         if let Some(window) = self.window.upgrade() {
             let state = window.global::<AppState>();
-            state.set_editor_artwork(image.clone());
+            self.artwork_slots.album_editor.take_over();
+            state.set_editor_artwork(image);
             state.set_editor_has_custom_artwork(true);
         }
         if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
-            draft.pending_artwork = PendingArtwork::Chosen { bytes, image };
+            draft.pending_artwork = PendingArtwork::Chosen { bytes };
         }
     }
 
@@ -116,11 +121,14 @@ impl UiBridge {
             self.message("Cette image dépasse 16 Mo.".into());
             return None;
         }
-        let Ok(image) = slint::Image::load_from_data(&bytes, None) else {
+        // Previewed at thumbnail size: a 5000-pixel cover decoded as is takes 100 MB.
+        let Some(preview) =
+            crate::artwork_cache::decode_scaled(&bytes, self.artwork.thumbnail_pixels())
+        else {
             self.message("Cette image n’est ni un JPEG ni un PNG lisible.".into());
             return None;
         };
-        Some((bytes, image))
+        Some((bytes, slint::Image::from_rgba8(preview)))
     }
 
     /// Shows the files' own cover again; applied only on "Enregistrer".
@@ -132,12 +140,16 @@ impl UiBridge {
             .albums
             .borrow()
             .get(index)
-            .map(|album| self.artwork_image(original_artwork(&album.tracks)))
-            .unwrap_or_default();
+            .and_then(|album| original_artwork(&album.tracks).cloned());
+        self.show_artwork_in(
+            &self.artwork_slots.album_editor,
+            original.as_ref(),
+            |state, image| state.set_editor_artwork(image),
+        );
         if let Some(window) = self.window.upgrade() {
-            let state = window.global::<AppState>();
-            state.set_editor_artwork(original);
-            state.set_editor_has_custom_artwork(false);
+            window
+                .global::<AppState>()
+                .set_editor_has_custom_artwork(false);
         }
         if let Some(draft) = self.album_edit.borrow_mut().as_mut() {
             draft.pending_artwork = PendingArtwork::Restored;
@@ -201,12 +213,13 @@ impl UiBridge {
             album.artist = crate::album_artists::display(&album.artists);
             match draft.pending_artwork {
                 PendingArtwork::Unchanged => {}
-                PendingArtwork::Chosen { image, .. } => {
-                    album.artwork = image;
+                PendingArtwork::Chosen { bytes, .. } => {
+                    // Now stored in the library under this id.
+                    album.artwork = Some(ArtworkId::of_bytes(&bytes));
                     album.has_custom_artwork = true;
                 }
                 PendingArtwork::Restored => {
-                    album.artwork = self.artwork_image(original_artwork(&album.tracks));
+                    album.artwork = original_artwork(&album.tracks).cloned();
                     album.has_custom_artwork = false;
                 }
             }

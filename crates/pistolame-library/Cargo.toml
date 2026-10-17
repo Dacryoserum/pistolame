@@ -17,6 +17,8 @@ thiserror.workspace = true
 rusqlite.workspace = true
 md-5.workspace = true
 notify.workspace = true
+# Reads changed files in parallel during a synchronization (already in the workspace).
+rayon.workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true

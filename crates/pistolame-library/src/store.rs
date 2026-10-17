@@ -1,15 +1,20 @@
 //! The persistent library: imported roots, track metadata, covers and the covers the user
 //! chose, in one SQLite file (plan docs/plans/persistent-library.md). Music files are only read.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use md5::{Digest, Md5};
-use rusqlite::{Connection, OptionalExtension, params};
+use rayon::prelude::*;
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::{MAX_COVER_BYTES, MusicFile, collect_audio_paths, read_music_file};
+use crate::scan::{FileStamp, ListedFile, exists_with_exact_name, list_audio_files};
+use crate::{ArtworkId, MAX_COVER_BYTES, MusicFile, SharedCovers, read_music_file_sharing_covers};
+
+/// Files read, then written in one transaction, during a synchronization. Per-file commits made
+/// a first import wait on the disk once per track; per batch the commit cost disappears, and an
+/// interrupted import still keeps the batches already written.
+const TRACKS_PER_TRANSACTION: usize = 256;
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
@@ -80,6 +85,10 @@ CREATE TABLE IF NOT EXISTS album_artwork_overrides (
     artwork_hash TEXT NOT NULL REFERENCES artworks(hash),
     PRIMARY KEY (directory, album)
 );
+-- Forgetting a folder deletes its tracks by root; the cleanup of unused covers looks tracks up
+-- by cover.
+CREATE INDEX IF NOT EXISTS tracks_by_root ON tracks(root);
+CREATE INDEX IF NOT EXISTS tracks_by_artwork ON tracks(artwork_hash);
 ";
 
 /// Identifies an album the way the player groups tracks: same folder, same album tag.
@@ -101,19 +110,20 @@ impl AlbumKey {
     }
 }
 
-/// Everything the UI needs to show the library.
+/// Everything the UI needs to show the library. Covers are named, not loaded: see
+/// [`LibraryStore::artwork_bytes`].
 #[derive(Clone, Debug, Default)]
 pub struct LibrarySnapshot {
     /// Every known track; `artwork` is the file's own cover (embedded or beside it).
     pub tracks: Vec<MusicFile>,
     /// Covers the user chose, which replace the files' own covers for these albums.
-    pub artwork_overrides: HashMap<AlbumKey, Arc<[u8]>>,
+    pub artwork_overrides: HashMap<AlbumKey, ArtworkId>,
     /// Album titles and artists the user edited, shown instead of the tags.
     pub text_overrides: HashMap<AlbumKey, AlbumTextOverride>,
     /// The user's playlists, in creation order.
     pub playlists: Vec<Playlist>,
     /// Artist photos found online, by artist name as the library shows it.
-    pub artist_images: HashMap<String, Arc<[u8]>>,
+    pub artist_images: HashMap<String, ArtworkId>,
 }
 
 /// A user playlist: an ordered list of track paths. A track may appear twice; an entry whose
@@ -127,7 +137,7 @@ pub struct Playlist {
     /// Tracks in playing order.
     pub track_paths: Vec<PathBuf>,
     /// Cover the user chose for the playlist, if any.
-    pub artwork: Option<Arc<[u8]>>,
+    pub artwork: Option<ArtworkId>,
 }
 
 /// Album title and artist chosen by the user; `None` keeps what the tags say.
@@ -178,10 +188,21 @@ impl LibraryStore {
         }
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        // With WAL, NORMAL no longer waits for the disk at every commit; a power cut may lose
+        // the last commits but never corrupts the file
+        // (https://www.sqlite.org/pragma.html#pragma_synchronous). Everything lost that way
+        // is read again from the music files at the next synchronization.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute_batch(SCHEMA)?;
         migrate(&connection)?;
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // Written only when it changes: an unconditional write made every open a write
+        // transaction.
+        let stored_version: i64 =
+            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if stored_version != SCHEMA_VERSION {
+            connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
         Ok(LibraryStore { connection })
     }
 
@@ -234,14 +255,12 @@ impl LibraryStore {
         Ok(roots)
     }
 
-    /// Every track and every chosen cover. Each cover is loaded once and shared.
+    /// Every track, every edit and every playlist, with covers as ids (no image bytes).
     ///
     /// # Errors
     /// Fails when the database cannot be read.
     pub fn snapshot(&self) -> Result<LibrarySnapshot, LibraryError> {
-        let artworks = self.artworks()?;
-        let cover = |hash: Option<String>| hash.and_then(|hash| artworks.get(&hash).cloned());
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT path, title, album, artist, disc_number, track_number, sample_rate_hz,
                     bits_per_sample, duration_seconds, artwork_hash, year, sort_album,
                     sort_album_artist, genre, added_seconds, play_count, last_played_seconds,
@@ -260,7 +279,7 @@ impl LibraryStore {
                     sample_rate_hz: row.get(6)?,
                     bits_per_sample: row.get(7)?,
                     duration_seconds: stored_count(row.get(8)?),
-                    artwork: cover(row.get(9)?),
+                    artwork: row.get::<_, Option<String>>(9)?.map(ArtworkId::from_stored),
                     year: row.get(10)?,
                     sort_album: row.get(11)?,
                     sort_album_artist: row.get(12)?,
@@ -275,7 +294,7 @@ impl LibraryStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut statement = self
             .connection
-            .prepare("SELECT directory, album, artwork_hash FROM album_artwork_overrides")?;
+            .prepare_cached("SELECT directory, album, artwork_hash FROM album_artwork_overrides")?;
         let artwork_overrides = statement
             .query_map([], |row| {
                 Ok((
@@ -283,39 +302,60 @@ impl LibraryStore {
                         directory: PathBuf::from(row.get::<_, String>(0)?),
                         title: row.get(1)?,
                     },
-                    row.get::<_, String>(2)?,
+                    ArtworkId::from_stored(row.get(2)?),
                 ))
             })?
-            .filter_map(|entry| match entry {
-                Ok((key, hash)) => artworks.get(&hash).cloned().map(|bytes| Ok((key, bytes))),
-                Err(error) => Some(Err(error)),
-            })
             .collect::<Result<HashMap<_, _>, _>>()?;
         Ok(LibrarySnapshot {
             tracks,
             artwork_overrides,
             text_overrides: self.text_overrides()?,
             playlists: self.playlists()?,
-            artist_images: self.artist_images(&artworks)?,
+            artist_images: self.artist_images()?,
         })
     }
 
-    /// Artist photos with their bytes (artists looked up without result are left out).
-    fn artist_images(
-        &self,
-        artworks: &HashMap<String, Arc<[u8]>>,
-    ) -> Result<HashMap<String, Arc<[u8]>>, LibraryError> {
-        let mut statement = self.connection.prepare(
+    /// The encoded bytes of one cover; `None` when no cover has this id (any more).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn artwork_bytes(&self, id: &ArtworkId) -> Result<Option<Vec<u8>>, LibraryError> {
+        Ok(self
+            .connection
+            .prepare_cached("SELECT data FROM artworks WHERE hash = ?1")?
+            .query_row(params![id.as_str()], |row| row.get(0))
+            .optional()?)
+    }
+
+    /// The id of every stored cover. A cover is deleted as soon as nothing uses it, so these
+    /// are the covers something can still show (to clean caches of the others).
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn stored_artwork_ids(&self) -> Result<HashSet<ArtworkId>, LibraryError> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT hash FROM artworks")?;
+        let ids = statement
+            .query_map([], |row| {
+                row.get::<_, String>(0).map(ArtworkId::from_stored)
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
+    /// Artist photos, by artist (artists looked up without result are left out).
+    fn artist_images(&self) -> Result<HashMap<String, ArtworkId>, LibraryError> {
+        let mut statement = self.connection.prepare_cached(
             "SELECT artist, artwork_hash FROM artist_images WHERE artwork_hash IS NOT NULL",
         )?;
         let images = statement
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ArtworkId::from_stored(row.get(1)?),
+                ))
             })?
-            .filter_map(|row| match row {
-                Ok((artist, hash)) => artworks.get(&hash).map(|bytes| Ok((artist, bytes.clone()))),
-                Err(error) => Some(Err(error)),
-            })
             .collect::<Result<HashMap<_, _>, _>>()?;
         Ok(images)
     }
@@ -330,6 +370,7 @@ impl LibraryStore {
     pub fn synchronize(&mut self) -> Result<SynchronizationReport, LibraryError> {
         let mut report = SynchronizationReport::default();
         let known = self.known_file_stamps()?;
+        let mut changes = PendingChanges::default();
         let mut seen = HashSet::new();
         for root in self.roots()? {
             if !root.exists() {
@@ -337,37 +378,125 @@ impl LibraryStore {
                 seen.extend(known.keys().filter(|path| path.starts_with(&root)).cloned());
                 continue;
             }
-            let (paths, errors) = collect_audio_paths(std::slice::from_ref(&root));
+            let (files, errors) = list_audio_files(std::slice::from_ref(&root));
             report.errors.extend(errors);
-            for path in paths {
-                seen.insert(path.clone());
-                let Some(stamp) = FileStamp::of(&path) else {
-                    report
-                        .errors
-                        .push(format!("{} : fichier illisible", path.display()));
-                    continue;
-                };
-                if known.get(&path) == Some(&stamp) {
-                    continue;
-                }
-                match read_music_file(&path) {
-                    Ok(track) => {
-                        self.upsert_track(&root, &track, stamp)?;
-                        report.has_changed = true;
-                    }
-                    Err(error) => report.errors.push(format!("{} : {error}", path.display())),
-                }
+            for file in files {
+                seen.insert(file.path.clone());
+                let known_stamp = known.get(&file.path).copied();
+                changes.consider(&root, file, known_stamp, &mut report.errors);
             }
         }
-        for path in known.keys().filter(|path| !seen.contains(*path)) {
-            self.connection.execute(
-                "DELETE FROM tracks WHERE path = ?1",
-                params![path_text(path)],
-            )?;
+        changes
+            .vanished
+            .extend(known.into_keys().filter(|path| !seen.contains(path)));
+        self.apply_changes(changes, &mut report)?;
+        Ok(report)
+    }
+
+    /// Brings the library up to date for the `changed` files or folders only (created,
+    /// modified, removed or renamed, as a folder watcher reports them): far cheaper than
+    /// [`LibraryStore::synchronize`] on a large library. Paths outside every root are ignored,
+    /// and nothing is removed under a root that is missing (an unplugged drive), as in a full
+    /// synchronization.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read or written; unreadable files are reported in the
+    /// returned errors instead.
+    pub fn synchronize_paths(
+        &mut self,
+        changed: &[PathBuf],
+    ) -> Result<SynchronizationReport, LibraryError> {
+        let mut report = SynchronizationReport::default();
+        let roots = self.roots()?;
+        let mut changes = PendingChanges::default();
+        for path in changed {
+            let Some(root) = roots
+                .iter()
+                .filter(|root| path.starts_with(root))
+                .max_by_key(|root| root.as_os_str().len())
+            else {
+                continue;
+            };
+            if !root.exists() {
+                continue;
+            }
+            let known = self.known_file_stamps_at_or_under(path)?;
+            // A path that no longer exists was removed: its tracks go, and it is not an error.
+            // So does the old spelling after a rename that only changed case, which a
+            // case-insensitive file system still opens.
+            let (files, errors) = if exists_with_exact_name(path) {
+                list_audio_files(std::slice::from_ref(path))
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            report.errors.extend(errors);
+            let mut seen = HashSet::new();
+            for file in files {
+                seen.insert(file.path.clone());
+                let known_stamp = known.get(&file.path).copied();
+                changes.consider(root, file, known_stamp, &mut report.errors);
+            }
+            changes
+                .vanished
+                .extend(known.into_keys().filter(|path| !seen.contains(path)));
+        }
+        self.apply_changes(changes, &mut report)?;
+        Ok(report)
+    }
+
+    /// Reads the changed files (in parallel, a batch at a time) and writes each batch in one
+    /// transaction, then removes the vanished tracks and the covers no longer used.
+    fn apply_changes(
+        &mut self,
+        changes: PendingChanges,
+        report: &mut SynchronizationReport,
+    ) -> Result<(), LibraryError> {
+        let shared_covers = SharedCovers::default();
+        for batch in changes.to_read.chunks(TRACKS_PER_TRANSACTION) {
+            let scanned: Vec<_> = batch
+                .par_iter()
+                .map(|file| read_music_file_sharing_covers(&file.path, &shared_covers))
+                .collect();
+            shared_covers.forget_folders();
+            let transaction = self.connection.transaction()?;
+            // Covers first: the one file of a batch carrying a cover's bytes (see
+            // `SharedCovers`) may come after files that refer to it.
+            for scanned in scanned.iter().flatten() {
+                if let (Some(artwork), Some(bytes)) =
+                    (&scanned.track.artwork, &scanned.artwork_bytes)
+                {
+                    insert_artwork(&transaction, artwork, bytes)?;
+                }
+            }
+            for (file, result) in batch.iter().zip(scanned) {
+                match result {
+                    Ok(scanned) => {
+                        upsert_track(&transaction, &file.root, &scanned.track, file.stamp)?;
+                        report.has_changed = true;
+                    }
+                    Err(error) => report
+                        .errors
+                        .push(format!("{} : {error}", file.path.display())),
+                }
+            }
+            transaction.commit()?;
+        }
+        if !changes.vanished.is_empty() {
+            let transaction = self.connection.transaction()?;
+            {
+                let mut delete =
+                    transaction.prepare_cached("DELETE FROM tracks WHERE path = ?1")?;
+                for path in &changes.vanished {
+                    delete.execute(params![path_text(path)])?;
+                }
+            }
+            transaction.commit()?;
             report.has_changed = true;
         }
-        self.delete_unused_artworks()?;
-        Ok(report)
+        if report.has_changed {
+            self.delete_unused_artworks()?;
+        }
+        Ok(())
     }
 
     /// Replaces the cover shown for `album` by `image_bytes` (the music files are untouched).
@@ -382,12 +511,12 @@ impl LibraryStore {
         if image_bytes.len() as u64 > MAX_COVER_BYTES {
             return Err(LibraryError::CoverTooLarge);
         }
-        let hash = self.store_artwork(image_bytes)?;
+        let artwork = store_artwork(&self.connection, image_bytes)?;
         self.connection.execute(
             "INSERT INTO album_artwork_overrides (directory, album, artwork_hash)
              VALUES (?1, ?2, ?3)
              ON CONFLICT (directory, album) DO UPDATE SET artwork_hash = excluded.artwork_hash",
-            params![path_text(&album.directory), album.title, hash],
+            params![path_text(&album.directory), album.title, artwork.as_str()],
         )?;
         self.delete_unused_artworks()
     }
@@ -503,15 +632,19 @@ impl LibraryStore {
         artist: &str,
         image: Option<&[u8]>,
     ) -> Result<(), LibraryError> {
-        let hash = match image {
-            Some(bytes) => Some(self.store_artwork(bytes)?),
+        let artwork = match image {
+            Some(bytes) => Some(store_artwork(&self.connection, bytes)?),
             None => None,
         };
         self.connection.execute(
             "INSERT INTO artist_images (artist, artwork_hash, checked_seconds) VALUES (?1, ?2, ?3)
              ON CONFLICT (artist) DO UPDATE SET artwork_hash = excluded.artwork_hash,
                 checked_seconds = excluded.checked_seconds",
-            params![artist, hash, now_seconds()],
+            params![
+                artist,
+                artwork.as_ref().map(ArtworkId::as_str),
+                now_seconds()
+            ],
         )?;
         self.delete_unused_artworks()
     }
@@ -634,10 +767,10 @@ impl LibraryStore {
         if image_bytes.len() as u64 > MAX_COVER_BYTES {
             return Err(LibraryError::CoverTooLarge);
         }
-        let hash = self.store_artwork(image_bytes)?;
+        let artwork = store_artwork(&self.connection, image_bytes)?;
         self.connection.execute(
             "UPDATE playlists SET artwork_hash = ?2 WHERE id = ?1",
-            params![id, hash],
+            params![id, artwork.as_str()],
         )?;
         self.delete_unused_artworks()
     }
@@ -655,7 +788,6 @@ impl LibraryStore {
     }
 
     fn playlists(&self) -> Result<Vec<Playlist>, LibraryError> {
-        let artworks = self.artworks()?;
         let mut statement = self
             .connection
             .prepare("SELECT id, name, artwork_hash FROM playlists ORDER BY id")?;
@@ -669,7 +801,7 @@ impl LibraryStore {
                     id,
                     name,
                     track_paths: self.playlist_paths(id)?,
-                    artwork: artwork_hash.and_then(|hash| artworks.get(&hash).cloned()),
+                    artwork: artwork_hash.map(ArtworkId::from_stored),
                 })
             })
             .collect()
@@ -719,103 +851,40 @@ impl LibraryStore {
         self.delete_unused_artworks()
     }
 
-    fn artworks(&self) -> Result<HashMap<String, Arc<[u8]>>, LibraryError> {
-        let mut statement = self.connection.prepare("SELECT hash, data FROM artworks")?;
-        let artworks = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    Arc::from(row.get::<_, Vec<u8>>(1)?),
-                ))
-            })?
-            .collect::<Result<_, _>>()?;
-        Ok(artworks)
-    }
-
     fn known_file_stamps(&self) -> Result<HashMap<PathBuf, FileStamp>, LibraryError> {
         let mut statement = self
             .connection
-            .prepare("SELECT path, file_size, modified_nanoseconds FROM tracks")?;
+            .prepare_cached("SELECT path, file_size, modified_nanoseconds FROM tracks")?;
         let stamps = statement
-            .query_map([], |row| {
-                Ok((
-                    PathBuf::from(row.get::<_, String>(0)?),
-                    FileStamp {
-                        size: row.get(1)?,
-                        modified_nanoseconds: row.get(2)?,
-                    },
-                ))
-            })?
+            .query_map([], path_and_stamp)?
             .collect::<Result<_, _>>()?;
         Ok(stamps)
     }
 
-    fn upsert_track(
-        &mut self,
-        root: &Path,
-        track: &MusicFile,
-        stamp: FileStamp,
-    ) -> Result<(), LibraryError> {
-        let artwork_hash = match &track.artwork {
-            Some(bytes) => Some(self.store_artwork(bytes)?),
-            None => None,
-        };
-        self.connection.execute(
-            "INSERT INTO tracks (path, root, file_size, modified_nanoseconds, title, album, artist,
-                                 disc_number, track_number, sample_rate_hz, bits_per_sample,
-                                 duration_seconds, artwork_hash, year, sort_album,
-                                 sort_album_artist, genre, added_seconds, codec, is_lossy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                     ?19, ?20)
-             ON CONFLICT (path) DO UPDATE SET
-                year = excluded.year, sort_album = excluded.sort_album,
-                sort_album_artist = excluded.sort_album_artist, genre = excluded.genre,
-                root = excluded.root, file_size = excluded.file_size,
-                modified_nanoseconds = excluded.modified_nanoseconds, title = excluded.title,
-                album = excluded.album, artist = excluded.artist,
-                disc_number = excluded.disc_number, track_number = excluded.track_number,
-                sample_rate_hz = excluded.sample_rate_hz,
-                bits_per_sample = excluded.bits_per_sample,
-                codec = excluded.codec, is_lossy = excluded.is_lossy,
-                duration_seconds = excluded.duration_seconds,
-                artwork_hash = excluded.artwork_hash",
-            params![
-                path_text(&track.path),
-                path_text(root),
-                stamp.size,
-                stamp.modified_nanoseconds,
-                track.title,
-                track.album,
-                track.artist,
-                sql_integer(track.disc_number),
-                sql_integer(track.track_number),
-                track.sample_rate_hz,
-                track.bits_per_sample,
-                sql_integer(track.duration_seconds),
-                artwork_hash,
-                track.year,
-                track.sort_album,
-                track.sort_album_artist,
-                track.genre,
-                now_seconds(),
-                track.codec,
-                track.is_lossy,
-            ],
+    /// The stamps of the tracks at `path` or anywhere under it, through a range on the primary
+    /// key: every path under a folder sorts between the folder followed by the separator and
+    /// the folder followed by the next character.
+    fn known_file_stamps_at_or_under(
+        &self,
+        path: &Path,
+    ) -> Result<HashMap<PathBuf, FileStamp>, LibraryError> {
+        let exact = path_text(path);
+        let after_separator = char::from_u32(u32::from(MAIN_SEPARATOR) + 1).unwrap_or(char::MAX);
+        let mut statement = self.connection.prepare_cached(
+            "SELECT path, file_size, modified_nanoseconds FROM tracks
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
         )?;
-        Ok(())
-    }
-
-    /// Stores a cover once, keyed by the MD5 of its bytes (deduplication, not security).
-    fn store_artwork(&mut self, bytes: &[u8]) -> Result<String, LibraryError> {
-        let hash: String = Md5::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        self.connection.execute(
-            "INSERT OR IGNORE INTO artworks (hash, data) VALUES (?1, ?2)",
-            params![hash, bytes],
-        )?;
-        Ok(hash)
+        let stamps = statement
+            .query_map(
+                params![
+                    exact,
+                    format!("{exact}{MAIN_SEPARATOR}"),
+                    format!("{exact}{after_separator}")
+                ],
+                path_and_stamp,
+            )?
+            .collect::<Result<_, _>>()?;
+        Ok(stamps)
     }
 
     fn delete_unused_artworks(&mut self) -> Result<(), LibraryError> {
@@ -904,22 +973,126 @@ fn now_seconds() -> i64 {
         })
 }
 
-/// Size and modification time: a file whose stamp is unchanged is not read again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileStamp {
-    size: i64,
-    modified_nanoseconds: i64,
+/// What a synchronization must write: the files to read, and the tracks whose file is gone.
+#[derive(Default)]
+struct PendingChanges {
+    to_read: Vec<FileToRead>,
+    /// Paths already in `to_read` (changed paths reported by a watcher may overlap).
+    queued: HashSet<PathBuf>,
+    vanished: BTreeSet<PathBuf>,
 }
 
-impl FileStamp {
-    fn of(path: &Path) -> Option<FileStamp> {
-        let metadata = std::fs::metadata(path).ok()?;
-        let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-        Some(FileStamp {
-            size: i64::try_from(metadata.len()).ok()?,
-            modified_nanoseconds: i64::try_from(modified.as_nanos()).ok()?,
-        })
+/// A new or changed file, with the root it belongs to and the stamp seen when listing it.
+struct FileToRead {
+    root: PathBuf,
+    path: PathBuf,
+    stamp: FileStamp,
+}
+
+impl PendingChanges {
+    /// Queues `file` for reading unless its stamp is the one stored (`known_stamp`). A file
+    /// whose stamp cannot be read is reported, not read.
+    fn consider(
+        &mut self,
+        root: &Path,
+        file: ListedFile,
+        known_stamp: Option<FileStamp>,
+        errors: &mut Vec<String>,
+    ) {
+        let Some(stamp) = file.stamp else {
+            errors.push(format!("{} : fichier illisible", file.path.display()));
+            return;
+        };
+        if known_stamp == Some(stamp) || !self.queued.insert(file.path.clone()) {
+            return;
+        }
+        self.to_read.push(FileToRead {
+            root: root.to_owned(),
+            path: file.path,
+            stamp,
+        });
     }
+}
+
+/// A `tracks` row reduced to its path and stamp.
+fn path_and_stamp(row: &Row<'_>) -> rusqlite::Result<(PathBuf, FileStamp)> {
+    Ok((
+        PathBuf::from(row.get::<_, String>(0)?),
+        FileStamp {
+            size: row.get(1)?,
+            modified_nanoseconds: row.get(2)?,
+        },
+    ))
+}
+
+fn upsert_track(
+    connection: &Connection,
+    root: &Path,
+    track: &MusicFile,
+    stamp: FileStamp,
+) -> Result<(), LibraryError> {
+    connection
+        .prepare_cached(
+            "INSERT INTO tracks (path, root, file_size, modified_nanoseconds, title, album, artist,
+                                 disc_number, track_number, sample_rate_hz, bits_per_sample,
+                                 duration_seconds, artwork_hash, year, sort_album,
+                                 sort_album_artist, genre, added_seconds, codec, is_lossy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     ?19, ?20)
+             ON CONFLICT (path) DO UPDATE SET
+                year = excluded.year, sort_album = excluded.sort_album,
+                sort_album_artist = excluded.sort_album_artist, genre = excluded.genre,
+                root = excluded.root, file_size = excluded.file_size,
+                modified_nanoseconds = excluded.modified_nanoseconds, title = excluded.title,
+                album = excluded.album, artist = excluded.artist,
+                disc_number = excluded.disc_number, track_number = excluded.track_number,
+                sample_rate_hz = excluded.sample_rate_hz,
+                bits_per_sample = excluded.bits_per_sample,
+                codec = excluded.codec, is_lossy = excluded.is_lossy,
+                duration_seconds = excluded.duration_seconds,
+                artwork_hash = excluded.artwork_hash",
+        )?
+        .execute(params![
+            path_text(&track.path),
+            path_text(root),
+            stamp.size,
+            stamp.modified_nanoseconds,
+            track.title,
+            track.album,
+            track.artist,
+            sql_integer(track.disc_number),
+            sql_integer(track.track_number),
+            track.sample_rate_hz,
+            track.bits_per_sample,
+            sql_integer(track.duration_seconds),
+            track.artwork.as_ref().map(ArtworkId::as_str),
+            track.year,
+            track.sort_album,
+            track.sort_album_artist,
+            track.genre,
+            now_seconds(),
+            track.codec,
+            track.is_lossy,
+        ])?;
+    Ok(())
+}
+
+/// Stores a cover once, under its id, and returns the id.
+fn store_artwork(connection: &Connection, bytes: &[u8]) -> Result<ArtworkId, LibraryError> {
+    let artwork = ArtworkId::of_bytes(bytes);
+    insert_artwork(connection, &artwork, bytes)?;
+    Ok(artwork)
+}
+
+fn insert_artwork(
+    connection: &Connection,
+    artwork: &ArtworkId,
+    bytes: &[u8],
+) -> Result<(), LibraryError> {
+    connection
+        .prepare_cached("INSERT OR IGNORE INTO artworks (hash, data) VALUES (?1, ?2)")?
+        .execute(params![artwork.as_str(), bytes])?;
+    Ok(())
 }
 
 /// SQLite integers are signed 64-bit; counts beyond that range (never met in tags) saturate.

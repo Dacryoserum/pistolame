@@ -110,10 +110,12 @@ impl ArtistPhotoWorker {
                         } else {
                             look_up(&artist)
                         };
-                        if let Ok(mut store) = pistolame_library::LibraryStore::open(&database) {
-                            // A failed write only means asking again next time.
-                            let _ = store.set_artist_image(&artist, image.as_deref());
-                        }
+                        // A failed write only means asking again next time; the photo is then
+                        // not reported either, since the UI finds covers in the library.
+                        let is_stored = pistolame_library::LibraryStore::open(&database)
+                            .and_then(|mut store| store.set_artist_image(&artist, image.as_deref()))
+                            .is_ok();
+                        let image = image.filter(|_| is_stored);
                         if found.send(ArtistPhoto { artist, image }).is_err() {
                             return;
                         }
@@ -142,7 +144,7 @@ impl ArtistPhotoWorker {
 fn look_up(artist: &str) -> Option<Vec<u8>> {
     let response = fetch(&search_url(artist))?;
     let picture = pick_picture(&response, artist)?;
-    fetch(&picture).filter(|bytes| !bytes.is_empty())
+    fetch(&picture).filter(|bytes| crate::artwork_cache::is_readable_image(bytes))
 }
 
 /// GET with the system's curl, like the updater (no HTTP library in the app).
