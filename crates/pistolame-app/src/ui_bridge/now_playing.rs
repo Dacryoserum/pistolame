@@ -34,7 +34,7 @@ impl UiBridge {
         );
         state.set_lcd_title(track.title.as_str().into());
         state.set_lcd_subtitle(format!("{} — {}", album.artist, album.title).into());
-        state.set_lcd_artwork(album.artwork.clone());
+        self.show_lcd_artwork(album.artwork.as_ref());
         state.set_playing_album_index(album_index as i32);
         state.set_playing_track_index(track_index as i32);
         let path = track.path.clone();

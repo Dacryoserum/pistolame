@@ -25,17 +25,18 @@ impl UiBridge {
         let handle = self.clone();
         state.on_playlist_editor_choose_artwork(move || {
             if let Some((bytes, image)) = handle.pick_cover_image() {
+                handle.artwork_slots.playlist_editor.take_over();
                 if let Some(window) = handle.window.upgrade() {
                     window
                         .global::<AppState>()
-                        .set_playlist_editor_artwork(image.clone());
+                        .set_playlist_editor_artwork(image);
                 }
-                *handle.pending_playlist_artwork.borrow_mut() =
-                    PendingArtwork::Chosen { bytes, image };
+                *handle.pending_playlist_artwork.borrow_mut() = PendingArtwork::Chosen { bytes };
             }
         });
         let handle = self.clone();
         state.on_playlist_editor_remove_artwork(move || {
+            handle.artwork_slots.playlist_editor.take_over();
             if let Some(window) = handle.window.upgrade() {
                 window
                     .global::<AppState>()
@@ -65,19 +66,24 @@ impl UiBridge {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        let items: Vec<PlaylistItem> = self
+        let items: Vec<(PlaylistItem, Option<ArtworkId>)> = self
             .playlists
             .borrow()
             .iter()
-            .map(|playlist| PlaylistItem {
-                name: playlist.name.as_str().into(),
-                track_count: playlist.track_paths.len() as i32,
-                artwork: self.artwork_image(playlist.artwork.as_ref()),
+            .map(|playlist| {
+                let item = PlaylistItem {
+                    name: playlist.name.as_str().into(),
+                    track_count: playlist.track_paths.len() as i32,
+                    artwork: slint::Image::default(),
+                };
+                (item, playlist.artwork.clone())
             })
             .collect();
         window
             .global::<AppState>()
-            .set_playlists(ModelRc::new(VecModel::from(items)));
+            .set_playlists(lazy_artwork_model(&self.artwork, items, |item, image| {
+                item.artwork = image
+            }));
         self.refresh_playlist_view();
     }
 
@@ -157,7 +163,11 @@ impl UiBridge {
         let count = rows.len();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_title(playlist.name.as_str().into());
-            state.set_playlist_artwork(self.artwork_image(playlist.artwork.as_ref()));
+            self.show_artwork_in(
+                &self.artwork_slots.playlist_page,
+                playlist.artwork.as_ref(),
+                |state, image| state.set_playlist_artwork(image),
+            );
         }
         state.set_playlist_meta(
             format!(
@@ -281,7 +291,11 @@ impl UiBridge {
         let state = window.global::<AppState>();
         if let Some(playlist) = self.playlists.borrow().get(index) {
             state.set_playlist_editor_name(playlist.name.as_str().into());
-            state.set_playlist_editor_artwork(self.artwork_image(playlist.artwork.as_ref()));
+            self.show_artwork_in(
+                &self.artwork_slots.playlist_editor,
+                playlist.artwork.as_ref(),
+                |state, image| state.set_playlist_editor_artwork(image),
+            );
         }
         *self.pending_playlist_artwork.borrow_mut() = PendingArtwork::Unchanged;
         state.set_is_playlist_editor_open(true);
@@ -323,7 +337,9 @@ impl UiBridge {
                 }
                 match artwork {
                     PendingArtwork::Unchanged => {}
-                    PendingArtwork::Chosen { bytes, .. } => playlist.artwork = Some(bytes.into()),
+                    PendingArtwork::Chosen { bytes, .. } => {
+                        playlist.artwork = Some(ArtworkId::of_bytes(&bytes));
+                    }
                     PendingArtwork::Restored => playlist.artwork = None,
                 }
             }

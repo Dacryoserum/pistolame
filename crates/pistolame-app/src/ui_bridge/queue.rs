@@ -28,24 +28,34 @@ impl UiBridge {
             .collect();
         let row = |path: &PathBuf| {
             let (album, track) = locations.get(path.as_path())?;
-            Some(QueueRow {
+            let row = QueueRow {
                 title: track.title.as_str().into(),
                 subtitle: format!("{} — {}", album.artist, album.title).into(),
                 duration_label: presentation::clock(track.duration_seconds).into(),
-                artwork: album.artwork.clone(),
-            })
+                artwork: slint::Image::default(),
+            };
+            Some((row, album.artwork.clone()))
         };
         let rows = |paths: &mut dyn Iterator<Item = &PathBuf>| -> ModelRc<QueueRow> {
-            ModelRc::new(VecModel::from(
-                paths
-                    .take(MAXIMUM_QUEUE_SECTION_ROWS)
-                    .filter_map(row)
-                    .collect::<Vec<_>>(),
-            ))
+            let rows = paths
+                .take(MAXIMUM_QUEUE_SECTION_ROWS)
+                .filter_map(row)
+                .collect::<Vec<_>>();
+            lazy_artwork_model(&self.artwork, rows, |row, image| row.artwork = image)
         };
         let current = queue.current().and_then(row);
         state.set_has_queue_current(current.is_some());
-        state.set_queue_current(current.unwrap_or_default());
+        let (current, current_artwork) = current.unwrap_or_default();
+        state.set_queue_current(current);
+        self.show_artwork_in(
+            &self.artwork_slots.queue_current,
+            current_artwork.as_ref(),
+            |state, image| {
+                let mut current = state.get_queue_current();
+                current.artwork = image;
+                state.set_queue_current(current);
+            },
+        );
         state.set_queue_played(rows(&mut queue.played()));
         state.set_queue_up_next(rows(&mut queue.up_next()));
         state.set_queue_up_next_hidden_count(

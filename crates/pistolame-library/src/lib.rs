@@ -1,17 +1,22 @@
 //! File metadata and the persistent library. Scanning never modifies music files.
 #![forbid(unsafe_code)]
 
+mod artwork;
+mod scan;
 mod store;
 mod watcher;
 
+pub use artwork::ArtworkId;
 pub use store::{
     AlbumKey, AlbumTextOverride, LibraryError, LibrarySnapshot, LibraryStore, Playlist,
     SynchronizationReport,
 };
-pub use watcher::FolderWatcher;
+pub use watcher::{FolderChange, FolderWatcher};
 
-use pistolame_core::{SourceCodec, declared_bits_per_sample, is_supported_audio_file};
+use pistolame_core::{SourceCodec, declared_bits_per_sample};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::{FormatOptions, TrackType, probe::Hint};
 use symphonia::core::io::MediaSourceStream;
@@ -56,8 +61,19 @@ pub struct MusicFile {
     pub play_count: u32,
     /// When playback of the track last started (seconds since the Unix epoch).
     pub last_played_seconds: Option<i64>,
-    /// Encoded embedded artwork, decoded only when an album is displayed.
-    pub artwork: Option<std::sync::Arc<[u8]>>,
+    /// The file's own cover (embedded, or an image beside it). The bytes stay in the library
+    /// database; they are read only when the cover must be drawn.
+    pub artwork: Option<ArtworkId>,
+}
+
+/// What reading one file yields: its metadata, and the bytes of its cover for the library to
+/// store (`track.artwork` is their id).
+#[derive(Clone, Debug)]
+pub struct ScannedTrack {
+    /// The metadata to store.
+    pub track: MusicFile,
+    /// The encoded cover named by `track.artwork`, if any.
+    pub artwork_bytes: Option<Arc<[u8]>>,
 }
 
 /// A file that cannot be indexed. The UI reports it without interrupting other imports.
@@ -78,7 +94,16 @@ pub enum MetadataError {
 ///
 /// # Errors
 /// Returns a typed error for unreadable files or unsupported streams.
-pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
+pub fn read_music_file(path: &Path) -> Result<ScannedTrack, MetadataError> {
+    read_music_file_sharing_covers(path, &SharedCovers::default())
+}
+
+/// Like [`read_music_file`], with the covers of the other files of one synchronization (see
+/// [`SharedCovers`]).
+pub(crate) fn read_music_file_sharing_covers(
+    path: &Path,
+    shared_covers: &SharedCovers,
+) -> Result<ScannedTrack, MetadataError> {
     let stream = MediaSourceStream::new(Box::new(std::fs::File::open(path)?), Default::default());
     let mut hint = Hint::new();
     if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
@@ -132,6 +157,7 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         last_played_seconds: None,
         artwork: None,
     };
+    let mut cover = None;
     if let Some(revision) = reader.metadata().current() {
         let mut album_artist = None;
         let mut years = YearCandidates::default();
@@ -170,16 +196,77 @@ pub fn read_music_file(path: &Path) -> Result<MusicFile, MetadataError> {
         }
         file.year = years.release.or(years.recording).or(years.original);
         // The metadata parsers bound individual blocks; only one cover is retained.
-        file.artwork = revision
-            .media
-            .visuals
-            .first()
-            .map(|visual| visual.data.to_vec().into());
+        cover = revision.media.visuals.first().map(|visual| {
+            let bytes: Arc<[u8]> = visual.data.to_vec().into();
+            (ArtworkId::of_bytes(&bytes), bytes)
+        });
     }
-    if file.artwork.is_none() {
-        file.artwork = directory_cover(path);
+    if cover.is_none()
+        && let Some(folder) = path.parent()
+    {
+        cover = shared_covers.cover_of(folder);
     }
-    Ok(file)
+    let (artwork, artwork_bytes) = cover.unzip();
+    // Only the first file with this cover keeps its bytes, to store them once: the others
+    // would hold identical megabytes until their batch is written.
+    let artwork_bytes =
+        artwork_bytes.filter(|_| artwork.as_ref().is_some_and(|id| shared_covers.claim(id)));
+    file.artwork = artwork;
+    Ok(ScannedTrack {
+        track: file,
+        artwork_bytes,
+    })
+}
+
+/// A cover with its id.
+type IdentifiedCover = (ArtworkId, Arc<[u8]>);
+
+/// What the threads of one synchronization share about covers: the cover image found beside
+/// the audio, by folder (an album without embedded art would otherwise read `cover.jpg` once
+/// per track), and the covers whose bytes a file already took.
+#[derive(Default)]
+pub(crate) struct SharedCovers {
+    by_folder: Mutex<HashMap<PathBuf, Option<IdentifiedCover>>>,
+    claimed: Mutex<HashSet<ArtworkId>>,
+}
+
+impl SharedCovers {
+    /// Forgets the folder covers read so far, so their bytes do not stay in memory for the
+    /// whole synchronization (files come in path order: a folder is rarely met again later).
+    pub(crate) fn forget_folders(&self) {
+        self.by_folder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    /// True the first time `artwork` is claimed in this synchronization.
+    fn claim(&self, artwork: &ArtworkId) -> bool {
+        self.claimed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(artwork.clone())
+    }
+
+    /// The cover of `folder` with its id, read (and hashed) at the first request only. Two
+    /// threads asking at once may both read it; the result is the same.
+    fn cover_of(&self, folder: &Path) -> Option<IdentifiedCover> {
+        let known = self
+            .by_folder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(folder)
+            .cloned();
+        if let Some(cover) = known {
+            return cover;
+        }
+        let cover = directory_cover(folder).map(|bytes| (ArtworkId::of_bytes(&bytes), bytes));
+        self.by_folder
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(folder.to_owned(), cover.clone());
+        cover
+    }
 }
 
 /// Years found in the tags, by kind; the release year wins.
@@ -206,55 +293,17 @@ fn non_empty(value: &str) -> Option<String> {
 ///
 /// Errors are kept alongside successful files, so unreadable folders are never silently omitted.
 pub fn collect_audio_paths(roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
-    let mut pending = roots.to_vec();
-    let mut files = std::collections::BTreeSet::new();
-    let mut errors = Vec::new();
-    while let Some(path) = pending.pop() {
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                errors.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_dir() {
-            match std::fs::read_dir(&path) {
-                Ok(entries) => {
-                    for entry in entries {
-                        match entry {
-                            Ok(entry) => pending.push(entry.path()),
-                            Err(error) => errors.push(format!("{}: {error}", path.display())),
-                        }
-                    }
-                }
-                Err(error) => errors.push(format!("{}: {error}", path.display())),
-            }
-        } else if is_supported_audio_file(&path) && !is_apple_double(&path) {
-            files.insert(path);
-        }
-    }
-    (files.into_iter().collect(), errors)
-}
-
-fn is_apple_double(path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with(APPLE_DOUBLE_PREFIX))
+    let (files, errors) = scan::list_audio_files(roots);
+    (files.into_iter().map(|file| file.path).collect(), errors)
 }
 
 /// Largest cover image accepted, from a folder or chosen by the user (16 MiB, far above any
 /// real album cover, small enough to keep the library light).
 pub const MAX_COVER_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Prefix of AppleDouble files, the metadata companions macOS writes on non-Apple file systems
-/// (`._name.flac`); they are not audio.
-const APPLE_DOUBLE_PREFIX: &str = "._";
-
-/// Prefer conventional cover names, then any JPEG or PNG beside the audio.
-fn directory_cover(path: &Path) -> Option<std::sync::Arc<[u8]>> {
-    let mut pictures: Vec<PathBuf> = std::fs::read_dir(path.parent()?)
+/// Prefer conventional cover names, then any JPEG or PNG in `folder`.
+fn directory_cover(folder: &Path) -> Option<Arc<[u8]>> {
+    let mut pictures: Vec<PathBuf> = std::fs::read_dir(folder)
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -299,7 +348,9 @@ mod tests {
     fn generated_flac_metadata_and_duplicate_roots_are_consistent() {
         let fixture =
             pistolame_core::testing::generate_fixture(&pistolame_core::testing::CD_STEREO);
-        let track = read_music_file(&fixture.path).expect("generated FLAC metadata");
+        let track = read_music_file(&fixture.path)
+            .expect("generated FLAC metadata")
+            .track;
         assert_eq!(track.sample_rate_hz, 44_100);
         assert_eq!(track.bits_per_sample, 16);
         assert_eq!(track.duration_seconds, 3);
@@ -338,7 +389,9 @@ mod tests {
         block.extend_from_slice(&comments);
         bytes.splice(42..42, block);
         std::fs::write(&fixture.path, bytes).expect("tagged fixture");
-        let track = read_music_file(&fixture.path).expect("tagged metadata");
+        let track = read_music_file(&fixture.path)
+            .expect("tagged metadata")
+            .track;
         assert_eq!(track.title, "Test title");
         assert_eq!(track.album, "Test album");
         assert_eq!(track.artist, "Album artist");

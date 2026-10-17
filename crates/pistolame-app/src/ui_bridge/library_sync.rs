@@ -32,12 +32,12 @@ impl UiBridge {
         };
         let mut has_new_photo = false;
         for photo in worker.take_results() {
+            // The worker stored the photo in the library: its id is all the cache needs.
             if let Some(bytes) = photo.image {
-                let image = self.artwork_image(Some(&std::sync::Arc::from(bytes)));
-                if image.size().width > 0 {
-                    self.artist_photos.borrow_mut().insert(photo.artist, image);
-                    has_new_photo = true;
-                }
+                self.artist_photos
+                    .borrow_mut()
+                    .insert(photo.artist, ArtworkId::of_bytes(&bytes));
+                has_new_photo = true;
             }
         }
         if has_new_photo {
@@ -71,20 +71,33 @@ impl UiBridge {
         }
         let sender = self.folder_change_sender.clone();
         // Without a watcher the library still updates at start-up and on "Rescanner".
-        let watcher = FolderWatcher::watch(&roots, move || {
-            let _ = sender.send(());
+        let watcher = FolderWatcher::watch(&roots, move |change| {
+            let _ = sender.send(change);
         })
         .ok();
         *self.folder_watcher.borrow_mut() = watcher.map(|watcher| (roots, watcher));
     }
 
-    /// Synchronizes the library once folder changes have settled (a copy in progress sends
-    /// many events; one pass after the last one is enough).
+    /// Synchronizes the changed files and folders once folder changes have settled (a copy in
+    /// progress sends many events; one pass after the last one is enough).
     pub(super) fn synchronize_after_folder_changes(&self) {
         /// Quiet time after the last change before synchronizing.
         const FOLDER_SETTLE_DELAY: Duration = Duration::from_secs(2);
+        /// Changed paths beyond which everything is synchronized: notify does not report the
+        /// events Windows drops when its buffer overflows, which happens in bursts this large
+        /// (retagging a whole collection), and a full pass is then about as cheap.
+        const MAXIMUM_PATHS_SYNCHRONIZED_ALONE: usize = 500;
         let now = std::time::Instant::now();
-        if self.folder_changes.try_iter().count() > 0 {
+        let mut has_new_change = false;
+        for change in self.folder_changes.try_iter() {
+            has_new_change = true;
+            let mut pending = self.pending_folder_changes.borrow_mut();
+            match change {
+                FolderChange::Paths(paths) => pending.paths.extend(paths),
+                FolderChange::Unknown => pending.needs_everything = true,
+            }
+        }
+        if has_new_change {
             self.last_folder_change.set(Some(now));
         }
         if let Some(last_change) = self.last_folder_change.get()
@@ -92,7 +105,12 @@ impl UiBridge {
             && !self.is_importing.get()
         {
             self.last_folder_change.set(None);
-            self.synchronize_library(Vec::new());
+            let pending = std::mem::take(&mut *self.pending_folder_changes.borrow_mut());
+            if pending.needs_everything || pending.paths.len() > MAXIMUM_PATHS_SYNCHRONIZED_ALONE {
+                self.synchronize_library(Vec::new());
+            } else if !pending.paths.is_empty() {
+                self.synchronize_changed_paths(outermost_paths(pending.paths));
+            }
         }
     }
 
@@ -142,7 +160,6 @@ impl UiBridge {
             self.watch_library_folders();
         }
         if let Some(snapshot) = update.snapshot {
-            *self.thumbnails.borrow_mut() = update.thumbnails;
             self.replace_albums(snapshot);
             if !self.is_session_restored.get() {
                 self.is_session_restored.set(true);
@@ -177,11 +194,7 @@ impl UiBridge {
     /// Rebuilds the albums from a library snapshot, keeping the selected track and the open
     /// album when they still exist.
     pub(super) fn replace_albums(&self, mut snapshot: LibrarySnapshot) {
-        *self.artist_photos.borrow_mut() = std::mem::take(&mut snapshot.artist_images)
-            .into_iter()
-            .map(|(artist, bytes)| (artist, self.artwork_image(Some(&bytes))))
-            .filter(|(_, image)| image.size().width > 0)
-            .collect();
+        *self.artist_photos.borrow_mut() = std::mem::take(&mut snapshot.artist_images);
         let selected_path = self.selected_track.get().and_then(|(album, track)| {
             self.albums
                 .borrow()
@@ -196,7 +209,7 @@ impl UiBridge {
             .map(|album| album.key.clone());
         let mut snapshot = snapshot;
         *self.playlists.borrow_mut() = std::mem::take(&mut snapshot.playlists);
-        let mut albums = albums_from_snapshot(snapshot, &self.thumbnails.borrow());
+        let mut albums = albums_from_snapshot(snapshot);
         let sort = self.album_sort();
         albums.sort_by(|left, right| {
             crate::album_sort::compare_albums(sort, &left.sort_keys, &right.sort_keys)
@@ -261,18 +274,56 @@ impl UiBridge {
             })
             .collect();
         played.sort_by_key(|(_, _, seconds)| std::cmp::Reverse(*seconds));
-        let added: Vec<AlbumCard> = added
+        let added: Vec<_> = added
             .into_iter()
             .take(MAXIMUM_SHELF_ALBUMS)
             .map(card)
             .collect();
-        let played: Vec<AlbumCard> = played
+        let played: Vec<_> = played
             .into_iter()
             .take(MAXIMUM_SHELF_ALBUMS)
             .map(|(index, album, _)| card((index, album)))
             .collect();
         let state = window.global::<AppState>();
-        state.set_recently_added_albums(ModelRc::new(VecModel::from(added)));
-        state.set_recently_played_albums(ModelRc::new(VecModel::from(played)));
+        state.set_recently_added_albums(album_card_model(&self.artwork, added));
+        state.set_recently_played_albums(album_card_model(&self.artwork, played));
+    }
+}
+
+/// `paths` without those inside another of them: synchronizing a folder covers its content.
+fn outermost_paths(paths: std::collections::BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    // Sorted, a folder comes right before what it holds.
+    let mut outermost: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !outermost
+            .last()
+            .is_some_and(|folder| path.starts_with(folder))
+        {
+            outermost.push(path);
+        }
+    }
+    outermost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_inside_another_changed_path_are_left_out() {
+        let paths = [
+            "/m/A/01.flac",
+            "/m/A",
+            "/m/A 2/01.flac",
+            "/m/B/x/02.flac",
+            "/m/B/x",
+        ]
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+        assert_eq!(
+            outermost_paths(paths),
+            ["/m/A", "/m/A 2/01.flac", "/m/B/x"].map(PathBuf::from)
+        );
     }
 }

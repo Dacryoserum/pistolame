@@ -1,4 +1,5 @@
 //! The UI owns this bridge; only commands, events and atomic counters cross into audio threads.
+use crate::artwork_cache::{ArtworkCache, ArtworkSlot, lazy_artwork_model};
 use crate::{
     AlbumCard, AppState, AppWindow, ArtistCard, DetailInfo, LibraryTrackRow, PathStep,
     PlaylistItem, PlaylistTrackRow, QueueRow, TrackAction, TrackRowData, TrackSource, TrackTarget,
@@ -7,7 +8,8 @@ use crate::{presentation, settings::AppSettings};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use pistolame_core::*;
 use pistolame_library::{
-    AlbumKey, AlbumTextOverride, FolderWatcher, LibrarySnapshot, LibraryStore, MusicFile, Playlist,
+    AlbumKey, AlbumTextOverride, ArtworkId, FolderChange, FolderWatcher, LibrarySnapshot,
+    LibraryStore, MusicFile, Playlist,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -46,7 +48,8 @@ struct Album {
     tracks: Vec<MusicFile>,
     /// What the grid's sort looks at (sort tags, year, added and played dates).
     sort_keys: crate::album_sort::AlbumSortKeys,
-    artwork: slint::Image,
+    /// The cover shown: the user's choice, else the files' own.
+    artwork: Option<ArtworkId>,
     /// Whether the user chose this cover (stored in the library, files untouched).
     has_custom_artwork: bool,
 }
@@ -76,20 +79,58 @@ fn distinguishing_labels(albums: &[Album]) -> Vec<Option<String>> {
     presentation::distinguishing_labels(&identities)
 }
 
-/// The grid tile of catalog album `index`, with what tells it apart from a namesake.
-fn album_card(index: usize, album: &Album, distinguishing_label: Option<&str>) -> AlbumCard {
-    AlbumCard {
+/// An album tile, with the cover to draw in it once on screen.
+type AlbumCardRow = (AlbumCard, Option<ArtworkId>);
+
+/// The grid tile of catalog album `index`, with what tells it apart from a namesake, and its
+/// cover (drawn on demand, see `artwork_cache`).
+fn album_card(index: usize, album: &Album, distinguishing_label: Option<&str>) -> AlbumCardRow {
+    let card = AlbumCard {
         catalog_index: index as i32,
         title: album.title.as_str().into(),
         artist: presentation::album_tile_subtitle(&album.artist, distinguishing_label).into(),
-        artwork: album.artwork.clone(),
-    }
+        artwork: slint::Image::default(),
+    };
+    (card, album.artwork.clone())
+}
+
+/// Album tiles whose covers load as they come on screen.
+fn album_card_model(cache: &Rc<ArtworkCache>, cards: Vec<AlbumCardRow>) -> ModelRc<AlbumCard> {
+    lazy_artwork_model(cache, cards, |card, image| card.artwork = image)
+}
+
+/// The image properties that show one cover at a time; see `ArtworkCache::show`.
+#[derive(Default)]
+struct ArtworkSlots {
+    lcd: ArtworkSlot,
+    album_page: ArtworkSlot,
+    album_editor: ArtworkSlot,
+    playlist_page: ArtworkSlot,
+    playlist_editor: ArtworkSlot,
+    artist_page: ArtworkSlot,
+    queue_current: ArtworkSlot,
+}
+
+/// What a library synchronization covers.
+enum SynchronizationScope {
+    /// Every root, after remembering these new ones (none at start-up or after a rescan).
+    Everything { new_roots: Vec<PathBuf> },
+    /// Only these files or folders, reported changed by the folder watcher.
+    ChangedPaths(Vec<PathBuf>),
+}
+
+/// Folder changes seen since the last synchronization, merged until they settle.
+#[derive(Default)]
+struct PendingFolderChanges {
+    paths: std::collections::BTreeSet<PathBuf>,
+    /// The watcher lost events: only a full synchronization is safe.
+    needs_everything: bool,
 }
 
 /// A cover change waiting for "Enregistrer" in the album editor.
 enum PendingArtwork {
     Unchanged,
-    Chosen { bytes: Vec<u8>, image: slint::Image },
+    Chosen { bytes: Vec<u8> },
     Restored,
 }
 
@@ -128,8 +169,6 @@ struct LibraryUpdate {
     errors: Vec<String>,
     /// The last message of a synchronization: the worker is done.
     is_final: bool,
-    /// The covers of `snapshot`, decoded by the worker.
-    thumbnails: crate::artwork_thumbnails::SnapshotThumbnails,
 }
 
 pub(crate) struct UiBridge {
@@ -184,10 +223,11 @@ pub(crate) struct UiBridge {
     favorites: RefCell<std::collections::HashSet<PathBuf>>,
     /// Watches the library folders; its signals arrive on `folder_changes`.
     folder_watcher: RefCell<Option<(Vec<PathBuf>, FolderWatcher)>>,
-    folder_change_sender: crossbeam_channel::Sender<()>,
-    folder_changes: crossbeam_channel::Receiver<()>,
+    folder_change_sender: crossbeam_channel::Sender<FolderChange>,
+    folder_changes: crossbeam_channel::Receiver<FolderChange>,
     /// When the last change was seen; the library is synchronized once changes settle.
     last_folder_change: Cell<Option<std::time::Instant>>,
+    pending_folder_changes: RefCell<PendingFolderChanges>,
     /// Files and folders dropped on the window, imported together at the next tick.
     dropped_paths: crate::file_drop::DroppedPaths,
     /// The archive being downloaded and its announced size, to show the progress.
@@ -198,8 +238,8 @@ pub(crate) struct UiBridge {
     analyses: RefCell<std::collections::VecDeque<crate::analysis_worker::AnalysisOutcome>>,
     /// Looks artist photos up online; `None` without a library database.
     artist_photo_worker: Option<crate::artist_photos::ArtistPhotoWorker>,
-    /// Decoded artist photos, by artist name.
-    artist_photos: RefCell<std::collections::HashMap<String, slint::Image>>,
+    /// Artist photos, by artist name.
+    artist_photos: RefCell<std::collections::HashMap<String, ArtworkId>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
     /// replace it with an empty one.
     is_session_restored: Cell<bool>,
@@ -219,10 +259,9 @@ pub(crate) struct UiBridge {
     album_resume_points: RefCell<Vec<crate::album_resume::ResumePoint>>,
     /// Counts the messages shown, so a notice's timer only hides its own notice.
     notice_generation: Rc<Cell<u64>>,
-    /// The covers of the latest library snapshot, decoded and scaled by the library worker.
-    thumbnails: RefCell<crate::artwork_thumbnails::SnapshotThumbnails>,
-    /// Covers already decoded, kept by content between library updates.
-    thumbnail_cache: crate::artwork_thumbnails::ThumbnailCache,
+    /// Covers, loaded as they come on screen.
+    artwork: Rc<ArtworkCache>,
+    artwork_slots: ArtworkSlots,
 }
 
 /// Smallest progress change (fraction of the track) worth pushing to the UI; below this the
@@ -299,6 +338,7 @@ impl UiBridge {
             folder_change_sender,
             folder_changes,
             last_folder_change: Cell::new(None),
+            pending_folder_changes: RefCell::default(),
             dropped_paths: Rc::default(),
             update_download: RefCell::new(None),
             analysis_worker: crate::analysis_worker::AnalysisWorker::start(),
@@ -317,10 +357,15 @@ impl UiBridge {
             sleep_timer: Cell::default(),
             album_resume_points: RefCell::default(),
             notice_generation: Rc::default(),
-            thumbnails: RefCell::default(),
-            thumbnail_cache: crate::artwork_thumbnails::ThumbnailCache::beside(
-                library_database.as_deref(),
-            ),
+            artwork: ArtworkCache::start(library_database.clone(), {
+                let window = window.as_weak();
+                move || {
+                    window
+                        .upgrade()
+                        .map(|window| window.window().scale_factor())
+                }
+            }),
+            artwork_slots: ArtworkSlots::default(),
         });
         let state = window.global::<AppState>();
         state.set_signal_title("Aucune lecture".into());
@@ -345,9 +390,27 @@ impl UiBridge {
         Ok(bridge)
     }
 
-    /// The image of a cover: its thumbnail from the library worker, or a decode now.
-    fn artwork_image(&self, bytes: Option<&std::sync::Arc<[u8]>>) -> slint::Image {
-        self.thumbnails.borrow().image(bytes)
+    /// Shows `artwork` in the image property `set` writes, through `slot` (see
+    /// `ArtworkCache::show`).
+    fn show_artwork_in(
+        &self,
+        slot: &ArtworkSlot,
+        artwork: Option<&ArtworkId>,
+        set: fn(&AppState<'_>, slint::Image),
+    ) {
+        let window = self.window.clone();
+        self.artwork.show(slot, artwork, move |image| {
+            if let Some(window) = window.upgrade() {
+                set(&window.global::<AppState>(), image);
+            }
+        });
+    }
+
+    /// Shows `artwork` on the LCD (and the cassette).
+    fn show_lcd_artwork(&self, artwork: Option<&ArtworkId>) {
+        self.show_artwork_in(&self.artwork_slots.lcd, artwork, |state, image| {
+            state.set_lcd_artwork(image)
+        });
     }
 
     /// The window position and size saved at the last exit.
@@ -828,34 +891,40 @@ impl UiBridge {
     /// Remembers `new_roots` (none at start-up), shows the stored library at once, then
     /// rescans every root in the background (docs/plans/persistent-library.md).
     pub(crate) fn synchronize_library(&self, new_roots: Vec<PathBuf>) {
+        let status = if new_roots.is_empty() {
+            "Mise à jour de la bibliothèque…"
+        } else {
+            "Lecture des fichiers…"
+        };
+        self.start_synchronization(SynchronizationScope::Everything { new_roots }, status);
+    }
+
+    /// Brings the library up to date for the files and folders the watcher reported only.
+    fn synchronize_changed_paths(&self, paths: Vec<PathBuf>) {
+        self.start_synchronization(
+            SynchronizationScope::ChangedPaths(paths),
+            "Mise à jour de la bibliothèque…",
+        );
+    }
+
+    fn start_synchronization(&self, scope: SynchronizationScope, status: &str) {
         let Some(database) = self.library_database.clone() else {
             self.message("Aucun dossier pour enregistrer la bibliothèque.".into());
             return;
         };
         self.is_importing.set(true);
         if let Some(window) = self.window.upgrade() {
-            window.global::<AppState>().set_import_status(
-                if new_roots.is_empty() {
-                    "Mise à jour de la bibliothèque…"
-                } else {
-                    "Lecture des fichiers…"
-                }
-                .into(),
-            );
+            window.global::<AppState>().set_import_status(status.into());
         }
         let sender = self.import_sender.clone();
-        let thumbnail_cache = self.thumbnail_cache.clone();
         let result = std::thread::Builder::new()
             .name("pistolame-library".into())
             .spawn(move || {
-                let outcome =
-                    synchronize_in_background(&database, &new_roots, &sender, &thumbnail_cache);
-                if let Err(error) = outcome {
+                if let Err(error) = synchronize_in_background(&database, scope, &sender) {
                     let _ = sender.send(LibraryUpdate {
                         snapshot: None,
                         errors: vec![error.to_string()],
                         is_final: true,
-                        thumbnails: Default::default(),
                     });
                 }
             });
@@ -991,7 +1060,7 @@ impl UiBridge {
                 state.set_integrity_digest("".into());
                 state.set_md5_label("En cours".into());
                 state.set_has_current_track(false);
-                state.set_lcd_artwork(slint::Image::default());
+                self.show_lcd_artwork(None);
                 state.set_lcd_subtitle("".into());
                 state.set_playing_album_index(-1);
                 state.set_playing_track_index(-1);
@@ -1083,34 +1152,40 @@ impl UiBridge {
     }
 }
 
-/// The worker side of `synchronize_library`: the stored library first, then the rescan.
+/// The worker side of a synchronization: for everything, the stored library first, then the
+/// rescan (and the cleanup of thumbnails of covers gone); for changed paths, those only. The
+/// library is sent again only if something changed.
 fn synchronize_in_background(
     database: &std::path::Path,
-    new_roots: &[PathBuf],
+    scope: SynchronizationScope,
     sender: &Sender<LibraryUpdate>,
-    thumbnail_cache: &crate::artwork_thumbnails::ThumbnailCache,
 ) -> Result<(), pistolame_library::LibraryError> {
-    use crate::artwork_thumbnails::SnapshotThumbnails;
     let mut store = LibraryStore::open(database)?;
-    store.add_roots(new_roots)?;
-    let snapshot = store.snapshot()?;
-    let _ = sender.send(LibraryUpdate {
-        thumbnails: SnapshotThumbnails::of(&snapshot, thumbnail_cache),
-        snapshot: Some(snapshot),
-        errors: Vec::new(),
-        is_final: false,
-    });
-    let report = store.synchronize()?;
+    let report = match scope {
+        SynchronizationScope::Everything { new_roots } => {
+            store.add_roots(&new_roots)?;
+            let _ = sender.send(LibraryUpdate {
+                snapshot: Some(store.snapshot()?),
+                errors: Vec::new(),
+                is_final: false,
+            });
+            let report = store.synchronize()?;
+            if let Some(folder) = crate::artwork_cache::thumbnail_folder(database) {
+                crate::artwork_cache::remove_unused_thumbnails(
+                    &folder,
+                    &store.stored_artwork_ids()?,
+                );
+            }
+            report
+        }
+        SynchronizationScope::ChangedPaths(paths) => store.synchronize_paths(&paths)?,
+    };
     let snapshot = if report.has_changed {
         Some(store.snapshot()?)
     } else {
         None
     };
     let _ = sender.send(LibraryUpdate {
-        thumbnails: snapshot
-            .as_ref()
-            .map(|snapshot| SnapshotThumbnails::of(snapshot, thumbnail_cache))
-            .unwrap_or_default(),
         snapshot,
         errors: report.errors,
         is_final: true,
@@ -1120,10 +1195,7 @@ fn synchronize_in_background(
 
 /// Groups tracks into albums (same folder, same album tag), tracks in disc/track order. The
 /// chosen cover wins over the files' own cover.
-fn albums_from_snapshot(
-    snapshot: LibrarySnapshot,
-    thumbnails: &crate::artwork_thumbnails::SnapshotThumbnails,
-) -> Vec<Album> {
+fn albums_from_snapshot(snapshot: LibrarySnapshot) -> Vec<Album> {
     let mut albums: Vec<Album> = Vec::new();
     let mut positions: std::collections::HashMap<AlbumKey, usize> =
         std::collections::HashMap::new();
@@ -1140,7 +1212,7 @@ fn albums_from_snapshot(
                 key,
                 tracks: Vec::new(),
                 sort_keys: crate::album_sort::AlbumSortKeys::default(),
-                artwork: slint::Image::default(),
+                artwork: None,
                 has_custom_artwork: false,
             });
             albums.len() - 1
@@ -1166,7 +1238,7 @@ fn albums_from_snapshot(
         }
         let custom = snapshot.artwork_overrides.get(&album.key);
         album.has_custom_artwork = custom.is_some();
-        album.artwork = thumbnails.image(custom.or_else(|| original_artwork(&album.tracks)));
+        album.artwork = custom.or_else(|| original_artwork(&album.tracks)).cloned();
         album.sort_keys = sort_keys_of(album);
     }
     albums
@@ -1223,7 +1295,7 @@ fn album_codecs(album: &Album) -> String {
 }
 
 /// The first cover found in an album's files (embedded or beside them).
-fn original_artwork(tracks: &[MusicFile]) -> Option<&std::sync::Arc<[u8]>> {
+fn original_artwork(tracks: &[MusicFile]) -> Option<&ArtworkId> {
     tracks.iter().find_map(|track| track.artwork.as_ref())
 }
 
@@ -1280,18 +1352,18 @@ fn open_in_browser(url: &str) {
     let _ = command.arg(url).spawn();
 }
 
-/// Artist cards from the albums: one per album artist (as displayed), natural order, with the
-/// cover of their newest album that has one.
+/// Artist cards from the albums: one per album artist (as displayed), natural order, with their
+/// photo, else the cover of their newest album that has one (drawn on demand).
 fn artist_cards(
     albums: &[Album],
-    photos: &std::collections::HashMap<String, slint::Image>,
-) -> Vec<ArtistCard> {
-    struct ArtistEntry {
+    photos: &std::collections::HashMap<String, ArtworkId>,
+) -> Vec<(ArtistCard, Option<ArtworkId>)> {
+    struct ArtistEntry<'album> {
         album_count: usize,
         newest_year: Option<u32>,
-        artwork: slint::Image,
+        artwork: Option<&'album ArtworkId>,
     }
-    let mut by_artist: std::collections::HashMap<&str, ArtistEntry> =
+    let mut by_artist: std::collections::HashMap<&str, ArtistEntry<'_>> =
         std::collections::HashMap::new();
     for (album, artist) in albums
         .iter()
@@ -1302,30 +1374,34 @@ fn artist_cards(
             .or_insert_with(|| ArtistEntry {
                 album_count: 0,
                 newest_year: None,
-                artwork: slint::Image::default(),
+                artwork: None,
             });
         entry.album_count += 1;
-        let has_artwork = album.artwork.size().width > 0;
-        let has_no_artwork_yet = entry.artwork.size().width == 0;
         let year = album_year(album);
-        if has_artwork && (has_no_artwork_yet || year > entry.newest_year) {
-            entry.artwork = album.artwork.clone();
+        if let Some(artwork) = &album.artwork
+            && (entry.artwork.is_none() || year > entry.newest_year)
+        {
+            entry.artwork = Some(artwork);
             entry.newest_year = year;
         }
     }
-    let mut artists: Vec<(&str, ArtistEntry)> = by_artist.into_iter().collect();
+    let mut artists: Vec<(&str, ArtistEntry<'_>)> = by_artist.into_iter().collect();
     artists.sort_by(|left, right| crate::album_sort::natural_compare(left.0, right.0));
     artists
         .into_iter()
-        .map(|(name, entry)| ArtistCard {
-            name: name.into(),
-            detail: format!(
-                "{} album{}",
-                entry.album_count,
-                if entry.album_count == 1 { "" } else { "s" }
-            )
-            .into(),
-            artwork: photos.get(name).cloned().unwrap_or(entry.artwork),
+        .map(|(name, entry)| {
+            let card = ArtistCard {
+                name: name.into(),
+                detail: format!(
+                    "{} album{}",
+                    entry.album_count,
+                    if entry.album_count == 1 { "" } else { "s" }
+                )
+                .into(),
+                artwork: slint::Image::default(),
+            };
+            let artwork = photos.get(name).or(entry.artwork).cloned();
+            (card, artwork)
         })
         .collect()
 }
