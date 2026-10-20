@@ -6,6 +6,7 @@ mod album_artists;
 mod album_resume;
 mod album_sort;
 mod analysis_worker;
+mod artist_photo_search;
 mod artist_photos;
 mod artwork_cache;
 mod authenticity;

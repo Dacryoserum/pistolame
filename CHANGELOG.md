@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.7
+
+### Features
+- choose an artist's photo: click the photo on their page to search Deezer (their name is searched at once, any other name can be typed), see the artists found with their fan counts and pick one, or import an image file; a photo chosen by hand is never replaced by the automatic lookup
+
+### Fixes
+- "Renommer l'artiste": the help text is no longer cut, and "Réunir avec" sits under it instead of over the buttons
+
 ## 0.6.6
 
 ### Features

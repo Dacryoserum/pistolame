@@ -1369,12 +1369,23 @@ export component AlbumsGrid inherits Rectangle {
         visible: AppState.albums.length > 0;
         text: AppState.albums.length + (AppState.albums.length == 1 ? " album" : " albums");
     }
+    // The photo opens "Photo de l'artiste"; a pencil shows while hovered.
     if root.is-artist-page: Rectangle {
         x: 60px; y: 24px; width: 148px; height: 148px;
         border-radius: 74px;
         clip: true;
         background: Tokens.surface-field;
+        accessible-role: button;
+        accessible-label: "Changer la photo de l’artiste";
+        accessible-action-default => { AppState.begin-artist-photo-edit(); }
         Image { width: parent.width; height: parent.height; source: AppState.artist-page-photo; image-fit: cover; }
+        Rectangle {
+            background: #00000080;
+            opacity: photo-touch.has-hover ? 1 : 0;
+            animate opacity { duration: 120ms; easing: ease-out-quint; }
+            Icon { width: 28px; height: 28px; source: Icons.pencil-simple; colorize: #ffffff; }
+        }
+        photo-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.begin-artist-photo-edit(); } }
     }
     if root.is-artist-page: VerticalLayout {
         x: 236px; y: 24px; width: root.width - 236px - 32px; height: 148px;
@@ -2690,16 +2701,19 @@ export component PlaylistEditor inherits Sheet {
 export component ArtistEditor inherits Sheet {
     title: "Renommer l’artiste";
     width: 420px;
-    height: AppState.artist-editor-namesake != "" ? 214px : 184px;
+    // Room for the field, two lines of help, the merge link when shown, then the buttons.
+    height: AppState.artist-editor-namesake != "" ? 250px : 220px;
     LabeledField { x: 24px; y: 64px; width: root.width - 48px; caption: "NOM"; text <=> AppState.artist-editor-name; }
     Txt {
-        x: 24px; y: 124px; width: root.width - 48px;
-        role: TextRole.callout; color: Tokens.text-secondary; wrap: word-wrap;
+        x: 24px; y: 124px; width: root.width - 48px; height: 32px;
+        role: TextRole.callout; color: Tokens.text-secondary;
+        wrap: word-wrap; overflow: clip; vertical-alignment: top;
         text: "Le nom d’un autre artiste réunit les deux. Les fichiers ne sont pas modifiés.";
     }
     if AppState.artist-editor-namesake != "": Rectangle {
-        x: 24px; y: 154px; width: root.width - 48px; height: 20px;
+        x: 24px; y: 166px; width: root.width - 48px; height: 20px;
         Txt {
+            x: 0; width: parent.width; height: parent.height;
             role: TextRole.callout; vertical-alignment: center;
             text: "Réunir avec « " + AppState.artist-editor-namesake + " »";
             color: namesake-touch.has-hover ? Tokens.accent-hover : Tokens.accent;
@@ -2719,6 +2733,91 @@ export component ArtistEditor inherits Sheet {
         is-primary: true;
         label: "Enregistrer";
         clicked => { AppState.save-artist-edit(); }
+    }
+}
+
+// Picks an artist's photo among Deezer's results for a search, or from an image file.
+export component ArtistPhotoPicker inherits Sheet {
+    title: "Photo de l’artiste";
+    width: 560px;
+    height: 498px;
+    // Four results per row: the dozen Deezer returns fill three rows.
+    property <int> columns: 4;
+    property <length> tile-width: (root.width - 48px) / root.columns;
+    property <length> tile-height: 136px;
+    HorizontalLayout {
+        x: 24px; y: 60px; width: root.width - 48px; height: 30px;
+        spacing: 8px;
+        Rectangle {
+            border-radius: 7px;
+            background: Tokens.surface-field;
+            border-width: query.has-focus ? 2px : 0px;
+            border-color: Tokens.focus-ring;
+            Icon { x: 9px; y: 8px; width: 14px; height: 14px; source: Icons.magnifying-glass; colorize: Tokens.text-secondary; }
+            query := TextInput {
+                x: 30px; width: parent.width - 40px; height: parent.height;
+                single-line: true;
+                vertical-alignment: center;
+                font-family: "Inter";
+                font-size: 13px;
+                color: Tokens.text-primary;
+                selection-background-color: Tokens.accent.with-alpha(0.35);
+                selection-foreground-color: Tokens.text-primary;
+                accessible-label: "Rechercher un artiste";
+                text <=> AppState.artist-photo-query;
+                accepted => { AppState.search-artist-photos(); }
+            }
+        }
+        PillButton { width: 112px; label: "Rechercher"; clicked => { AppState.search-artist-photos(); } }
+    }
+    // Its own band above the grid: a download in progress keeps the results shown.
+    if AppState.artist-photo-status != "": Txt {
+        x: 24px; y: 102px; width: root.width - 48px;
+        role: TextRole.callout; color: Tokens.text-secondary;
+        text: AppState.artist-photo-status;
+    }
+    Flickable {
+        x: 24px; y: 126px; width: root.width - 48px; height: root.height - 126px - 64px;
+        content-height: Math.ceil(AppState.artist-photo-choices.length / root.columns) * root.tile-height;
+        for choice[index] in AppState.artist-photo-choices: Rectangle {
+            x: Math.mod(index, root.columns) * root.tile-width;
+            y: Math.floor(index / root.columns) * root.tile-height;
+            width: root.tile-width;
+            height: root.tile-height;
+            border-radius: 10px;
+            background: choice-touch.has-hover ? Tokens.fill-row-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Choisir " + choice.name;
+            accessible-action-default => { AppState.choose-artist-photo(index); }
+            Rectangle {
+                x: (parent.width - 88px) / 2; y: 8px; width: 88px; height: 88px;
+                border-radius: 44px;
+                clip: true;
+                background: Tokens.surface-field;
+                Image { width: parent.width; height: parent.height; source: choice.artwork; image-fit: cover; }
+            }
+            Txt {
+                x: 6px; y: 100px; width: parent.width - 12px;
+                role: TextRole.callout-medium; horizontal-alignment: center;
+                text: choice.name;
+            }
+            Txt {
+                x: 6px; y: 116px; width: parent.width - 12px; height: 14px;
+                role: TextRole.caption; horizontal-alignment: center; color: Tokens.text-secondary;
+                text: choice.detail;
+            }
+            choice-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.choose-artist-photo(index); } }
+        }
+    }
+    PillButton {
+        x: 24px; y: root.height - 48px;
+        label: "Importer une photo…"; icon: Icons.plus;
+        clicked => { AppState.import-artist-photo(); }
+    }
+    PillButton {
+        x: root.width - 24px - 112px; y: root.height - 48px; width: 112px;
+        label: "Annuler";
+        clicked => { AppState.cancel-artist-photo-edit(); }
     }
 }
 

@@ -748,6 +748,36 @@ impl LibraryStore {
         self.delete_unused_artworks()
     }
 
+    /// Like [`LibraryStore::set_artist_image`], for the automatic lookup: an artist who has a
+    /// photo meanwhile (one the user chose while the lookup was queued) keeps it. Returns
+    /// whether the result was stored.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be written.
+    pub fn record_looked_up_artist_image(
+        &mut self,
+        artist: &str,
+        image: Option<&[u8]>,
+    ) -> Result<bool, LibraryError> {
+        let artwork = match image {
+            Some(bytes) => Some(store_artwork(&self.connection, bytes)?),
+            None => None,
+        };
+        let changed_rows = self.connection.execute(
+            "INSERT INTO artist_images (artist, artwork_hash, checked_seconds) VALUES (?1, ?2, ?3)
+             ON CONFLICT (artist) DO UPDATE SET artwork_hash = excluded.artwork_hash,
+                checked_seconds = excluded.checked_seconds
+             WHERE artist_images.artwork_hash IS NULL",
+            params![
+                artist,
+                artwork.as_ref().map(ArtworkId::as_str),
+                now_seconds()
+            ],
+        )?;
+        self.delete_unused_artworks()?;
+        Ok(changed_rows > 0)
+    }
+
     /// The artists of `artists` never looked up, or looked up without result more than
     /// `retry_after_seconds` ago (a photo may have been added online since).
     ///

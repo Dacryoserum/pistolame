@@ -51,7 +51,7 @@ fn search_url(artist: &str) -> String {
 }
 
 /// Encodes everything but unreserved characters (RFC 3986 §2.3).
-fn percent_encode(text: &str) -> String {
+pub(crate) fn percent_encode(text: &str) -> String {
     let mut encoded = String::new();
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
@@ -72,7 +72,12 @@ fn pick_picture(response: &[u8], artist: &str) -> Option<String> {
         .into_iter()
         .find(|candidate| crate::search::normalize(candidate.name.trim()) == wanted)?
         .picture_big
-        .filter(|url| url.starts_with("https://") && !url.contains(MISSING_PICTURE_MARKER))
+        .filter(|url| is_real_picture(url))
+}
+
+/// Whether `url` is a Deezer picture, not its "no picture" placeholder.
+pub(crate) fn is_real_picture(url: &str) -> bool {
+    url.starts_with("https://") && !url.contains(MISSING_PICTURE_MARKER)
 }
 
 /// Names never worth a lookup: placeholders taggers write for compilations or unknowns.
@@ -111,10 +116,13 @@ impl ArtistPhotoWorker {
                             look_up(&artist)
                         };
                         // A failed write only means asking again next time; the photo is then
-                        // not reported either, since the UI finds covers in the library.
+                        // not reported either, since the UI finds covers in the library. A photo
+                        // the user chose meanwhile is kept, and this one not reported.
                         let is_stored = pistolame_library::LibraryStore::open(&database)
-                            .and_then(|mut store| store.set_artist_image(&artist, image.as_deref()))
-                            .is_ok();
+                            .and_then(|mut store| {
+                                store.record_looked_up_artist_image(&artist, image.as_deref())
+                            })
+                            .unwrap_or(false);
                         let image = image.filter(|_| is_stored);
                         if found.send(ArtistPhoto { artist, image }).is_err() {
                             return;
@@ -148,7 +156,7 @@ fn look_up(artist: &str) -> Option<Vec<u8>> {
 }
 
 /// GET with the system's curl, like the updater (no HTTP library in the app).
-fn fetch(url: &str) -> Option<Vec<u8>> {
+pub(crate) fn fetch(url: &str) -> Option<Vec<u8>> {
     let mut command = Command::new("curl");
     command
         .args(["-fsSL", "--max-time", REQUEST_TIMEOUT_SECONDS])

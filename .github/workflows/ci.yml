@@ -36,6 +36,10 @@ jobs:
       - name: Install the toolchain from rust-toolchain.toml
         run: rustup show
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: other branches and tags can read its caches but not each other's,
+          # and their copies filled the 10 GB quota until main's own caches were evicted.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Slint Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libasound2-dev
