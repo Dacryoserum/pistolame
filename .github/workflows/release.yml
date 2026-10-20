@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+    # Builds the packages on main too, only to store the release build cache: a tag can read
+    # the caches saved on the default branch only, so without this every release rebuilt every
+    # dependency from scratch (about 10 minutes on Windows and macOS).
+    branches: [main]
+  # Validates a branch before its pull request is merged (this repository receives no
+  # pull_request events): checks only, no packages.
   workflow_dispatch:
 
 permissions:
@@ -14,10 +20,13 @@ concurrency:
 
 jobs:
   validate:
+    # On main, ci.yml already runs for the same push.
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/ci.yml
 
   package:
     name: Package (${{ matrix.platform }})
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
