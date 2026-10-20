@@ -19,6 +19,7 @@ use std::time::Duration;
 
 mod album_editor;
 mod artist_editor;
+mod artist_photo_picker;
 mod browsing;
 mod library_sync;
 mod media_session;
@@ -239,6 +240,10 @@ pub(crate) struct UiBridge {
     analyses: RefCell<std::collections::VecDeque<crate::analysis_worker::AnalysisOutcome>>,
     /// Looks artist photos up online; `None` without a library database.
     artist_photo_worker: Option<crate::artist_photos::ArtistPhotoWorker>,
+    /// Searches Deezer for the photo the user picks; `None` if its thread cannot start.
+    artist_photo_search: Option<crate::artist_photo_search::ArtistPhotoSearch>,
+    /// The open "Photo de l'artiste" sheet.
+    artist_photo_picker: RefCell<artist_photo_picker::ArtistPhotoPicker>,
     /// Artist photos, by artist name.
     artist_photos: RefCell<std::collections::HashMap<String, ArtworkId>>,
     /// Whether the stored session was read; nothing is saved before, so an early save cannot
@@ -347,6 +352,8 @@ impl UiBridge {
             artist_photo_worker: library_database
                 .clone()
                 .and_then(crate::artist_photos::ArtistPhotoWorker::start),
+            artist_photo_search: crate::artist_photo_search::ArtistPhotoSearch::start(),
+            artist_photo_picker: RefCell::default(),
             artist_photos: RefCell::new(std::collections::HashMap::new()),
             is_session_restored: Cell::new(false),
             last_saved_session: RefCell::new(None),
@@ -619,6 +626,7 @@ impl UiBridge {
         self.connect_selection(&state);
         self.connect_undo(&state);
         self.connect_artist_editor(&state);
+        self.connect_artist_photo_picker(&state);
         self.connect_sleep_timer(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
@@ -957,6 +965,7 @@ impl UiBridge {
         self.synchronize_after_folder_changes();
         self.collect_analyses();
         self.collect_artist_photos();
+        self.collect_artist_photo_search();
         // Dropped files wait for an import in progress to finish.
         if !self.is_importing.get() && !self.dropped_paths.borrow().is_empty() {
             let paths = std::mem::take(&mut *self.dropped_paths.borrow_mut());

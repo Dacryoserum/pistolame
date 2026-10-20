@@ -318,6 +318,17 @@ export global AppState {
     // The same artist written differently ("" when none): one click to merge them.
     in property <string> artist-editor-namesake;
     callback begin-artist-edit();
+    // "Photo de l'artiste" sheet: Deezer results for the query (name, fans, picture).
+    in-out property <bool> is-artist-photo-picker-open;
+    in-out property <string> artist-photo-query;
+    in property <[ArtistCard]> artist-photo-choices;
+    // "Recherche…", a problem, or "" while results are shown.
+    in property <string> artist-photo-status;
+    callback begin-artist-photo-edit();
+    callback search-artist-photos();
+    callback choose-artist-photo(int);
+    callback import-artist-photo();
+    callback cancel-artist-photo-edit();
     callback save-artist-edit();
     callback play-artist(bool);
     // Artist photos looked up online (Réglages).

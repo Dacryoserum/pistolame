@@ -565,6 +565,26 @@ fn favorites_survive_reopening_and_can_be_removed() {
 }
 
 #[test]
+fn a_late_automatic_lookup_never_replaces_a_chosen_photo() {
+    let library = TestLibrary::new("artist-image-chosen", 1);
+    let mut store = library.open();
+    store.set_artist_image("Maes", Some(&[1, 2, 3])).unwrap();
+    assert!(!store.record_looked_up_artist_image("Maes", None).unwrap());
+    assert!(
+        !store
+            .record_looked_up_artist_image("Maes", Some(&[9, 9]))
+            .unwrap()
+    );
+    assert!(store.record_looked_up_artist_image("Other", None).unwrap());
+    let images = store.snapshot().unwrap().artist_images;
+    assert_eq!(images["Maes"], ArtworkId::of_bytes(&[1, 2, 3]));
+    assert_eq!(
+        store.artwork_bytes(&ArtworkId::of_bytes(&[9, 9])).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn artist_photos_are_kept_and_lookups_are_not_repeated() {
     let library = TestLibrary::new("artist-images", 1);
     let mut store = library.open();

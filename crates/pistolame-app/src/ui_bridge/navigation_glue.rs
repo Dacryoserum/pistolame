@@ -161,6 +161,7 @@ impl UiBridge {
         state.get_is_album_editor_open()
             || state.get_is_playlist_editor_open()
             || state.get_is_artist_editor_open()
+            || state.get_is_artist_photo_picker_open()
             || state.get_is_add_to_playlist_open()
     }
 
