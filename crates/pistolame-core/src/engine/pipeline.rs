@@ -34,8 +34,10 @@ pub(crate) struct Pipeline {
     pub(crate) track_id: TrackId,
     pub(crate) source: SourceStreamInfo,
     flush_generation: Arc<AtomicU64>,
-    /// The feeder while no stream holds it (before the first open, while paused, between a
-    /// close and a reopen). `None` while a stream is open.
+    /// The render source while no stream holds it (before the first open, while paused,
+    /// between a close and a reopen): the track chain of the current pipeline, or the feeder
+    /// alone while the pipeline is torn down. `None` while a stream is open, and for a next
+    /// track whose feeder is still kept apart (`build` hands it back separately).
     pub(crate) render_source: Option<Box<dyn RenderSource>>,
     decode_commands: Sender<DecodeCommand>,
     pub(crate) decode_events: Receiver<DecodeEvent>,
@@ -44,6 +46,9 @@ pub(crate) struct Pipeline {
     verifier_thread: Option<JoinHandle<()>>,
     /// `PrefillReached` arrived for the current generation.
     pub(crate) is_prefill_reached: bool,
+    /// `SegmentEnded` without an error arrived for the current generation: the whole rest of
+    /// the track is in the ring, so the next track can be prepared (gapless).
+    pub(crate) is_decoded_to_end: bool,
     /// A stream was opened for this pipeline at least once, so a later open failure is a
     /// failed resume (B8), not a failed start.
     pub(crate) has_opened_stream: bool,
@@ -77,7 +82,9 @@ pub(crate) struct PipelineSetup<'setup> {
 
 impl Pipeline {
     /// Creates the ring, the tap, the feeder, then spawns the verifier and the decode thread.
-    pub(crate) fn build(setup: PipelineSetup<'_>) -> std::io::Result<Pipeline> {
+    /// The feeder is handed back beside the pipeline: the engine gives it to a new track chain,
+    /// or queues it in the current one (gapless).
+    pub(crate) fn build(setup: PipelineSetup<'_>) -> std::io::Result<(Pipeline, DeviceFeeder)> {
         let source = setup.decoder.stream_info().clone();
         let format = source.format;
         let (ring_writer, ring_reader) =
@@ -129,26 +136,54 @@ impl Pipeline {
                 return Err(error);
             }
         };
-        Ok(Pipeline {
+        let pipeline = Pipeline {
             track_id: setup.track_id,
             source,
             flush_generation,
-            render_source: Some(Box::new(feeder)),
+            render_source: None,
             decode_commands,
             decode_events,
             decode_thread: Some(decode_thread),
             verifier_commands,
             verifier_thread: Some(verifier_thread),
             is_prefill_reached: false,
+            is_decoded_to_end: false,
             has_opened_stream: false,
             kept_segment_failure: None,
             stream_ends_baseline: 0,
             format_boundaries_baseline: 0,
-        })
+        };
+        Ok((pipeline, feeder))
     }
 
     pub(crate) fn current_generation(&self) -> u64 {
         self.flush_generation.load(Ordering::Acquire)
+    }
+
+    /// Records a decode event of the current generation (older ones are ignored: a seek made
+    /// them irrelevant). `true` when it is the prefill.
+    pub(crate) fn record_decode_event(&mut self, event: DecodeEvent) -> bool {
+        let current_generation = self.current_generation();
+        match event {
+            DecodeEvent::PrefillReached { flush_generation }
+                if flush_generation == current_generation =>
+            {
+                self.is_prefill_reached = true;
+                true
+            }
+            DecodeEvent::SegmentEnded {
+                flush_generation,
+                error,
+            } if flush_generation == current_generation => {
+                if error.is_some() {
+                    self.kept_segment_failure = error;
+                } else {
+                    self.is_decoded_to_end = true;
+                }
+                false
+            }
+            DecodeEvent::PrefillReached { .. } | DecodeEvent::SegmentEnded { .. } => false,
+        }
     }
 
     /// Seek: a new generation (Release, so the feeder drops every older block), stale blocks
@@ -156,6 +191,7 @@ impl Pipeline {
     pub(crate) fn seek(&mut self, target_frame_index: u64) {
         let flush_generation = self.flush_generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.is_prefill_reached = false;
+        self.is_decoded_to_end = false;
         self.kept_segment_failure = None;
         self.service_render_source();
         let _ = self.decode_commands.send(DecodeCommand::Seek {

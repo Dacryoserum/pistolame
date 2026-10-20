@@ -32,20 +32,135 @@ impl UiBridge {
 
     /// Opens and plays `path`, a track the queue just made current.
     pub(super) fn start_playback(&self, path: PathBuf) {
-        self.resume_position_seconds.set(None);
-        let Some(location) = self.track_location(&path) else {
-            self.message(format!("Morceau introuvable : {}", path.display()));
+        if !self.make_track_current(&path) {
             return;
+        }
+        self.engine.send(EngineCommand::OpenFileAndPlay { path });
+        self.refresh_playlist_view();
+        self.refresh_queue_view();
+    }
+
+    /// Everything a track the queue just made current needs besides being opened: `false`
+    /// when it is not in the library. The engine forgets the next track when a file opens or
+    /// follows, so the next one is planned and announced again.
+    fn make_track_current(&self, path: &std::path::Path) -> bool {
+        self.resume_position_seconds.set(None);
+        let Some(location) = self.track_location(path) else {
+            self.message(format!("Morceau introuvable : {}", path.display()));
+            return false;
         };
         self.selected_track.set(Some(location));
         self.should_advance.set(true);
         self.stream_end_baseline
             .set(self.engine.counters().stream_ends_reached);
+        self.planned_shuffle_position.set(None);
+        self.announced_next_track.borrow_mut().take();
         self.message(String::new());
-        self.record_play(&path, location);
-        self.engine.send(EngineCommand::OpenFileAndPlay { path });
+        self.record_play(path, location);
+        true
+    }
+
+    /// The engine went on with the announced track without a gap: the queue moves to it the
+    /// way `advance_after_end` would have. If the queue changed in between, what it says now
+    /// plays instead. `stream_ends_baseline` comes from the engine: a short track may already
+    /// have ended when this runs, and its end must still advance the queue.
+    pub(super) fn follow_gapless_advance(&self, path: PathBuf, stream_ends_baseline: u64) {
+        self.forget_album_when_finished();
+        let (is_shuffle_on, is_repeat_on) = self.playback_modes();
+        let shuffled_position = self.shuffled_position_for_next(is_shuffle_on);
+        let queued = self
+            .play_queue
+            .borrow_mut()
+            .advance(shuffled_position, is_repeat_on);
+        if queued.as_ref() != Some(&path) {
+            match queued {
+                Some(queued) => self.start_playback(queued),
+                None => {
+                    self.should_advance.set(false);
+                    self.engine.send(EngineCommand::Stop);
+                }
+            }
+            return;
+        }
+        if !self.make_track_current(&path) {
+            return;
+        }
+        self.stream_end_baseline.set(stream_ends_baseline);
+        // Set during the last moments of the previous track, after the engine had queued this
+        // one: it still stops right away.
+        if self.should_sleep_after_track() {
+            self.engine.send(EngineCommand::Pause);
+        }
         self.refresh_playlist_view();
         self.refresh_queue_view();
+    }
+
+    /// At each tick: tells the engine which track follows the current one, when it changed, so
+    /// it can prepare it (and play it without a gap). Nothing follows when playback is to stop
+    /// at the end of this track.
+    pub(super) fn announce_next_track(&self) {
+        let next_track = self.next_track_after_end();
+        if *self.announced_next_track.borrow() != next_track {
+            self.engine.send(EngineCommand::SetNextTrack {
+                path: next_track.clone(),
+            });
+            *self.announced_next_track.borrow_mut() = next_track;
+        }
+    }
+
+    /// The track `advance_after_end` would start, without moving the queue.
+    fn next_track_after_end(&self) -> Option<PathBuf> {
+        if !self.should_advance.get()
+            || self.sleep_timer.get() == crate::sleep_timer::SleepTimer::EndOfTrack
+        {
+            return None;
+        }
+        let (is_shuffle_on, is_repeat_on) = self.playback_modes();
+        if !self
+            .play_queue
+            .borrow()
+            .has_next(is_repeat_on, is_shuffle_on)
+        {
+            return None;
+        }
+        let shuffled_position = self.shuffled_position_for_next(is_shuffle_on);
+        self.play_queue
+            .borrow()
+            .peek_next(shuffled_position, is_repeat_on)
+            .cloned()
+    }
+
+    /// (shuffle, repeat), as the transport buttons show them.
+    fn playback_modes(&self) -> (bool, bool) {
+        self.window
+            .upgrade()
+            .map(|window| {
+                let state = window.global::<AppState>();
+                (state.get_is_shuffle_on(), state.get_is_repeat_on())
+            })
+            .unwrap_or_default()
+    }
+
+    /// With shuffle on, the random context position that follows the current track, other than
+    /// the current one. Drawn once per track, so the announced next track and the one played
+    /// are the same.
+    fn shuffled_position_for_next(&self, is_shuffle_on: bool) -> Option<usize> {
+        let (count, position) = {
+            let queue = self.play_queue.borrow();
+            (queue.context_len(), queue.context_position())
+        };
+        if !is_shuffle_on || count < 2 {
+            return None;
+        }
+        if let Some(planned) = self.planned_shuffle_position.get()
+            && planned < count
+            && planned != position
+        {
+            return Some(planned);
+        }
+        let shuffled_position = (position + 1 + self.random_track(count - 1)) % count;
+        self.planned_shuffle_position.set(Some(shuffled_position));
+        Some(shuffled_position)
     }
 
     /// Counts a play in the library and in memory ("Écoutés récemment"). A failed write only
@@ -120,20 +235,8 @@ impl UiBridge {
     /// Plays what comes next. The "next" button wraps around the album or playlist; the end of
     /// a track wraps only when repeat is on.
     pub(super) fn play_next_in_queue(&self, is_manual: bool) {
-        let (is_shuffle_on, is_repeat_on) = self
-            .window
-            .upgrade()
-            .map(|window| {
-                let state = window.global::<AppState>();
-                (state.get_is_shuffle_on(), state.get_is_repeat_on())
-            })
-            .unwrap_or_default();
-        let (count, position) = {
-            let queue = self.play_queue.borrow();
-            (queue.context_len(), queue.context_position())
-        };
-        let shuffled_position = (is_shuffle_on && count > 1)
-            .then(|| (position + 1 + self.random_track(count - 1)) % count);
+        let (is_shuffle_on, is_repeat_on) = self.playback_modes();
+        let shuffled_position = self.shuffled_position_for_next(is_shuffle_on);
         let path = self
             .play_queue
             .borrow_mut()
