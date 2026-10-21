@@ -387,6 +387,9 @@ mod file_play {
                         .map_or("absent".to_owned(), |md5| hex(&md5))
                 );
             }
+            EngineEvent::AdvancedToNextTrack { path, .. } => {
+                println!("event: gapless advance to {}", path.display());
+            }
             EngineEvent::PlaybackStateChanged { state } => {
                 println!("event: state {state:?}");
             }

@@ -5,7 +5,10 @@
 //! source inside the pipeline), the output-mode preference, the selected device and the
 //! current pipeline's control handles. It is the slow path: it may block in `open_stream` and
 //! `close`, and it wakes at least every `ENGINE_POLL_INTERVAL` to poll `status()` and the
-//! counters (B13.3: no wake-up channel from the real-time thread).
+//! counters (B13.3: no wake-up channel from the real-time thread). Gapless playback (the
+//! next track prepared ahead, the track chain) is in `gapless.rs`.
+
+mod gapless;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,11 +24,12 @@ use super::failure_mapping::{
 };
 use super::handle::EngineTuning;
 use super::pipeline::{Pipeline, PipelineSetup};
-use crate::decoder::{DecoderRegistry, SourceStreamInfo};
+use crate::decoder::{AudioDecoder, DecoderRegistry, SourceStreamInfo};
 use crate::engine::{
     EngineCommand, EngineEvent, EngineStartOptions, PlaybackCounters, PlaybackFailureKind,
     PlaybackState,
 };
+use crate::feeder::DeviceFeeder;
 use crate::output_contract::{
     AudioOutput, DeviceAccessMode, OpenPolicy, OpenStreamRequest, OutputDeviceId, OutputDeviceInfo,
     OutputDeviceSelection, OutputError, OutputFailure, OutputModePreference, OutputStream,
@@ -34,7 +38,9 @@ use crate::output_contract::{
 use crate::playback_ring::TrackId;
 use crate::signal_path::{ProcessingState, assess_signal_path};
 use crate::timing::ENGINE_POLL_INTERVAL;
+use crate::track_chain::{TrackChainControl, create_track_chain};
 use crate::verification::{VerificationUpdate, VerifierCommand};
+use gapless::{NextTrack, SwitchAnnouncement};
 
 /// Nanoseconds in one second, to turn a seek position into a frame index with integers only.
 const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
@@ -102,6 +108,14 @@ pub(crate) struct EngineThread {
     last_track_number: u64,
     last_opened_path: Option<PathBuf>,
     pipeline: Option<Pipeline>,
+    /// The engine side of the current pipeline's track chain; `None` once it is torn down.
+    track_chain: Option<TrackChainControl>,
+    /// The track the UI announced to follow the current one (`SetNextTrack`).
+    next_track_path: Option<PathBuf>,
+    /// Its pipeline, once prepared.
+    next_track: Option<NextTrack>,
+    /// Switches to the next track followed so far, so a close can tell it followed one.
+    followed_switch_count: u64,
     stream: Option<Box<dyn OutputStream>>,
     /// When `Play` was received in `Paused`, until the stream plays (resume delay, B13.1 Q6).
     resume_requested_at: Option<Instant>,
@@ -149,6 +163,10 @@ impl EngineThread {
             last_track_number: 0,
             last_opened_path: None,
             pipeline: None,
+            track_chain: None,
+            next_track_path: None,
+            next_track: None,
+            followed_switch_count: 0,
             stream: None,
             resume_requested_at: None,
             is_shutting_down: false,
@@ -164,6 +182,10 @@ impl EngineThread {
                 .pipeline
                 .as_ref()
                 .map_or_else(never, |pipeline| pipeline.decode_events.clone());
+            let next_track_decode_events =
+                self.next_track.as_ref().map_or_else(never, |next_track| {
+                    next_track.pipeline.decode_events.clone()
+                });
             let device_changes = if self.is_watching_device_changes {
                 self.device_changes.clone()
             } else {
@@ -176,6 +198,11 @@ impl EngineThread {
                 recv(decode_events) -> event => match event {
                     Ok(event) => self.handle_decode_event(event),
                     Err(_) => self.on_decode_thread_lost(),
+                },
+                recv(next_track_decode_events) -> event => match event {
+                    Ok(event) => self.handle_next_track_decode_event(event),
+                    // Nothing played from it yet: it is dropped, the UI opens the file itself.
+                    Err(_) => self.discard_next_track(),
                 },
                 recv(self.verification_updates) -> update => {
                     if let Ok(update) = update {
@@ -242,6 +269,7 @@ impl EngineThread {
                 self.reopen_if_playing();
             }
             EngineCommand::OpenFileAndPlay { path } => self.open_file_and_play(path),
+            EngineCommand::SetNextTrack { path } => self.set_next_track(path),
             EngineCommand::Play => self.play(),
             EngineCommand::Pause => self.pause(),
             EngineCommand::Stop => self.stop(),
@@ -259,36 +287,27 @@ impl EngineThread {
         }
     }
 
-    /// Events of an older generation are ignored: a seek made them irrelevant.
+    /// Events of an older generation are ignored: a seek made them irrelevant. Once the track
+    /// is decoded to its end, the next one is prepared.
     pub(crate) fn handle_decode_event(&mut self, event: DecodeEvent) {
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
         };
-        let current_generation = pipeline.current_generation();
-        match event {
-            DecodeEvent::PrefillReached { flush_generation }
-                if flush_generation == current_generation =>
-            {
-                pipeline.is_prefill_reached = true;
-                if self.state == PlaybackState::Opening {
-                    self.open_stream_and_play();
-                }
-            }
-            DecodeEvent::SegmentEnded {
-                flush_generation,
-                error,
-            } if flush_generation == current_generation => {
-                if error.is_some() {
-                    pipeline.kept_segment_failure = error;
-                }
-            }
-            DecodeEvent::PrefillReached { .. } | DecodeEvent::SegmentEnded { .. } => {}
+        let is_prefill_reached = pipeline.record_decode_event(event);
+        let is_decoded_to_end = pipeline.is_decoded_to_end;
+        if is_prefill_reached && self.state == PlaybackState::Opening {
+            self.open_stream_and_play();
+        }
+        if is_decoded_to_end {
+            self.prepare_next_track();
         }
     }
 
     /// Reads the stream's health and the counters (B5.7, B8); while no stream is open, gives
     /// the held feeder a chance to drop stale blocks and push waiting tap events.
     pub(crate) fn poll(&mut self) {
+        self.collect_track_chain_changes(SwitchAnnouncement::ToTheUi, false);
+        self.queue_next_track_in_chain();
         if self.state == PlaybackState::Playing
             && let Some(stream) = self.stream.as_ref()
         {
@@ -314,9 +333,16 @@ impl EngineThread {
         }
     }
 
+    /// A prepared next track of this path starts from its pipeline; any other is discarded.
     fn open_file_and_play(&mut self, path: PathBuf) {
         self.end_current_playback(false);
         self.last_opened_path = Some(path.clone());
+        self.next_track_path = None;
+        if let Some(next_track) = self.take_prepared_next_track(&path) {
+            self.start_prepared_track(next_track);
+            return;
+        }
+        self.discard_next_track();
         let decoder = match self.decoders.open(&path) {
             Ok(decoder) => decoder,
             Err(error) => {
@@ -325,25 +351,14 @@ impl EngineThread {
                 return;
             }
         };
-        self.last_track_number += 1;
-        let track_id = TrackId(self.last_track_number);
+        let track_id = self.allocate_track_id();
         self.emit(EngineEvent::TrackLoaded {
             track_id,
             path,
             source: decoder.stream_info().clone(),
         });
-        let pipeline = Pipeline::build(PipelineSetup {
-            track_id,
-            decoder,
-            tuning: &self.tuning,
-            counters: &self.counters,
-            verification_updates: &self.verification_update_sender,
-        });
-        match pipeline {
-            Ok(pipeline) => {
-                self.pipeline = Some(pipeline);
-                self.set_state(PlaybackState::Opening);
-            }
+        match self.build_pipeline(track_id, decoder) {
+            Ok((pipeline, feeder)) => self.install_current_pipeline(pipeline, feeder),
             Err(error) => {
                 self.emit_failure(
                     PlaybackFailureKind::Internal,
@@ -351,6 +366,41 @@ impl EngineThread {
                 );
                 self.set_state(PlaybackState::Stopped);
             }
+        }
+    }
+
+    /// Track ids start at 1; 0 means "no track" in the track chain.
+    fn allocate_track_id(&mut self) -> TrackId {
+        self.last_track_number += 1;
+        TrackId(self.last_track_number)
+    }
+
+    fn build_pipeline(
+        &self,
+        track_id: TrackId,
+        decoder: Box<dyn AudioDecoder>,
+    ) -> std::io::Result<(Pipeline, DeviceFeeder)> {
+        Pipeline::build(PipelineSetup {
+            track_id,
+            decoder,
+            tuning: &self.tuning,
+            counters: &self.counters,
+            verification_updates: &self.verification_update_sender,
+        })
+    }
+
+    /// Makes `pipeline` the current one, its feeder the first of a new track chain, and opens
+    /// a stream as soon as it is prefilled (at once for a prepared next track).
+    fn install_current_pipeline(&mut self, mut pipeline: Pipeline, feeder: DeviceFeeder) {
+        let (chain, control) =
+            create_track_chain(feeder, pipeline.track_id, pipeline.source.format);
+        pipeline.render_source = Some(Box::new(chain));
+        let is_prefill_reached = pipeline.is_prefill_reached;
+        self.track_chain = Some(control);
+        self.pipeline = Some(pipeline);
+        self.set_state(PlaybackState::Opening);
+        if is_prefill_reached {
+            self.open_stream_and_play();
         }
     }
 
@@ -393,6 +443,8 @@ impl EngineThread {
 
     fn stop(&mut self) {
         self.end_current_playback(false);
+        self.discard_next_track();
+        self.next_track_path = None;
         self.resume_requested_at = None;
         self.set_state(PlaybackState::Stopped);
     }
@@ -407,9 +459,13 @@ impl EngineThread {
         else {
             return;
         };
-        let target_frame_index = target_frame_index(position_in_track, &source);
+        let mut target_frame_index = target_frame_index(position_in_track, &source);
         if self.state == PlaybackState::Playing {
-            self.close_with_discard();
+            // The track the position was meant for ended during the close and the next one took
+            // over: that one restarts from its beginning, whose first frames the close dropped.
+            if self.close_with_discard(SwitchAnnouncement::ToTheUi) {
+                target_frame_index = 0;
+            }
             self.set_state(PlaybackState::Opening);
         }
         if let Some(pipeline) = self.pipeline.as_mut() {
@@ -533,6 +589,7 @@ impl EngineThread {
     /// re-activation; `Play` restarts the track (B8).
     fn on_stream_failure(&mut self, failure: OutputFailure) {
         self.end_current_playback(false);
+        self.discard_next_track();
         self.emit_failure(
             failure_kind_for_stream_failure(failure),
             format!("{failure:?}"),
@@ -543,6 +600,7 @@ impl EngineThread {
 
     fn on_format_boundary(&mut self) {
         self.end_current_playback(false);
+        self.discard_next_track();
         self.emit_failure(
             PlaybackFailureKind::Internal,
             FORMAT_BOUNDARY_DETAIL.to_owned(),
@@ -565,6 +623,7 @@ impl EngineThread {
     /// The decode thread ended without being asked (it panicked): the pipeline cannot go on.
     fn on_decode_thread_lost(&mut self) {
         self.end_current_playback(false);
+        self.discard_next_track();
         self.emit_failure(
             PlaybackFailureKind::Internal,
             "the decode thread stopped unexpectedly".to_owned(),
@@ -575,7 +634,8 @@ impl EngineThread {
     /// `close(PlayOut)`, then the feeder is serviced, then `QueuedAudioLost` if the play-out
     /// did not finish (sent after the service, so the verifier drains every event first).
     fn close_with_play_out(&mut self) {
-        let was_queued_audio_fully_played = self.close_stream(QueuedAudioOnClose::PlayOut);
+        let was_queued_audio_fully_played =
+            self.close_stream(QueuedAudioOnClose::PlayOut, SwitchAnnouncement::ToTheUi);
         if let Some(pipeline) = self.pipeline.as_mut() {
             pipeline.service_render_source();
         }
@@ -584,13 +644,22 @@ impl EngineThread {
         }
     }
 
-    fn close_with_discard(&mut self) {
-        self.close_stream(QueuedAudioOnClose::Discard);
+    /// `true` when the close followed a switch to the next track (see `close_stream`).
+    fn close_with_discard(&mut self, announcement: SwitchAnnouncement) -> bool {
+        let switches_before = self.followed_switch_count;
+        self.close_stream(QueuedAudioOnClose::Discard, announcement);
+        self.followed_switch_count != switches_before
     }
 
     /// Closes the open stream, if any, and keeps its render source in the pipeline. Returns
-    /// `was_queued_audio_fully_played` (`true` when no stream was open).
-    fn close_stream(&mut self, queued_audio: QueuedAudioOnClose) -> bool {
+    /// `was_queued_audio_fully_played` (`true` when no stream was open). A switch the track
+    /// chain made before the close is followed now, so the pipeline is the one that played last;
+    /// `announcement` says whether the UI is told (not when a command replaces the playback).
+    fn close_stream(
+        &mut self,
+        queued_audio: QueuedAudioOnClose,
+        announcement: SwitchAnnouncement,
+    ) -> bool {
         let Some(stream) = self.stream.take() else {
             return true;
         };
@@ -599,6 +668,9 @@ impl EngineThread {
             pipeline.render_source = Some(closed.render_source);
         }
         self.emit(EngineEvent::SignalPathChanged { assessment: None });
+        let was_queued_audio_discarded =
+            queued_audio == QueuedAudioOnClose::Discard || !closed.was_queued_audio_fully_played;
+        self.collect_track_chain_changes(announcement, was_queued_audio_discarded);
         closed.was_queued_audio_fully_played
     }
 
@@ -620,8 +692,12 @@ impl EngineThread {
     /// and revises the result instead of keeping a false `Verified`.
     fn end_current_playback(&mut self, has_track_ended: bool) -> Option<SegmentFailure> {
         let had_open_stream = self.stream.is_some();
-        self.close_with_discard();
+        // The command that ends this playback replaces it: a switch made just before is
+        // followed without telling the UI, which would otherwise move its queue twice.
+        self.close_with_discard(SwitchAnnouncement::Silent);
         let mut pipeline = self.pipeline.take()?;
+        // Its chain goes with it; a next track queued there can no longer follow.
+        self.track_chain = None;
         let has_stream_ended =
             self.counters.snapshot().stream_ends_reached > pipeline.stream_ends_baseline;
         if had_open_stream && has_stream_ended {
@@ -632,13 +708,17 @@ impl EngineThread {
         }
         let outcome = pipeline.tear_down(has_track_ended);
         self.forward_pending_verification_updates();
-        for thread_name in outcome.panicked_threads {
+        self.report_panicked_threads(outcome.panicked_threads);
+        outcome.segment_failure
+    }
+
+    fn report_panicked_threads(&self, panicked_threads: Vec<&'static str>) {
+        for thread_name in panicked_threads {
             self.emit_failure(
                 PlaybackFailureKind::Internal,
                 format!("the {thread_name} thread panicked"),
             );
         }
-        outcome.segment_failure
     }
 
     /// The "Actualiser" button and the refresh after a device failure: re-lists, re-resolves
@@ -902,6 +982,297 @@ mod tests {
         fn emitted(&self) -> Vec<EngineEvent> {
             self.events.try_iter().collect()
         }
+
+        /// Handles the current track's decode events until it is decoded to its end (the next
+        /// track is then prepared), then the next track's until it is prefilled.
+        fn prepare_the_next_track(&mut self) {
+            while !self
+                .engine
+                .pipeline
+                .as_ref()
+                .expect("a current track")
+                .is_decoded_to_end
+            {
+                let event = self
+                    .engine
+                    .pipeline
+                    .as_ref()
+                    .expect("a current track")
+                    .decode_events
+                    .recv_timeout(WAIT)
+                    .expect("the current track decodes to its end");
+                self.engine.handle_decode_event(event);
+            }
+            while !self
+                .engine
+                .next_track
+                .as_ref()
+                .expect("the next track is prepared")
+                .pipeline
+                .is_prefill_reached
+            {
+                let event = self
+                    .engine
+                    .next_track
+                    .as_ref()
+                    .expect("the next track is prepared")
+                    .pipeline
+                    .decode_events
+                    .recv_timeout(WAIT)
+                    .expect("the next track prefills");
+                self.engine.handle_next_track_decode_event(event);
+            }
+        }
+
+        fn is_next_track_queued_in_the_chain(&self) -> bool {
+            self.engine
+                .next_track
+                .as_ref()
+                .is_some_and(|next_track| next_track.feeder.is_none())
+        }
+
+        /// The original PCM of `fixtures`, back to back, packed in the first stream's format.
+        fn expected_bytes(&self, fixtures: &[&crate::testing::GeneratedFixture]) -> Vec<u8> {
+            let render_format = self.controller.negotiated_streams()[0].render_format;
+            let mut expected = Vec::new();
+            for fixture in fixtures {
+                let samples = &fixture.original_interleaved_pcm;
+                let mut bytes = vec![0; samples.len() * usize::from(render_format.container_bytes)];
+                crate::pcm::pack_samples_into_container(
+                    samples,
+                    fixture.format.bits_per_sample,
+                    &render_format,
+                    &mut bytes,
+                );
+                expected.extend(bytes);
+            }
+            expected
+        }
+    }
+
+    /// The played bytes are `expected` followed only by silence.
+    fn assert_played_exactly(played: &[u8], expected: &[u8]) {
+        assert!(played.len() >= expected.len(), "too few bytes played");
+        let (audio, tail) = played.split_at(expected.len());
+        assert!(audio == expected, "played bytes differ from the tracks");
+        assert!(tail.iter().all(|byte| *byte == 0), "only silence after");
+    }
+
+    fn advanced_paths(events: &[EngineEvent]) -> Vec<std::path::PathBuf> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::AdvancedToNextTrack { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// CD_STEREO with another signal, so a track played twice or out of order shows.
+    const CD_STEREO_OTHER: FixtureSpec = FixtureSpec {
+        name: "cd_stereo_other",
+        random_seed: 0x21,
+        ..CD_STEREO
+    };
+    const CD_STEREO_THIRD: FixtureSpec = FixtureSpec {
+        name: "cd_stereo_third",
+        random_seed: 0x31,
+        ..CD_STEREO
+    };
+
+    /// Gapless: the second track's first frame follows the first track's last frame in the
+    /// same stream, bit-exact, with no silence in between.
+    #[test]
+    fn two_tracks_of_the_same_format_play_back_to_back_in_one_stream() {
+        let first = generate_fixture(&CD_STEREO);
+        let second = generate_fixture(&CD_STEREO_OTHER);
+        let mut manual = manual_engine(FakeOutputConfig::default(), whole_track_tuning(&CD_STEREO));
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&first.path);
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(second.path.clone()),
+        });
+        manual.prepare_the_next_track();
+        assert!(manual.is_next_track_queued_in_the_chain());
+
+        manual.render_past_the_end();
+        manual.engine.poll();
+
+        assert_eq!(manual.engine.state, PlaybackState::Stopped);
+        assert_eq!(manual.controller.negotiated_streams().len(), 1);
+        let expected = manual.expected_bytes(&[&first, &second]);
+        assert_played_exactly(&manual.controller.played_bytes(), &expected);
+        let events = manual.emitted();
+        assert_eq!(advanced_paths(&events), vec![second.path.clone()]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::TrackLoaded { path, .. } if *path == second.path
+        )));
+        assert_eq!(manual.counters.snapshot().underrun_events, 0);
+    }
+
+    /// Another format cannot follow in the same stream: the first track ends as usual, then an
+    /// `OpenFileAndPlay` of the announced track plays at once from its prepared pipeline.
+    #[test]
+    fn a_next_track_of_another_format_starts_from_its_prepared_pipeline() {
+        let first = generate_fixture(&CD_STEREO);
+        let second = generate_fixture(&crate::testing::HIRES_48);
+        let mut manual = manual_engine(FakeOutputConfig::default(), whole_track_tuning(&CD_STEREO));
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&first.path);
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(second.path.clone()),
+        });
+        manual.prepare_the_next_track();
+        assert!(!manual.is_next_track_queued_in_the_chain());
+        manual.render_past_the_end();
+        manual.engine.poll();
+        assert_eq!(manual.engine.state, PlaybackState::Stopped);
+
+        manual.controller.hold_after_more_render_calls(1);
+        manual
+            .engine
+            .handle_command(EngineCommand::OpenFileAndPlay {
+                path: second.path.clone(),
+            });
+
+        assert_eq!(
+            manual.engine.state,
+            PlaybackState::Playing,
+            "no decode wait"
+        );
+        let streams = manual.controller.negotiated_streams();
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[1].render_format.sample_rate_hz, 48_000);
+        assert!(advanced_paths(&manual.emitted()).is_empty());
+    }
+
+    /// The UI changed the next track after it was queued: the one taken back never plays, and
+    /// the new one follows instead once the chain has handed the old one back.
+    #[test]
+    fn a_next_track_replaced_before_the_end_is_never_played() {
+        let first = generate_fixture(&CD_STEREO);
+        let replaced = generate_fixture(&CD_STEREO_OTHER);
+        let third = generate_fixture(&CD_STEREO_THIRD);
+        let mut manual = manual_engine(FakeOutputConfig::default(), whole_track_tuning(&CD_STEREO));
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&first.path);
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(replaced.path.clone()),
+        });
+        manual.prepare_the_next_track();
+        assert!(manual.is_next_track_queued_in_the_chain());
+
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(third.path.clone()),
+        });
+        manual.prepare_the_next_track();
+        manual.engine.poll();
+        assert!(
+            !manual.is_next_track_queued_in_the_chain(),
+            "the chain still holds the track taken back"
+        );
+        // One render lets the chain hand the track taken back over; the poll then queues the
+        // new one.
+        manual.controller.hold_after_more_render_calls(1);
+        assert!(manual.controller.wait_until_held(WAIT));
+        manual.engine.poll();
+        assert!(manual.is_next_track_queued_in_the_chain());
+
+        manual.render_past_the_end();
+        manual.engine.poll();
+
+        let expected = manual.expected_bytes(&[&first, &third]);
+        assert_played_exactly(&manual.controller.played_bytes(), &expected);
+        assert_eq!(advanced_paths(&manual.emitted()), vec![third.path.clone()]);
+    }
+
+    /// Plays `first` then `second` through the chain and holds past their end, before any poll
+    /// has seen the switch.
+    fn manual_engine_past_an_unseen_switch(
+        first: &crate::testing::GeneratedFixture,
+        second: &crate::testing::GeneratedFixture,
+    ) -> ManualEngine {
+        let mut manual = manual_engine(FakeOutputConfig::default(), whole_track_tuning(&CD_STEREO));
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&first.path);
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(second.path.clone()),
+        });
+        manual.prepare_the_next_track();
+        manual.render_past_the_end();
+        manual
+    }
+
+    /// Regression: the next track changed after the chain had switched to it, before a poll.
+    /// The playing track must not be torn down; the switch is followed instead.
+    #[test]
+    fn a_next_track_change_after_an_unseen_switch_keeps_the_playing_track() {
+        let first = generate_fixture(&CD_STEREO);
+        let second = generate_fixture(&CD_STEREO_OTHER);
+        let mut manual = manual_engine_past_an_unseen_switch(&first, &second);
+
+        manual
+            .engine
+            .handle_command(EngineCommand::SetNextTrack { path: None });
+        manual.engine.poll();
+
+        let events = manual.emitted();
+        assert_eq!(advanced_paths(&events), vec![second.path.clone()]);
+        assert_eq!(
+            manual.engine.state,
+            PlaybackState::Stopped,
+            "the second track ended"
+        );
+        let expected = manual.expected_bytes(&[&first, &second]);
+        assert_played_exactly(&manual.controller.played_bytes(), &expected);
+    }
+
+    /// Regression: a file opened just after an unseen switch replaces that playback; the UI
+    /// already moved its queue, so the switch is not announced.
+    #[test]
+    fn an_open_after_an_unseen_switch_does_not_announce_it() {
+        let first = generate_fixture(&CD_STEREO);
+        let second = generate_fixture(&CD_STEREO_OTHER);
+        let third = generate_fixture(&CD_STEREO_THIRD);
+        let mut manual = manual_engine_past_an_unseen_switch(&first, &second);
+
+        manual
+            .engine
+            .handle_command(EngineCommand::OpenFileAndPlay {
+                path: third.path.clone(),
+            });
+
+        let events = manual.emitted();
+        assert!(advanced_paths(&events).is_empty());
+        let loaded: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::TrackLoaded { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(loaded.last(), Some(&third.path));
+        assert!(!loaded.contains(&second.path));
+    }
+
+    /// Stop forgets the next track: nothing follows a later start of another file.
+    #[test]
+    fn stop_discards_the_prepared_next_track() {
+        let first = generate_fixture(&CD_STEREO);
+        let second = generate_fixture(&CD_STEREO_OTHER);
+        let mut manual = manual_engine(FakeOutputConfig::default(), whole_track_tuning(&CD_STEREO));
+        manual.controller.hold_after_more_render_calls(1);
+        manual.open_until_playing(&first.path);
+        manual.engine.handle_command(EngineCommand::SetNextTrack {
+            path: Some(second.path.clone()),
+        });
+        manual.prepare_the_next_track();
+
+        manual.engine.handle_command(EngineCommand::Stop);
+
+        assert!(manual.engine.next_track.is_none() && manual.engine.next_track_path.is_none());
+        assert!(manual.engine.track_chain.is_none());
     }
 
     fn last_transmission(events: &[EngineEvent]) -> TransmissionStatus {

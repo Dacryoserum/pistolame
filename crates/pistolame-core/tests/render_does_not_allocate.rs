@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use pistolame_core::{
     ChannelMask, DeviceAccessMode, DeviceFeeder, DeviceSampleFormat, PlaybackCounters,
-    PlaybackRingWriter, RenderOutcome, RenderSource, RenderStreamDescription, SampleBlockHeader,
-    StreamFormat, TapEvent, TrackId, ValidBitsAlignment, VerificationTapReader,
-    create_playback_ring, create_verification_tap,
+    PlaybackRingWriter, QueuedTrack, RenderOutcome, RenderSource, RenderStreamDescription,
+    SampleBlockHeader, StreamFormat, TapEvent, TrackId, ValidBitsAlignment, VerificationTapReader,
+    create_playback_ring, create_track_chain, create_verification_tap,
 };
 
 static ALLOCATOR_CALLS_WHILE_ARMED: AtomicU64 = AtomicU64::new(0);
@@ -143,6 +143,10 @@ fn outcome_slot(outcome: RenderOutcome) -> usize {
 
 impl Scenario {
     fn new(tap_duration: Duration) -> Self {
+        Self::with_counters(tap_duration, Arc::new(PlaybackCounters::new()))
+    }
+
+    fn with_counters(tap_duration: Duration, counters: Arc<PlaybackCounters>) -> Self {
         // 50 ms of ring: blocks of 7 frames wrap the samples ring every few blocks.
         let (ring_writer, ring_reader) =
             create_playback_ring(&source_format(SAMPLE_RATE_HZ), Duration::from_millis(50));
@@ -150,7 +154,6 @@ impl Scenario {
             create_verification_tap(SAMPLE_RATE_HZ, 4 * usize::from(CHANNEL_COUNT), tap_duration);
         let flush_generation = Arc::new(AtomicU64::new(0));
         let is_playback_queue_finished = Arc::new(AtomicBool::new(false));
-        let counters = Arc::new(PlaybackCounters::new());
         let feeder = DeviceFeeder::new(
             ring_reader,
             tap_writer,
@@ -417,4 +420,74 @@ fn begin_stream_and_render_never_allocate_on_any_path() {
         held_events[1],
         TapEvent::TapOverflowed { track_id: Some(_) }
     ));
+}
+
+/// One whole track in its own ring, ended and marked decoded, for the track chain test.
+fn ended_track(track_id: TrackId, counters: &Arc<PlaybackCounters>) -> (DeviceFeeder, Scenario) {
+    let mut track = Scenario::with_counters(Duration::from_secs(1), Arc::clone(counters));
+    track.track_id = track_id;
+    track.fill_ring(true);
+    track
+        .is_playback_queue_finished
+        .store(true, Ordering::Release);
+    // The scenario keeps the ring writer and tap reader alive; its feeder goes to the chain.
+    let feeder = std::mem::replace(
+        &mut track.feeder,
+        Scenario::new(Duration::from_millis(20)).feeder,
+    );
+    (feeder, track)
+}
+
+/// `TrackChain::begin_stream` and `render` never allocate or free either: switching to the
+/// queued track in the middle of a buffer, retiring a track taken back, and ending the stream.
+#[test]
+fn track_chain_switches_never_allocate() {
+    let format = render_format(3, 24);
+    let bytes_per_frame = format.bytes_per_frame();
+    let counters = Arc::new(PlaybackCounters::new());
+    let (first_feeder, _first) = ended_track(TrackId(1), &counters);
+    let (second_feeder, _second) = ended_track(TrackId(2), &counters);
+    let (taken_back_feeder, _taken_back) = ended_track(TrackId(3), &counters);
+    let (mut chain, mut control) =
+        create_track_chain(first_feeder, TrackId(1), source_format(SAMPLE_RATE_HZ));
+    let mut destination = vec![0u8; MAX_BUFFER_FRAMES * bytes_per_frame];
+    let mut seen_end_of_stream = false;
+    let mut render = |chain: &mut pistolame_core::TrackChain, destination: &mut [u8]| {
+        let outcome = armed(|| chain.render(destination));
+        seen_end_of_stream |= outcome == RenderOutcome::EndOfStream;
+    };
+
+    assert!(control.queue_next(QueuedTrack {
+        track_id: TrackId(2),
+        feeder: second_feeder,
+    }));
+    armed(|| chain.begin_stream(description(format, DeviceAccessMode::Exclusive)));
+    // 7-frame blocks in 9-frame buffers: the first track ends inside a buffer.
+    for _ in 0..1_000 {
+        if counters.snapshot().current_track_id == 2 {
+            break;
+        }
+        render(&mut chain, &mut destination);
+    }
+    let finished = control.take_retired().expect("the first track finished");
+    assert!(finished.was_played);
+    // A track queued, then taken back before the second one ends.
+    assert!(control.queue_next(QueuedTrack {
+        track_id: TrackId(3),
+        feeder: taken_back_feeder,
+    }));
+    assert!(control.cancel_next(TrackId(3)));
+    for _ in 0..200 {
+        render(&mut chain, &mut destination);
+    }
+
+    assert_eq!(
+        ALLOCATOR_CALLS_WHILE_ARMED.load(Ordering::Relaxed),
+        0,
+        "the track chain allocated or freed memory on the real-time path"
+    );
+    let taken_back = control.take_retired().expect("the track taken back");
+    assert!(!taken_back.was_played && taken_back.track_id == TrackId(3));
+    assert!(seen_end_of_stream);
+    assert_eq!(counters.snapshot().stream_ends_reached, 1);
 }

@@ -36,7 +36,9 @@ download is verified against an ed25519 signature before anything is replaced.
 - **Playback**: play, pause, seek, previous/next, shuffle and repeat, from the window, the
   keyboard or the media keys (and the system's *Now Playing* panel). Playlists (with covers,
   M3U export) and an *Up next* queue: "Play next" or "Add to queue" from any track, album or
-  playlist. The app reopens on the last track, paused where you left it.
+  playlist. The app reopens on the last track, paused where you left it. Gapless: the next
+  track is prepared while the current one ends, and when both share the same format it
+  continues in the same device stream, with no silence and no reopen between them.
 - **Output**: choose the device and the mode. Exclusive mode holds the device at the file's
   format; the volume is then set on your DAC. Shared mode offers a volume in decibels (0 to
   -60 dB) applied before the system mixer.
@@ -71,9 +73,10 @@ Click the title in the central display to open the current track page. It follow
 shows artwork, metadata and the two real verification results, and returns to the previous view
 with Back or Escape. The quality badge still opens the signal-path popover.
 
-## Limits of 0.5.0
+## Limits
 
-No gapless queue yet; up to 24 significant bits. Not supported: Opus, WavPack, Monkey's Audio,
+Up to 24 significant bits. Tracks follow each other without a gap when they share the same
+format (sample rate, bit depth, channels); a change of format reopens the device between them. Not supported: Opus, WavPack, Monkey's Audio,
 DSD and Matroska audio. Hardware acceptance on the reference DAC and screen-reader testing are still pending.
 
 ## Development

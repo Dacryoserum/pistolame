@@ -14,6 +14,7 @@ pub mod signal_path;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod timing;
+pub mod track_chain;
 pub mod verification;
 pub mod volume;
 
@@ -25,5 +26,6 @@ pub use output_contract::*;
 pub use pcm::*;
 pub use playback_ring::*;
 pub use signal_path::*;
+pub use track_chain::*;
 pub use verification::*;
 pub use volume::*;

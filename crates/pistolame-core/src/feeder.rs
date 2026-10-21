@@ -84,6 +84,16 @@ struct SegmentIdentity {
     flush_generation: u64,
 }
 
+/// What `render_with` does when the ring is empty after the last block of the track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndOfTrackHandling {
+    /// The end of the stream: counted once in `stream_ends_reached` (B5.7).
+    EndTheStream,
+    /// Returned as `EndOfStream` without counting it, so a `TrackChain` can go on with the
+    /// next track in the same buffer; it calls `enter_end_of_stream` when it cannot.
+    ReportDrained,
+}
+
 /// Why the next block cannot be rendered now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NoRenderableBlock {
@@ -183,6 +193,7 @@ impl DeviceFeeder {
         &mut self,
         stream: ActiveStream,
         destination: &mut [u8],
+        end_of_track: EndOfTrackHandling,
     ) -> (usize, RenderOutcome) {
         let frame_capacity = destination.len() / stream.bytes_per_frame;
         let current_generation = self.flush_generation.load(Ordering::Acquire);
@@ -204,7 +215,8 @@ impl DeviceFeeder {
                 }
                 Err(NoRenderableBlock::RingEmpty) => {
                     let silent_frame_count = frame_capacity - written_frame_count;
-                    let outcome = self.on_ring_empty(is_queue_finished, silent_frame_count);
+                    let outcome =
+                        self.on_ring_empty(is_queue_finished, silent_frame_count, end_of_track);
                     return (written_frame_count, outcome);
                 }
             };
@@ -231,17 +243,67 @@ impl DeviceFeeder {
         &mut self,
         is_queue_finished: bool,
         silent_frame_count: usize,
+        end_of_track: EndOfTrackHandling,
     ) -> RenderOutcome {
         if is_queue_finished {
-            if !self.is_at_end_of_stream {
-                self.is_at_end_of_stream = true;
-                self.counters.record_stream_end_reached();
+            if end_of_track == EndOfTrackHandling::EndTheStream {
+                self.enter_end_of_stream();
             }
             return RenderOutcome::EndOfStream;
         }
         self.counters
             .record_underrun(u64::try_from(silent_frame_count).unwrap_or(u64::MAX));
         RenderOutcome::FilledWithUnderrun
+    }
+
+    /// Counts the end of the stream once (re-armed when audio renders again or a stream
+    /// begins). Real-time safe.
+    pub(crate) fn enter_end_of_stream(&mut self) {
+        if !self.is_at_end_of_stream {
+            self.is_at_end_of_stream = true;
+            self.counters.record_stream_end_reached();
+        }
+    }
+
+    /// Whether the end of the stream was counted and no audio rendered since.
+    pub(crate) fn has_reached_end_of_stream(&self) -> bool {
+        self.is_at_end_of_stream
+    }
+
+    /// Bytes per frame of the current stream; `None` before `begin_stream` or with an unusable
+    /// render format.
+    pub(crate) fn bytes_per_frame(&self) -> Option<usize> {
+        self.stream.map(|stream| stream.bytes_per_frame)
+    }
+
+    /// `render`, with the end of the track handled as `end_of_track` says. Also returns how
+    /// many whole frames at the start of `destination` hold audio; the rest is silence.
+    pub(crate) fn render_with(
+        &mut self,
+        destination: &mut [u8],
+        end_of_track: EndOfTrackHandling,
+    ) -> (usize, RenderOutcome) {
+        self.tap_writer.flush_pending_events();
+        let Some(stream) = self.stream else {
+            destination.fill(0);
+            self.counters.record_render_contract_violation();
+            return (0, RenderOutcome::FilledWithUnderrun);
+        };
+        let whole_frame_bytes = destination.len() - destination.len() % stream.bytes_per_frame;
+        let has_partial_frame = whole_frame_bytes != destination.len();
+        if has_partial_frame {
+            self.counters.record_render_contract_violation();
+            fill_with_silence(destination.get_mut(whole_frame_bytes..));
+        }
+        let Some(whole_frames) = destination.get_mut(..whole_frame_bytes) else {
+            return (0, RenderOutcome::FilledWithUnderrun);
+        };
+        let (written_frame_count, outcome) = self.render_frames(stream, whole_frames, end_of_track);
+        fill_with_silence(whole_frames.get_mut(written_frame_count * stream.bytes_per_frame..));
+        if has_partial_frame && outcome == RenderOutcome::Filled {
+            return (written_frame_count, RenderOutcome::FilledWithUnderrun);
+        }
+        (written_frame_count, outcome)
     }
 
     fn enter_format_boundary(&mut self) {
@@ -511,27 +573,8 @@ impl RenderSource for DeviceFeeder {
     /// counted as a contract violation, and the outcome is `FilledWithUnderrun`; so is a
     /// buffer ending in a partial frame (that partial frame is silenced and counted).
     fn render(&mut self, destination: &mut [u8]) -> RenderOutcome {
-        self.tap_writer.flush_pending_events();
-        let Some(stream) = self.stream else {
-            destination.fill(0);
-            self.counters.record_render_contract_violation();
-            return RenderOutcome::FilledWithUnderrun;
-        };
-        let whole_frame_bytes = destination.len() - destination.len() % stream.bytes_per_frame;
-        let has_partial_frame = whole_frame_bytes != destination.len();
-        if has_partial_frame {
-            self.counters.record_render_contract_violation();
-            fill_with_silence(destination.get_mut(whole_frame_bytes..));
-        }
-        let Some(whole_frames) = destination.get_mut(..whole_frame_bytes) else {
-            return RenderOutcome::FilledWithUnderrun;
-        };
-        let (written_frame_count, outcome) = self.render_frames(stream, whole_frames);
-        fill_with_silence(whole_frames.get_mut(written_frame_count * stream.bytes_per_frame..));
-        if has_partial_frame && outcome == RenderOutcome::Filled {
-            return RenderOutcome::FilledWithUnderrun;
-        }
-        outcome
+        self.render_with(destination, EndOfTrackHandling::EndTheStream)
+            .1
     }
 
     /// `discard_stale_blocks`, then `flush_verification_events`.

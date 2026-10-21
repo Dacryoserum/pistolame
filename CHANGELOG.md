@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+### Features
+- gapless playback: the next track is prepared while the current one ends; when both share the same format (sample rate, bit depth, channels) it continues in the same device stream, with no silence and no reopen, bit-perfect across the join; each track keeps its own verification
+- a next track in another format is decoded ahead, so only the device reopen remains between the two
+
 ## 0.6.7
 
 ### Features

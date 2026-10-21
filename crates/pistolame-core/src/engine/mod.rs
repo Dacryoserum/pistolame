@@ -5,7 +5,8 @@
 //! Threads: the engine thread (`engine_thread.rs`) owns the `AudioOutput`, the open stream and
 //! the state machine below; each opened file gets a pipeline (`pipeline.rs`) with its own
 //! decode thread (`decode_thread.rs`) and verifier thread; the backend owns the real-time
-//! render thread, which runs the pipeline's `DeviceFeeder`.
+//! render thread, which runs the `TrackChain` holding the current pipeline's `DeviceFeeder`.
+//! The next track gets its pipeline ahead of time (`engine_thread/gapless.rs`).
 //!
 //! Playback states (`PlaybackState`). `Paused` holds no stream: the device is released, the
 //! ring, the decoder and the feeder's position are kept.
@@ -39,7 +40,9 @@
 //!     poll in Playing: status() Failed (close Discard, refresh the device list);
 //!     poll in Playing: format_boundaries_reached grew (close Discard, Internal failure);
 //!     poll in Playing: stream_ends_reached grew (close PlayOut; the track ended, so no
-//!       TrackStopped; a kept decode error is reported now);
+//!       TrackStopped; a kept decode error is reported now). Not when the next track
+//!       announced with SetNextTrack has the same format: the track chain goes on with it in
+//!       the same stream (gapless), the engine stays Playing and emits AdvancedToNextTrack;
 //!     a first open that fails, or a resume that finds no device (a resume that fails for
 //!       another reason stays Paused).
 //! ```

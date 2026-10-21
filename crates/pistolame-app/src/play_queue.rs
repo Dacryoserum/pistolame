@@ -165,17 +165,38 @@ impl PlayQueue {
             self.set_current(path.clone());
             return Some(path);
         }
-        let count = self.context.len();
-        if count == 0 {
-            return None;
-        }
-        let next = match shuffled_position {
-            Some(position) if position < count => position,
-            _ if self.context_position + 1 < count => self.context_position + 1,
-            _ if is_repeat_on => 0,
-            _ => return None,
-        };
+        let next = self.next_context_position(shuffled_position, is_repeat_on)?;
         self.jump_to_context_position(next)
+    }
+
+    /// The track `advance` would move to with the same arguments, without moving: what the
+    /// engine prepares to follow the current track (gapless).
+    pub(crate) fn peek_next(
+        &self,
+        shuffled_position: Option<usize>,
+        is_repeat_on: bool,
+    ) -> Option<&PathBuf> {
+        if let Some(path) = self.up_next.front() {
+            return Some(path);
+        }
+        self.context
+            .get(self.next_context_position(shuffled_position, is_repeat_on)?)
+    }
+
+    /// The context position `advance` moves to when no track is queued by hand.
+    fn next_context_position(
+        &self,
+        shuffled_position: Option<usize>,
+        is_repeat_on: bool,
+    ) -> Option<usize> {
+        let count = self.context.len();
+        match shuffled_position {
+            _ if count == 0 => None,
+            Some(position) if position < count => Some(position),
+            _ if self.context_position + 1 < count => Some(self.context_position + 1),
+            _ if is_repeat_on => Some(0),
+            _ => None,
+        }
     }
 
     /// Moves to the previous track of the context (wrapping to the last one).
@@ -488,5 +509,29 @@ mod tests {
         let mut queue = album();
         assert_eq!(queue.previous(), Some("a3".into()));
         assert_eq!(queue.current(), Some(&PathBuf::from("a3")));
+    }
+
+    #[test]
+    fn peek_next_names_what_advance_moves_to_without_moving() {
+        let mut queue = album();
+        queue.add_to_queue(paths(&["q1"]));
+        let cases = [(None, false), (Some(2), false), (None, true)];
+        for (shuffled_position, is_repeat_on) in cases {
+            let peeked = queue.peek_next(shuffled_position, is_repeat_on).cloned();
+            assert_eq!(queue.current(), Some(&PathBuf::from("a1")), "nothing moved");
+            assert_eq!(peeked, Some("q1".into()), "the queued track comes first");
+        }
+        assert_eq!(queue.advance(None, false), Some("q1".into()));
+        for (shuffled_position, is_repeat_on) in cases {
+            let peeked = queue.peek_next(shuffled_position, is_repeat_on).cloned();
+            let mut moved = album();
+            moved.add_to_queue(paths(&["q1"]));
+            moved.advance(None, false);
+            assert_eq!(peeked, moved.advance(shuffled_position, is_repeat_on));
+        }
+        queue.advance(None, false);
+        queue.advance(None, false);
+        assert_eq!(queue.peek_next(None, false), None, "end of the album");
+        assert_eq!(queue.peek_next(None, true), Some(&PathBuf::from("a1")));
     }
 }

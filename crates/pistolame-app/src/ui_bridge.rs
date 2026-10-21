@@ -215,6 +215,11 @@ pub(crate) struct UiBridge {
     stream_end_baseline: Cell<u64>,
     should_advance: Cell<bool>,
     shuffle_seed: Cell<u64>,
+    /// The shuffled context position chosen to follow the current track, kept so the track the
+    /// engine prepares (gapless) is the one that plays.
+    planned_shuffle_position: Cell<Option<usize>>,
+    /// The next track last sent with `SetNextTrack`.
+    announced_next_track: RefCell<Option<PathBuf>>,
     /// Position (seconds) of a restored track not opened yet: Play opens it there.
     resume_position_seconds: Cell<Option<u64>>,
     /// Files of the "Morceaux" table, in its current order.
@@ -330,6 +335,8 @@ impl UiBridge {
             detail_album: Cell::new(0),
             stream_end_baseline: Cell::new(0),
             should_advance: Cell::new(false),
+            planned_shuffle_position: Cell::new(None),
+            announced_next_track: RefCell::new(None),
             shuffle_seed: Cell::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -988,6 +995,7 @@ impl UiBridge {
             self.should_advance.set(false);
             self.advance_after_end();
         }
+        self.announce_next_track();
         let rate = u64::from(self.sample_rate_hz.get().max(1));
         let frames_in_track = self
             .resume_position_seconds
@@ -1053,6 +1061,10 @@ impl UiBridge {
                         .into(),
                 );
             }
+            EngineEvent::AdvancedToNextTrack {
+                path,
+                stream_ends_baseline,
+            } => self.follow_gapless_advance(path, stream_ends_baseline),
             EngineEvent::TrackLoaded {
                 track_id,
                 source,

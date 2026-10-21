@@ -32,6 +32,16 @@ pub enum EngineCommand {
         /// File to play.
         path: std::path::PathBuf,
     },
+    /// The track that follows the current one, or `None` when playback must stop at its end
+    /// (end of the queue, sleep timer). The engine prepares it while the current track's tail
+    /// plays; when both have exactly the same format, it follows in the same stream without a
+    /// gap (`AdvancedToNextTrack`). Otherwise the engine stops at the end as usual, and an
+    /// `OpenFileAndPlay` of this path then starts from the prepared pipeline. Forgotten on
+    /// `OpenFileAndPlay` and `Stop`: the UI announces the next track again after them.
+    SetNextTrack {
+        /// File to play next.
+        path: Option<std::path::PathBuf>,
+    },
     /// Resume or start playback.
     Play,
     /// Plays out the queued audio, then releases the device (B5.6, B13.1 Q6).
@@ -82,6 +92,16 @@ pub enum EngineEvent {
     PreferredDeviceUnavailable {
         /// Device that was remembered.
         device_id: OutputDeviceId,
+    },
+    /// The current track ended and the announced next one took over in the same stream, with
+    /// no gap and no state change. Sent just before its `TrackLoaded`. The next track is then
+    /// consumed: the UI announces the following one with `SetNextTrack`.
+    AdvancedToNextTrack {
+        /// The file that now plays, as given to `SetNextTrack`.
+        path: std::path::PathBuf,
+        /// `stream_ends_reached` before this track ends: it has ended once the counter grows
+        /// past this value (it may already have, for a short track, when the UI reads this).
+        stream_ends_baseline: u64,
     },
     /// A file was opened.
     TrackLoaded {
