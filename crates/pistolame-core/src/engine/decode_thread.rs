@@ -12,7 +12,7 @@
 //! before the feeder can emit the matching `TrackEnded`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -82,6 +82,9 @@ pub(crate) struct DecodeThreadSetup {
     pub ring_writer: PlaybackRingWriter,
     /// End-of-queue flag shared with the feeder; this thread alone writes it.
     pub is_playback_queue_finished: Arc<AtomicBool>,
+    /// Latest generation buffered up to the prefill, read by the feeder; this thread alone
+    /// writes it.
+    pub prefilled_generation: Arc<AtomicU64>,
     /// Audio of a generation buffered before `PrefillReached` is sent.
     pub start_prefill_duration: Duration,
     /// Commands from the engine.
@@ -124,6 +127,7 @@ struct DecodeWorker {
     ring_writer: PlaybackRingWriter,
     hasher: DecodedPcmHasher,
     is_playback_queue_finished: Arc<AtomicBool>,
+    prefilled_generation: Arc<AtomicU64>,
     commands: Receiver<DecodeCommand>,
     events: Sender<DecodeEvent>,
     verifier_commands: Sender<VerifierCommand>,
@@ -157,6 +161,7 @@ impl DecodeWorker {
             format,
             ring_writer: setup.ring_writer,
             is_playback_queue_finished: setup.is_playback_queue_finished,
+            prefilled_generation: setup.prefilled_generation,
             commands: setup.commands,
             events: setup.events,
             verifier_commands: setup.verifier_commands,
@@ -428,6 +433,8 @@ impl DecodeWorker {
         }
         if is_forced || self.frames_pushed_in_generation >= self.prefill_frame_count {
             self.has_sent_prefill = true;
+            self.prefilled_generation
+                .store(self.flush_generation, Ordering::Release);
             self.send_event(DecodeEvent::PrefillReached {
                 flush_generation: self.flush_generation,
             });
@@ -574,6 +581,7 @@ mod tests {
             track_id: TRACK,
             ring_writer: writer,
             is_playback_queue_finished: Arc::clone(&end_flag),
+            prefilled_generation: Arc::new(AtomicU64::new(0)),
             start_prefill_duration: Duration::from_millis(50),
             commands: command_receiver,
             events: event_sender,

@@ -244,6 +244,7 @@ impl UiBridge {
         // Before the playlists are redrawn: the open playlist's index may have moved.
         self.synchronize_navigation_with_library();
         self.show_playlists();
+        self.show_top_tracks();
         self.show_artists();
         self.show_library_tracks();
         self.show_recent_albums();

@@ -34,6 +34,7 @@ impl UiBridge {
             },
             TrackSource::SearchResult => SelectionList::SearchResults,
             TrackSource::LibraryTrack => SelectionList::LibraryTracks,
+            TrackSource::TopTrack => SelectionList::TopTracks,
             TrackSource::Album | TrackSource::Playlist => return None,
         };
         let position = if target.source == TrackSource::AlbumTrack {
@@ -137,6 +138,12 @@ impl UiBridge {
                 |row, _: &LibraryTrackRow| self.is_row_selected(SelectionList::LibraryTracks, row),
                 |row| &mut row.is_selected,
             );
+            mark_rows(
+                &state.get_top_tracks(),
+                position..position + 1,
+                |row, _: &PlaylistTrackRow| self.is_row_selected(SelectionList::TopTracks, row),
+                |row| &mut row.is_selected,
+            );
         }
     }
 
@@ -178,6 +185,7 @@ impl UiBridge {
                 .cloned(),
             SelectionList::SearchResults => self.search_results.borrow().get(position).cloned(),
             SelectionList::LibraryTracks => self.library_tracks.borrow().get(position).cloned(),
+            SelectionList::TopTracks => self.top_tracks.borrow().get(position).cloned(),
         }
     }
 
@@ -221,6 +229,11 @@ impl UiBridge {
             },
             SelectionList::LibraryTracks => TrackTarget {
                 source: TrackSource::LibraryTrack,
+                position: first as i32,
+                ..Default::default()
+            },
+            SelectionList::TopTracks => TrackTarget {
+                source: TrackSource::TopTrack,
                 position: first as i32,
                 ..Default::default()
             },

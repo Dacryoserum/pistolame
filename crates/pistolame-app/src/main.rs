@@ -9,6 +9,7 @@ mod analysis_worker;
 mod artist_photo_search;
 mod artist_photos;
 mod artwork_cache;
+mod artwork_tint;
 mod authenticity;
 mod file_drop;
 mod m3u;
@@ -21,6 +22,7 @@ mod search;
 mod session;
 mod settings;
 mod sleep_timer;
+mod top_tracks;
 mod track_selection;
 mod track_sort;
 mod transport;
@@ -65,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
     // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…, -1 = the
-    // current track, -2 = the first album's editor) to check a
+    // current track, -2 = the first album's editor, -3 = "Les plus écoutés") to check a
     // screen without clicking through the app.
     #[cfg(debug_assertions)]
     if let Some(item) = std::env::var("PISTOLAME_DEBUG_START_ITEM")
@@ -80,6 +82,8 @@ fn main() -> anyhow::Result<()> {
                     let state = window.global::<AppState>();
                     if item == -2 {
                         state.invoke_begin_album_edit(0);
+                    } else if item == -3 {
+                        state.invoke_navigate_to_section(SidebarSection::TopTracks);
                     } else {
                         state.invoke_show_now_playing();
                     }

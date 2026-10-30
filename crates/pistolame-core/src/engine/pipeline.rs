@@ -96,11 +96,13 @@ impl Pipeline {
         );
         let flush_generation = Arc::new(AtomicU64::new(0));
         let is_playback_queue_finished = Arc::new(AtomicBool::new(false));
+        let prefilled_generation = Arc::new(AtomicU64::new(0));
         let feeder = DeviceFeeder::new(
             ring_reader,
             tap_writer,
             Arc::clone(&flush_generation),
             Arc::clone(&is_playback_queue_finished),
+            Arc::clone(&prefilled_generation),
             Arc::clone(setup.counters),
         );
         let (verifier_commands, verifier_command_receiver) = unbounded();
@@ -122,6 +124,7 @@ impl Pipeline {
             track_id: setup.track_id,
             ring_writer,
             is_playback_queue_finished,
+            prefilled_generation,
             start_prefill_duration: setup.tuning.start_prefill_duration,
             commands: decode_command_receiver,
             events: decode_event_sender,

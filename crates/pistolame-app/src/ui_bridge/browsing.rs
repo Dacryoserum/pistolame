@@ -422,7 +422,13 @@ impl UiBridge {
                 None => format!("{} morceaux · {}", album.tracks.len(), album_codecs(album)),
             }
             .into(),
-            footer_line: format!("{} morceaux · {}", album.tracks.len(), presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum())).into(),
+            footer_line: format!(
+                "{} morceaux · {} · {}",
+                album.tracks.len(),
+                presentation::clock(album.tracks.iter().map(|track| track.duration_seconds).sum()),
+                presentation::play_count_label(album.tracks.iter().map(|track| track.play_count).sum()),
+            )
+            .into(),
             verdict_label: "Non analysé".into(),
             summary: "L’analyse d’authenticité n’a pas été effectuée. Aucun verdict sur la résolution réelle de cet album.".into(),
             cells: ModelRc::new(VecModel::from(["Résolution effective", "Coupure spectrale", "Plage dynamique", "Écrêtage", "Contrôle MD5"].map(|label| crate::DataCell { label: label.into(), value: "Non analysé".into() }).to_vec())),

@@ -145,6 +145,7 @@ fn play_segment(
         device_id: device.id.clone(),
         source_format: source,
         policy,
+        initial_shared_mode_gain: 1.0,
     };
     let mut stream = output
         .open_stream(request, render_source)
@@ -317,6 +318,7 @@ fn wasapi_exclusive_close_without_play_discards_and_returns_the_source() {
         device_id: device.id.clone(),
         source_format: source,
         policy: OpenPolicy::ExclusiveOnly,
+        initial_shared_mode_gain: 1.0,
     };
     let stream = output
         .open_stream(request, Box::new(TestToneRenderSource::new(&source)))

@@ -82,12 +82,25 @@ pub enum MetadataError {
     /// The file cannot be read.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// No container is recognized in the file's content, whatever its extension says: most
+    /// often a file cut short by a failed download or copy.
+    #[error("fichier illisible (incomplet, abîmé ou format non pris en charge)")]
+    UnrecognizedContent,
     /// The container or codec parser rejected the file.
     #[error("{0}")]
-    Decode(#[from] symphonia::core::errors::Error),
+    Decode(symphonia::core::errors::Error),
     /// No audio stream could be identified.
     #[error("no audio stream")]
     NoAudio,
+}
+
+impl From<symphonia::core::errors::Error> for MetadataError {
+    fn from(error: symphonia::core::errors::Error) -> Self {
+        match error {
+            symphonia::core::errors::Error::Unsupported(_) => Self::UnrecognizedContent,
+            other => Self::Decode(other),
+        }
+    }
 }
 
 /// Reads tags, stream information and the first embedded cover without decoding audio.
@@ -426,5 +439,16 @@ mod tests {
     #[test]
     fn an_unreadable_track_returns_an_error() {
         assert!(read_music_file(Path::new("missing-pistolame-test.flac")).is_err());
+    }
+
+    /// Regression: a file cut short by a download showed symphonia's raw English message.
+    #[test]
+    fn a_file_without_any_audio_container_is_explained() {
+        let path = std::env::temp_dir().join("pistolame-test-empty-content.flac");
+        std::fs::write(&path, vec![0u8; 8192]).expect("test file");
+        let error = read_music_file(&path).expect_err("no audio in this file");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(error, MetadataError::UnrecognizedContent));
+        assert!(error.to_string().starts_with("fichier illisible"));
     }
 }

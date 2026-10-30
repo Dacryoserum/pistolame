@@ -368,6 +368,10 @@ The reference app shows a "Lossless" badge you have to believe. Pistolame's badg
 Do: let covers carry color; keep one primary action per screen; pair every status color with
 an icon and a word; compute every badge; write French with decimal commas and no-break spaces.
 
+The current-track page is the one exception to flat surfaces: its first screen carries a static
+gradient taken from the cover (`artwork_tint.rs`, computed once per track, no blur), dark in both
+themes, with the `immersive-*` tokens. Its neighbors flank the artwork, quiet until pointed at.
+
 Don't: gradients on text or chrome; glass/blur imitations; colored side stripes on rows or
 cards; cards around every group (use spacing and 1 px rules); uppercase tracked eyebrows;
 monospace "tech" costume (Inter for numbers too); emoji or Unicode glyphs as icons; glow

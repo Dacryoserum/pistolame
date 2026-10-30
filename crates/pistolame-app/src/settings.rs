@@ -15,6 +15,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::top_tracks::{TopTracksPeriod, parse_top_track_count};
 use anyhow::Context;
 use pistolame_core::{
     EngineStartOptions, OutputDeviceId, OutputDeviceSelection, OutputModePreference,
@@ -34,6 +35,11 @@ const SINGLE_CLICK_PLAY_KEY: &str = "single_click_play";
 const TRACK_SORT_KEY: &str = "track_sort";
 const TRACKS_FAVORITES_ONLY_KEY: &str = "tracks_favorites_only";
 const WINDOW_GEOMETRY_KEY: &str = "window_geometry";
+const TOP_TRACKS_KEY: &str = "top_tracks";
+const TOP_TRACK_COUNT_KEY: &str = "top_track_count";
+const TOP_TRACKS_PERIOD_KEY: &str = "top_tracks_period";
+/// Value of `top_tracks_period` for the recent period; its absence means all time.
+const RECENT_PERIOD_VALUE: &str = "recent";
 /// Words after the column number of `track_sort`.
 const ASCENDING_VALUE: &str = "ascending";
 const DESCENDING_VALUE: &str = "descending";
@@ -93,6 +99,12 @@ pub struct AppSettings {
     pub is_tracks_favorites_only: bool,
     /// Window position and size at the last exit, to reopen it in the same place.
     pub window_geometry: Option<WindowGeometry>,
+    /// The user turned the "Les plus écoutés" playlist off (it is on by default).
+    pub are_top_tracks_off: bool,
+    /// Size of "Les plus écoutés"; `None` until the user picks one.
+    pub top_track_count: Option<u32>,
+    /// The plays "Les plus écoutés" counts.
+    pub top_tracks_period: TopTracksPeriod,
     /// First problem met while loading, for diagnostics only. Never shown to the user.
     pub load_problem: Option<String>,
 }
@@ -273,6 +285,15 @@ impl AppSettings {
         if let Some(geometry) = &self.window_geometry {
             push_entry(&mut text, WINDOW_GEOMETRY_KEY, &geometry.serialize())?;
         }
+        if self.are_top_tracks_off {
+            push_entry(&mut text, TOP_TRACKS_KEY, FALSE_VALUE)?;
+        }
+        if let Some(count) = self.top_track_count {
+            push_entry(&mut text, TOP_TRACK_COUNT_KEY, &count.to_string())?;
+        }
+        if self.top_tracks_period == TopTracksPeriod::Recent {
+            push_entry(&mut text, TOP_TRACKS_PERIOD_KEY, RECENT_PERIOD_VALUE)?;
+        }
         Ok(text)
     }
 
@@ -357,6 +378,13 @@ impl AppSettings {
             settings.start_section = Some((*value).to_owned());
         }
         settings.is_single_click_play = entries.get(SINGLE_CLICK_PLAY_KEY) == Some(&TRUE_VALUE);
+        settings.are_top_tracks_off = entries.get(TOP_TRACKS_KEY) == Some(&FALSE_VALUE);
+        settings.top_track_count = entries
+            .get(TOP_TRACK_COUNT_KEY)
+            .and_then(|value| parse_top_track_count(value));
+        if entries.get(TOP_TRACKS_PERIOD_KEY) == Some(&RECENT_PERIOD_VALUE) {
+            settings.top_tracks_period = TopTracksPeriod::Recent;
+        }
         settings.track_sort = entries.get(TRACK_SORT_KEY).and_then(|value| {
             let (column, direction) = value.split_once(' ')?;
             let is_descending = match direction.trim() {
@@ -483,6 +511,9 @@ mod tests {
             are_artist_photos_off: true,
             start_section: Some("artists".to_owned()),
             is_single_click_play: true,
+            are_top_tracks_off: true,
+            top_track_count: Some(25),
+            top_tracks_period: TopTracksPeriod::Recent,
             track_sort: Some((2, true)),
             is_tracks_favorites_only: true,
             window_geometry: Some(WindowGeometry {

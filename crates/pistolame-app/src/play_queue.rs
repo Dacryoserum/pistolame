@@ -92,6 +92,36 @@ impl PlayQueue {
         true
     }
 
+    /// Puts queued track `from` at position `to` (drag and drop). False when nothing moves.
+    pub(crate) fn reorder_up_next(&mut self, from: usize, to: usize) -> bool {
+        if from == to || from >= self.up_next.len() || to >= self.up_next.len() {
+            return false;
+        }
+        self.remember_edit();
+        if let Some(path) = self.up_next.remove(from) {
+            self.up_next.insert(to, path);
+        }
+        true
+    }
+
+    /// Puts upcoming context track `from` at position `to` (offsets after the current track,
+    /// as listed by [`PlayQueue::upcoming`]). The stored playlist or album keeps its order.
+    pub(crate) fn reorder_upcoming(&mut self, from: usize, to: usize) -> bool {
+        let first_upcoming = self.context_position + 1;
+        let Some(upcoming) = self.context.get_mut(first_upcoming..) else {
+            return false;
+        };
+        if from == to || from >= upcoming.len() || to >= upcoming.len() {
+            return false;
+        }
+        if from < to {
+            upcoming[from..=to].rotate_left(1);
+        } else {
+            upcoming[to..=from].rotate_right(1);
+        }
+        true
+    }
+
     /// Undoes the last edit of the tracks queued by hand (Ctrl/Cmd+Z). False when none is left.
     pub(crate) fn undo_edit(&mut self) -> bool {
         let Some(previous) = self.undo_states.pop() else {
@@ -209,6 +239,29 @@ impl PlayQueue {
         let position = (self.context_position + count - 1) % count;
         let path = self.context.get(position)?.clone();
         self.context_position = position;
+        self.current = Some(path.clone());
+        Some(path)
+    }
+
+    /// The track [`PlayQueue::back_to_previous`] would go back to.
+    pub(crate) fn peek_previous(&self) -> Option<&PathBuf> {
+        self.played.back().or_else(|| {
+            self.context_position
+                .checked_sub(1)
+                .and_then(|position| self.context.get(position))
+        })
+    }
+
+    /// Goes back to the track heard before this one: the last of the history (which it leaves),
+    /// otherwise the one before it in the context, without wrapping around.
+    pub(crate) fn back_to_previous(&mut self) -> Option<PathBuf> {
+        let Some(path) = self.played.pop_back() else {
+            self.peek_previous()?;
+            return self.previous();
+        };
+        if let Some(position) = self.context.iter().position(|candidate| *candidate == path) {
+            self.context_position = position;
+        }
         self.current = Some(path.clone());
         Some(path)
     }
@@ -445,6 +498,54 @@ mod tests {
         assert!(!queue.move_up_next(7, true));
         assert!(queue.undo_edit());
         assert_eq!(queued(&queue), paths(&["q1", "q3", "q2"]));
+    }
+
+    #[test]
+    fn a_queued_track_can_be_dragged_to_any_place() {
+        let mut queue = album();
+        queue.add_to_queue(paths(&["q1", "q2", "q3"]));
+        assert!(queue.reorder_up_next(0, 2));
+        assert_eq!(queued(&queue), paths(&["q2", "q3", "q1"]));
+        assert!(queue.reorder_up_next(2, 0));
+        assert_eq!(queued(&queue), paths(&["q1", "q2", "q3"]));
+        assert!(!queue.reorder_up_next(1, 1));
+        assert!(!queue.reorder_up_next(0, 9));
+        assert!(queue.undo_edit());
+        assert_eq!(queued(&queue), paths(&["q2", "q3", "q1"]));
+    }
+
+    #[test]
+    fn an_upcoming_track_can_be_dragged_and_the_next_one_changes() {
+        let mut queue = PlayQueue::default();
+        queue.play_context(paths(&["a", "b", "c", "d"]), 0, "Album".to_owned());
+        assert!(queue.reorder_upcoming(2, 0));
+        assert_eq!(queue.upcoming(), paths(&["d", "b", "c"]));
+        assert_eq!(queue.peek_next(None, false), Some(&"d".into()));
+        assert!(queue.reorder_upcoming(0, 1));
+        assert_eq!(queue.upcoming(), paths(&["b", "d", "c"]));
+        assert!(!queue.reorder_upcoming(0, 3));
+        assert_eq!(queue.current(), Some(&"a".into()));
+    }
+
+    #[test]
+    fn going_back_returns_to_what_was_heard_before_even_out_of_order() {
+        let mut queue = PlayQueue::default();
+        queue.play_context(paths(&["a", "b", "c", "d"]), 0, "Album".to_owned());
+        queue.advance(Some(3), false);
+        assert_eq!(queue.peek_previous(), Some(&"a".into()));
+        assert_eq!(queue.back_to_previous(), Some("a".into()));
+        assert_eq!(queue.context_position(), 0);
+        assert_eq!(queue.played().count(), 0);
+        assert_eq!(queue.peek_previous(), None);
+        assert_eq!(queue.back_to_previous(), None);
+    }
+
+    #[test]
+    fn going_back_without_history_uses_the_context_order() {
+        let mut queue = PlayQueue::default();
+        queue.play_context(paths(&["a", "b", "c"]), 2, "Album".to_owned());
+        assert_eq!(queue.peek_previous(), Some(&"b".into()));
+        assert_eq!(queue.back_to_previous(), Some("b".into()));
     }
 
     #[test]

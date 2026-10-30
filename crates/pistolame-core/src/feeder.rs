@@ -42,6 +42,8 @@ pub struct DeviceFeeder {
     /// end marker); cleared when a seek makes it queue more. Only then is an empty ring the end
     /// of the stream.
     is_playback_queue_finished: Arc<AtomicBool>,
+    /// The latest generation the decode thread has buffered enough of to start playing.
+    prefilled_generation: Arc<AtomicU64>,
     counters: Arc<PlaybackCounters>,
     /// Set by `begin_stream`; `None` before it or when the render format is unusable.
     stream: Option<ActiveStream>,
@@ -132,6 +134,7 @@ impl DeviceFeeder {
         tap_writer: VerificationTapWriter,
         flush_generation: Arc<AtomicU64>,
         is_playback_queue_finished: Arc<AtomicBool>,
+        prefilled_generation: Arc<AtomicU64>,
         counters: Arc<PlaybackCounters>,
     ) -> Self {
         Self {
@@ -139,6 +142,7 @@ impl DeviceFeeder {
             tap_writer,
             flush_generation,
             is_playback_queue_finished,
+            prefilled_generation,
             counters,
             stream: None,
             block_in_progress: None,
@@ -160,9 +164,8 @@ impl DeviceFeeder {
     }
 
     /// Drops the block in progress and every queued block whose generation is older than the
-    /// current flush generation (counted in `stale_frames_discarded`). Off the real-time
-    /// thread only, while the feeder is in no stream: lets the decode thread refill a ring
-    /// that a seek made stale without opening a stream first. Stops at the first current block,
+    /// current flush generation (counted in `stale_frames_discarded`), so the decode thread can
+    /// refill a ring that a seek made stale. Real-time safe. Stops at the first current block,
     /// since generations only grow along the ring.
     pub fn discard_stale_blocks(&mut self) {
         let current_generation = self.flush_generation.load(Ordering::Acquire);
@@ -197,6 +200,14 @@ impl DeviceFeeder {
     ) -> (usize, RenderOutcome) {
         let frame_capacity = destination.len() / stream.bytes_per_frame;
         let current_generation = self.flush_generation.load(Ordering::Acquire);
+        // A seek in the open stream: the old audio goes at once, and the new position starts
+        // once buffered, as a stream would after a reopen, only much sooner. Every generation
+        // reaches its prefill (at the latest with its end marker), so this silence is short and
+        // is not an underrun. The end flag may be the old generation's until then.
+        if self.prefilled_generation.load(Ordering::Acquire) < current_generation {
+            self.discard_stale_blocks();
+            return (0, RenderOutcome::FilledWithUnderrun);
+        }
         // Read before looking at the ring. The engine sets the flag only after the last block
         // is in the ring, so `true` here means an empty ring below really is the end. Reading
         // it after an empty ring could see a last block pushed in between as never played.
@@ -635,6 +646,7 @@ mod tests {
         feeder: DeviceFeeder,
         flush_generation: Arc<AtomicU64>,
         is_playback_queue_finished: Arc<AtomicBool>,
+        prefilled_generation: Arc<AtomicU64>,
         counters: Arc<PlaybackCounters>,
     }
 
@@ -653,12 +665,14 @@ mod tests {
             create_playback_ring(&source_format(), Duration::from_secs(1));
         let flush_generation = Arc::new(AtomicU64::new(0));
         let is_playback_queue_finished = Arc::new(AtomicBool::new(false));
+        let prefilled_generation = Arc::new(AtomicU64::new(0));
         let counters = Arc::new(PlaybackCounters::new());
         let feeder = DeviceFeeder::new(
             ring_reader,
             tap_writer,
             Arc::clone(&flush_generation),
             Arc::clone(&is_playback_queue_finished),
+            Arc::clone(&prefilled_generation),
             Arc::clone(&counters),
         );
         Harness {
@@ -667,6 +681,7 @@ mod tests {
             feeder,
             flush_generation,
             is_playback_queue_finished,
+            prefilled_generation,
             counters,
         }
     }
@@ -1028,6 +1043,7 @@ mod tests {
         harness.render(2, &format);
         // Seek: the engine bumps the generation, the decoder pushes from the target.
         harness.flush_generation.store(1, Ordering::Release);
+        harness.prefilled_generation.store(1, Ordering::Release);
         let sought_samples = harness.push(block_header(TRACK, 1, 100, 2, true));
         let (bytes, outcome) = harness.render(2, &format);
         assert_eq!(outcome, RenderOutcome::Filled);
@@ -1234,6 +1250,7 @@ mod tests {
         assert_eq!(harness.counters.snapshot().stream_ends_reached, 2);
         // Audio rendered again (after a seek) re-arms the count.
         harness.flush_generation.store(1, Ordering::Release);
+        harness.prefilled_generation.store(1, Ordering::Release);
         harness
             .is_playback_queue_finished
             .store(false, Ordering::Release);
@@ -1247,6 +1264,37 @@ mod tests {
         assert_eq!(harness.counters.snapshot().underrun_events, 0);
     }
 
+    /// A seek in the open stream: the old audio goes, the silence until the new position is
+    /// not an underrun, and the end flag of the old generation does not end the stream.
+    #[test]
+    fn a_seek_in_the_open_stream_is_neither_an_underrun_nor_the_end() {
+        let format = packed_3_bytes();
+        let mut harness = harness();
+        harness.begin(format, EXCLUSIVE);
+        harness.push(block_header(TRACK, 0, 0, 4, true));
+        assert_eq!(harness.render(2, &format).1, RenderOutcome::Filled);
+        harness
+            .is_playback_queue_finished
+            .store(true, Ordering::Release);
+        harness.flush_generation.store(1, Ordering::Release);
+        assert_ne!(harness.render(2, &format).1, RenderOutcome::EndOfStream);
+        let snapshot = harness.counters.snapshot();
+        assert_eq!(snapshot.underrun_events, 0);
+        assert_eq!(snapshot.stream_ends_reached, 0);
+        harness
+            .is_playback_queue_finished
+            .store(false, Ordering::Release);
+        harness.push(block_header(TRACK, 1, 100, 2, false));
+        assert_ne!(
+            harness.render(2, &format).1,
+            RenderOutcome::Filled,
+            "not buffered yet"
+        );
+        harness.prefilled_generation.store(1, Ordering::Release);
+        assert_eq!(harness.render(2, &format).1, RenderOutcome::Filled);
+        assert_eq!(harness.counters.snapshot().underrun_events, 0);
+    }
+
     #[test]
     fn discard_stale_blocks_drops_only_older_generations_while_closed() {
         let mut harness = harness();
@@ -1257,6 +1305,7 @@ mod tests {
         harness.render(1, &format);
         // Closed and paused: a seek bumps the generation and the decoder refills.
         harness.flush_generation.store(1, Ordering::Release);
+        harness.prefilled_generation.store(1, Ordering::Release);
         harness.feeder.discard_stale_blocks();
         assert_eq!(harness.counters.snapshot().stale_frames_discarded, 3 + 3);
         let sought_samples = harness.push(block_header(TRACK, 1, 50, 2, true));

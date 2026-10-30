@@ -37,6 +37,7 @@ impl UiBridge {
         }
         self.engine.send(EngineCommand::OpenFileAndPlay { path });
         self.refresh_playlist_view();
+        self.mark_current_top_track();
         self.refresh_queue_view();
     }
 
@@ -45,6 +46,7 @@ impl UiBridge {
     /// follows, so the next one is planned and announced again.
     fn make_track_current(&self, path: &std::path::Path) -> bool {
         self.resume_position_seconds.set(None);
+        self.pending_seek.set(None);
         let Some(location) = self.track_location(path) else {
             self.message(format!("Morceau introuvable : {}", path.display()));
             return false;
@@ -92,6 +94,7 @@ impl UiBridge {
             self.engine.send(EngineCommand::Pause);
         }
         self.refresh_playlist_view();
+        self.mark_current_top_track();
         self.refresh_queue_view();
     }
 
@@ -105,6 +108,7 @@ impl UiBridge {
                 path: next_track.clone(),
             });
             *self.announced_next_track.borrow_mut() = next_track;
+            self.show_adjacent_tracks();
         }
     }
 
@@ -115,6 +119,12 @@ impl UiBridge {
         {
             return None;
         }
+        self.next_track_in_queue()
+    }
+
+    /// The track that follows the current one in the queue, whether or not playback will get
+    /// there by itself (a session restored in pause has not started yet).
+    pub(super) fn next_track_in_queue(&self) -> Option<PathBuf> {
         let (is_shuffle_on, is_repeat_on) = self.playback_modes();
         if !self
             .play_queue
@@ -178,6 +188,11 @@ impl UiBridge {
             if let Some(file) = album.tracks.get_mut(track) {
                 file.play_count += 1;
                 file.last_played_seconds = Some(now);
+                if let Some(window) = self.window.upgrade() {
+                    window.global::<AppState>().set_current_play_count_label(
+                        presentation::play_count_label(file.play_count).into(),
+                    );
+                }
             }
             album.sort_keys.last_played_seconds = Some(now);
         }
@@ -221,9 +236,7 @@ impl UiBridge {
         if self.engine.counters().frames_rendered_in_track
             > u64::from(self.sample_rate_hz.get()) * 3
         {
-            self.engine.send(EngineCommand::SeekTo {
-                position_in_track: Duration::ZERO,
-            });
+            self.seek_to(Duration::ZERO);
             return;
         }
         let path = self.play_queue.borrow_mut().previous();

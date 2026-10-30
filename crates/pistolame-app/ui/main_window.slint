@@ -3,7 +3,7 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/InterDisplay-Bold.ttf";
 import { Palette } from "std-widgets.slint";
-import { AddToPlaylistSheet, ArtistEditor, ArtistPhotoPicker, SelectionBar, Sheet, ShortcutList, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
+import { AddToPlaylistSheet, ArtistEditor, ArtistPhotoPicker, SelectionBar, Sheet, ShortcutList, ArtistsView, RecentView, TracksView, QueuePanel, UpdatePanel, AlbumDetail, AlbumEditor, NowPlaying, PlaylistEditor, PlaylistView, TopTracksView, AlbumsGrid, IconButton, Icons, Lcd, Popover, OutputSettings, SearchField, SidebarHeader, SidebarItem, VolumeSlider, Icon, Txt, TextRole } from "components.slint";
 import { AppState, SidebarSection, ViewKind } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -49,9 +49,23 @@ export component AppWindow inherits Window {
     property <bool> is-cassette-opening;
     property <bool> is-cassette-revealing;
     // Where the artwork lands on the current-track page (its padding and back-button row).
-    property <length> cassette-artwork-end-x: 32px;
-    property <length> cassette-artwork-end-y: 58px;
-    property <length> cassette-artwork-end-size: 220px;
+    property <length> cassette-artwork-end-x: now-playing-page.artwork-x;
+    property <length> cassette-artwork-end-y: now-playing-page.artwork-y;
+    property <length> cassette-artwork-end-size: now-playing-page.artwork-size;
+    // The current-track page opens "À suivre" beside it, and closes it when left if it was closed.
+    property <bool> is-queue-opened-by-page;
+    function open-queue-for-page() {
+        if !AppState.is-queue-open {
+            AppState.is-queue-open = true;
+            root.is-queue-opened-by-page = true;
+        }
+    }
+    function close-queue-opened-by-page() {
+        if root.is-queue-opened-by-page {
+            AppState.is-queue-open = false;
+            root.is-queue-opened-by-page = false;
+        }
+    }
     // Watches the page shown (set by Rust) to fold the cassette when the page is left.
     property <ViewKind> shown-view: AppState.view;
     property <bool> was-now-playing-shown;
@@ -61,10 +75,13 @@ export component AppWindow inherits Window {
             root.is-cassette-opening = false;
             root.is-cassette-shown = false;
             root.cassette-progress = 0;
+            root.close-queue-opened-by-page();
         } else if root.shown-view == ViewKind.now-playing {
             // Reached without the animation (history): rest unfolded so leaving folds it.
             root.cassette-progress = 1;
+            root.open-queue-for-page();
         } else if root.was-now-playing-shown && !root.is-cassette-opening {
+            root.close-queue-opened-by-page();
             root.cassette-cover-opacity = 1;
             root.is-cassette-revealing = false;
             root.is-cassette-shown = true;
@@ -78,6 +95,8 @@ export component AppWindow inherits Window {
             AppState.show-now-playing();
             return;
         }
+        // Before the animation: the artwork lands where the page shows it beside the panel.
+        root.open-queue-for-page();
         root.cassette-cover-opacity = 1;
         root.is-cassette-shown = true;
         root.is-cassette-opening = true;
@@ -259,9 +278,14 @@ export component AppWindow inherits Window {
                 visible: AppState.view == ViewKind.detail;
             }
 
-            NowPlaying { visible: AppState.view == ViewKind.now-playing; }
+            now-playing-page := NowPlaying {
+                x: 0px;
+                width: parent.width - (AppState.is-queue-open ? 340px : 0px);
+                visible: AppState.view == ViewKind.now-playing;
+            }
 
             PlaylistView { visible: AppState.view == ViewKind.playlist; }
+            TopTracksView { visible: AppState.view == ViewKind.top-tracks; }
 
             ArtistsView { visible: AppState.view == ViewKind.artists; }
             TracksView { visible: AppState.view == ViewKind.tracks; }
@@ -384,7 +408,7 @@ export component AppWindow inherits Window {
                 height: (root.height - 60px) * self.progress;
                 border-bottom-left-radius: 6px * (1 - self.progress);
                 border-bottom-right-radius: 6px * (1 - self.progress);
-                background: Tokens.surface-content.mix(Tokens.surface-lcd, self.progress);
+                background: AppState.now-playing-tint-bottom.mix(Tokens.surface-lcd, self.progress);
                 opacity: root.cassette-cover-opacity;
                 clip: true;
                 // Swallows clicks while it moves.
@@ -637,10 +661,22 @@ export component AppWindow inherits Window {
                 }
             }
 
+            if AppState.are-top-tracks-on: SidebarItem {
+                y: sidebar.top + 236px;
+                icon: Icons.ranking;
+                label: "Les plus écoutés";
+                is-selected: AppState.section == SidebarSection.top-tracks;
+                clicked => {
+                    AppState.navigate-to-section(SidebarSection.top-tracks);
+                    key-scope.focus();
+                }
+            }
+
             // Items whose row would reach Réglages (bottom) are not drawn.
             for item[index] in AppState.playlists: SidebarItem {
-                visible: sidebar.top + 236px + 28px * (index + 1) <= sidebar.settings-y - 8px;
-                y: sidebar.top + 236px + 28px * index;
+                property <length> first-y: sidebar.top + 236px + (AppState.are-top-tracks-on ? 28px : 0px);
+                visible: self.first-y + 28px * (index + 1) <= sidebar.settings-y - 8px;
+                y: self.first-y + 28px * index;
                 icon: Icons.playlist;
                 artwork: item.artwork;
                 label: item.name;

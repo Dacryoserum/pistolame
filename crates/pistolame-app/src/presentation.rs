@@ -497,6 +497,12 @@ pub(crate) fn track_info_cells(
     cells
 }
 
+/// "1 écoute", "12 écoutes": how many times a track or an album's tracks were played.
+pub(crate) fn play_count_label(play_count: u32) -> String {
+    let plural = if play_count > 1 { "s" } else { "" };
+    format!("{play_count} écoute{plural}")
+}
+
 /// What the output device list shows: a "Sortie du système" row naming the current system
 /// default, then every device, with the user's choice checked.
 #[derive(Debug, PartialEq, Eq)]

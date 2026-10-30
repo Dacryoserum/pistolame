@@ -76,6 +76,7 @@ mod tests {
                 channel_mask: ChannelMask(0x3),
             },
             policy: OpenPolicy::ExclusiveOnly,
+            initial_shared_mode_gain: 1.0,
         };
         let Err(open_error) = output.open_stream(request, Box::new(SilentRenderSource)) else {
             panic!("the unsupported backend must not open a stream");
