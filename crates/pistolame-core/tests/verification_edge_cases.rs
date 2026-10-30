@@ -103,8 +103,6 @@ fn a_seek_mid_track_verifies_from_the_target() {
     run.send(EngineCommand::SeekTo {
         position_in_track: Duration::from_secs(1),
     });
-    run.wait_for_state(PlaybackState::Opening);
-    run.wait_for_state(PlaybackState::Playing);
     run.controller.release();
     run.wait_for_state(PlaybackState::Stopped);
     let target = 44_100usize;
@@ -125,6 +123,38 @@ fn a_seek_mid_track_verifies_from_the_target() {
     );
 }
 
+/// A seek while paused takes effect on Play, from the new position.
+#[test]
+fn a_seek_while_paused_plays_from_the_target_on_resume() {
+    let fixture = generate_fixture(&CD_STEREO);
+    let tuning = EngineTuning {
+        playback_ring_duration: Duration::from_millis(500),
+        start_prefill_duration: Duration::from_millis(200),
+        verification_tap_duration: Duration::from_secs(4),
+    };
+    let mut run = start_engine(queued_config(), EXCLUSIVE, tuning);
+    hold_after(&run, 20);
+    let track_id = run.open(&fixture.path);
+    wait_until_held(&run);
+    run.send(EngineCommand::Pause);
+    run.controller.release();
+    run.wait_for_state(PlaybackState::Paused);
+    run.send(EngineCommand::SeekTo {
+        position_in_track: Duration::from_secs(1),
+    });
+    run.send(EngineCommand::Play);
+    run.wait_for_state(PlaybackState::Stopped);
+    let target = 44_100usize;
+    assert_eq!(
+        run.final_status(track_id).transmission,
+        TransmissionStatus::Verified {
+            first_frame_index: target as u64,
+            frame_count: (CD_STEREO.frame_count() - target) as u64,
+            md5: canonical_md5(&fixture.original_interleaved_pcm[target * 2..], 16),
+        }
+    );
+}
+
 #[test]
 fn a_seek_back_to_zero_verifies_the_whole_track_on_both_levels() {
     let fixture = generate_fixture(&CD_STEREO);
@@ -135,8 +165,6 @@ fn a_seek_back_to_zero_verifies_the_whole_track_on_both_levels() {
     run.send(EngineCommand::SeekTo {
         position_in_track: Duration::ZERO,
     });
-    run.wait_for_state(PlaybackState::Opening);
-    run.wait_for_state(PlaybackState::Playing);
     run.controller.release();
     run.wait_for_state(PlaybackState::Stopped);
     let status = run.final_status(track_id);
@@ -226,8 +254,6 @@ fn a_seek_to_the_end_is_an_empty_segment_then_stops() {
     run.send(EngineCommand::SeekTo {
         position_in_track: Duration::from_secs(60),
     });
-    run.wait_for_state(PlaybackState::Opening);
-    run.wait_for_state(PlaybackState::Playing);
     run.controller.release();
     run.wait_for_state(PlaybackState::Stopped);
     assert_eq!(

@@ -72,6 +72,7 @@ fn feeder_stops_at_a_format_boundary_and_resumes_after_reopen() {
         tap_writer,
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicU64::new(0)),
         Arc::clone(&counters),
     );
     let first_samples = [100, -100, 200, -200];
@@ -203,6 +204,7 @@ fn an_empty_finished_queue_is_the_end_of_the_stream_counted_once() {
         tap_writer,
         Arc::new(AtomicU64::new(0)),
         Arc::clone(&is_playback_queue_finished),
+        Arc::new(AtomicU64::new(0)),
         Arc::clone(&counters),
     );
     let samples = [1, -1, 2, -2];

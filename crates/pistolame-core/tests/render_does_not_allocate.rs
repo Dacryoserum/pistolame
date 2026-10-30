@@ -159,6 +159,8 @@ impl Scenario {
             tap_writer,
             Arc::clone(&flush_generation),
             Arc::clone(&is_playback_queue_finished),
+            // Every generation counts as prefilled: no decode thread here.
+            Arc::clone(&flush_generation),
             Arc::clone(&counters),
         );
         let sample_count = BLOCK_FRAMES as usize * usize::from(CHANNEL_COUNT);

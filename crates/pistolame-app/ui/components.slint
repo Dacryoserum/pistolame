@@ -29,6 +29,8 @@ export global Icons {
     out property <image> skip-back-fill: @image-url("../assets/icons/skip-back-fill.svg");
     out property <image> play-fill: @image-url("../assets/icons/play-fill.svg");
     out property <image> pause-fill: @image-url("../assets/icons/pause-fill.svg");
+    out property <image> dots-six-vertical: @image-url("../assets/icons/dots-six-vertical.svg");
+    out property <image> ranking: @image-url("../assets/icons/ranking.svg");
     out property <image> skip-forward-fill: @image-url("../assets/icons/skip-forward-fill.svg");
     out property <image> speaker-low: @image-url("../assets/icons/speaker-low.svg");
     out property <image> speaker-high: @image-url("../assets/icons/speaker-high.svg");
@@ -449,28 +451,6 @@ export component SignalPath inherits Rectangle {
     }
 }
 
-export component EqualizerBars inherits Rectangle {
-    width: 24px;
-    height: 16px;
-    // Idle heights while paused; while playing each bar follows a sine with its own
-    // angular speed (rad/s) and phase, driven by the animation clock. The clock is only
-    // read while playing, so a paused window does not redraw continuously.
-    property <[float]> idle-levels: [0.3, 0.6, 0.4];
-    property <[float]> angular-speeds: [7.0, 9.0, 6.0];
-    property <[float]> phases: [0.0, 1.0, 2.0];
-    for idle-level[index] in root.idle-levels: Rectangle {
-        property <float> level: AppState.is-playing
-            ? 0.5 + 0.5 * Math.sin((animation-tick() / 1s * root.angular-speeds[index] + root.phases[index]) * 1rad)
-            : idle-level;
-        x: 11px + index * 5px;
-        width: 3px;
-        height: Math.round(3 + 9 * self.level) * 1px;
-        y: 14px - self.height;
-        border-radius: 1px;
-        background: Tokens.accent;
-    }
-}
-
 component MenuRow inherits Rectangle {
     in property <image> icon;
     in property <string> label;
@@ -709,10 +689,6 @@ export component TrackRow inherits Rectangle {
         horizontal-alignment: right;
         color: Tokens.text-secondary;
     }
-    if root.is-current: EqualizerBars {
-        x: 12px;
-        y: 10px;
-    }
     Txt {
         role: root.is-current ? TextRole.body-medium : TextRole.body;
         x: 52px;
@@ -755,6 +731,15 @@ export component TrackRow inherits Rectangle {
         activated => { root.activated(); }
         selected(is-toggle, is-range) => { root.selected(is-toggle, is-range); }
         menu-requested(x, y) => { menu-button.open-at(x - menu-button.x, y - menu-button.y); }
+    }
+
+    // Above the row's touch area: a click here pauses, it does not restart the track.
+    if root.is-current: IconButton {
+        x: 14px; y: 6px; width: 24px; height: 24px;
+        icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill;
+        icon-size: 14px; icon-color: Tokens.accent;
+        label: AppState.is-playing ? "Pause" : "Lecture";
+        clicked => { AppState.toggle-play(); }
     }
 
     // A favorite shows a small heart in the menu slot while the row is not hovered.
@@ -1977,6 +1962,25 @@ component FolderRow inherits Rectangle {
     }
 }
 
+// Which plays "Les plus écoutés" counts, in Réglages and on its page.
+component TopTracksPeriodChoice inherits HorizontalLayout {
+    height: 32px;
+    spacing: 8px;
+    alignment: start;
+    PillButton {
+        width: 124px;
+        label: "Depuis toujours";
+        is-primary: !AppState.is-top-tracks-recent;
+        clicked => { AppState.set-top-tracks-recent(false); }
+    }
+    PillButton {
+        width: 136px;
+        label: "30 derniers jours";
+        is-primary: AppState.is-top-tracks-recent;
+        clicked => { AppState.set-top-tracks-recent(true); }
+    }
+}
+
 export component OutputSettings inherits Rectangle {
     ScrollView {
         content-y <=> AppState.settings-scroll-y;
@@ -2155,6 +2159,58 @@ export component OutputSettings inherits Rectangle {
                     }
                 }
             }
+            SettingsCard {
+                height: top-tracks-layout.preferred-height;
+                top-tracks-layout := VerticalLayout {
+                    padding: 14px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Txt { role: TextRole.headline; text: "Les plus écoutés"; }
+                            Txt {
+                                role: TextRole.callout;
+                                text: "Une playlist automatique, dans la barre latérale, qui classe vos morceaux du plus écouté au moins écouté.";
+                                color: Tokens.text-secondary;
+                                wrap: word-wrap;
+                                height: self.preferred-height;
+                            }
+                        }
+                        Switch {
+                            checked: AppState.are-top-tracks-on;
+                            accessible-label: "Les plus écoutés";
+                            toggled => { AppState.set-top-tracks-on(self.checked); }
+                        }
+                    }
+                    if AppState.are-top-tracks-on: HorizontalLayout {
+                        height: 30px;
+                        spacing: 10px;
+                        alignment: start;
+                        Txt { height: 30px; text: "Nombre de morceaux"; color: Tokens.text-secondary; }
+                        Rectangle {
+                            width: 72px;
+                            border-radius: 7px;
+                            background: Tokens.surface-field;
+                            border-width: top-count.has-focus ? 2px : 0px;
+                            border-color: Tokens.focus-ring;
+                            top-count := TextInput {
+                                x: 10px; width: parent.width - 20px; height: parent.height;
+                                single-line: true;
+                                input-type: number;
+                                vertical-alignment: center;
+                                font-family: "Inter";
+                                font-size: 13px;
+                                color: Tokens.text-primary;
+                                accessible-label: "Nombre de morceaux des plus écoutés";
+                                text <=> AppState.top-track-count-text;
+                                edited => { AppState.set-top-track-count(self.text); }
+                            }
+                        }
+                    }
+                    if AppState.are-top-tracks-on: TopTracksPeriodChoice { }
+                }
+            }
             Rectangle { height: 12px; }
             Txt { role: TextRole.title-3; text: "Raccourcis clavier"; height: 32px; vertical-alignment: center; }
             SettingsCard {
@@ -2223,77 +2279,281 @@ component VerdictPill inherits Rectangle {
     }
 }
 
-// The current track follows playback independently of the album being browsed. Top: the
-// track and everything about its file; scrolling down: signal path, authenticity (Nyquist's
-// analysis) and spectrogram.
+// The seek rail of the current-track page. It thickens under the pointer and, like the LCD's,
+// seeks when the press ends.
+component SeekRail inherits Rectangle {
+    // The fill follows the pointer only during a drag; a click waits for the engine's position,
+    // which Rust moves to the target at once.
+    property <bool> is-seeking;
+    property <bool> is-scrubbing;
+    property <float> pointer-progress: Math.clamp(touch.mouse-x / root.width, 0, 1);
+    property <bool> is-active: touch.has-hover || root.is-seeking;
+    property <float> shown-progress: root.is-scrubbing ? root.pointer-progress : AppState.progress;
+    height: 16px;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: root.is-active ? 7px : 4px;
+        animate height { duration: 120ms; easing: ease-out-quint; }
+        border-radius: self.height / 2;
+        background: Tokens.immersive-rail;
+        clip: true;
+        Rectangle {
+            x: 0px; width: parent.width * root.shown-progress;
+            background: Tokens.immersive-text;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        moved => { root.is-scrubbing = root.is-seeking; }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.is-seeking = true;
+            } else if event.kind == PointerEventKind.up {
+                if root.is-seeking {
+                    AppState.seek(root.pointer-progress);
+                }
+                root.is-seeking = false;
+                root.is-scrubbing = false;
+            } else if event.kind == PointerEventKind.cancel {
+                root.is-seeking = false;
+                root.is-scrubbing = false;
+            }
+        }
+    }
+}
+
+// A round glyph button of the current-track page: no fill until the pointer is on it.
+component TransportButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-size;
+    in property <color> icon-color: Tokens.immersive-text;
+    in property <string> label;
+    callback clicked();
+    border-radius: self.width / 2;
+    background: touch.pressed ? Tokens.immersive-fill-pressed : touch.has-hover ? Tokens.immersive-fill-hover : transparent;
+    animate background { duration: 120ms; easing: ease-out-quint; }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    Icon { width: root.icon-size; height: root.icon-size; source: root.icon; colorize: root.icon-color; }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// The previous or next track beside the current artwork, quiet until pointed at; a click plays
+// it. A flat echo of Cover Flow: the sleeves stand on the same floor as the one playing, the page
+// aligning them on the artwork's bottom edge rather than floating them at its center.
+component AdjacentTrackCard inherits Rectangle {
+    in property <QueueRow> entry;
+    in property <string> caption;
+    callback clicked();
+    height: card-layout.preferred-height;
+    opacity: touch.has-hover ? 1 : 0.62;
+    animate opacity { duration: 160ms; easing: ease-out-quint; }
+    accessible-role: button;
+    accessible-label: root.caption + " : " + root.entry.title;
+    accessible-action-default => { root.clicked(); }
+    card-layout := VerticalLayout {
+        spacing: 3px;
+        Artwork { height: self.width; source: root.entry.artwork; }
+        Rectangle { height: 5px; }
+        Txt { role: TextRole.callout-medium; text: root.entry.title; color: Tokens.immersive-text; overflow: elide; }
+        Txt { role: TextRole.caption; text: root.entry.subtitle; color: Tokens.immersive-text-secondary; overflow: elide; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// The current track follows playback independently of the album being browsed. The first screen
+// is the player, tinted with the color of the cover and dark in both themes: the artwork, which
+// steps back while paused, the title aligned under it as on Apple's players, the thin rail and
+// the bare transport. Scrolling down gives the file, the signal path, authenticity (Nyquist's
+// analysis) and the spectrogram, in the normal theme.
 export component NowPlaying inherits Rectangle {
+    // Height the title, links, rail and controls need under the artwork, with the "details" link
+    // at the bottom of the screen.
+    property <length> below-artwork-height: 238px;
+    property <length> side-card-width: root.width >= 900px ? 132px : root.width >= 640px ? 116px : 92px;
+    property <length> side-card-margin: 16px;
+    property <length> minimum-gap-to-artwork: 20px;
+    // On a wide page the cards stay near the artwork instead of going to the edges.
+    property <length> preferred-gap-to-artwork: 64px;
+    property <length> artwork-slot-size: Math.clamp(
+        min(
+            root.height - 48px - root.below-artwork-height,
+            root.width - 2 * (root.side-card-width + root.side-card-margin + root.minimum-gap-to-artwork)),
+        160px, 460px);
+    // The artwork steps back while paused. Only that change animates, for a third of a second;
+    // at rest the page redraws nothing but the rail.
+    property <float> paused-artwork-scale: 0.9;
+    // Where the artwork sits; the cassette lands exactly there.
+    out property <length> artwork-size: root.artwork-slot-size * (AppState.is-playing ? 1 : root.paused-artwork-scale);
+    animate artwork-size { duration: 320ms; easing: cubic-bezier(0.3, 1.25, 0.5, 1); }
+    property <length> side-card-x: max(
+        root.side-card-margin,
+        (root.width - root.artwork-slot-size) / 2 - root.preferred-gap-to-artwork - root.side-card-width);
+    property <length> artwork-slot-y: max(44px, (root.height - root.artwork-slot-size - root.below-artwork-height) / 2);
+    out property <length> artwork-x: (root.width - root.artwork-size) / 2;
+    out property <length> artwork-y: root.artwork-slot-y + (root.artwork-slot-size - root.artwork-size) / 2;
+    property <length> below-artwork-y: root.artwork-slot-y + root.artwork-slot-size;
+    property <length> column-width: min(root.width - 48px, max(root.artwork-slot-size, 380px));
+    property <length> column-x: (root.width - root.column-width) / 2;
+    // The cards of the file details go from four columns to two beside the "À suivre" panel.
+    property <bool> is-narrow: root.width < 760px;
+    property <length> verification-x: root.is-narrow ? 14px : 410px;
+    property <length> verification-y: root.is-narrow ? 230px : 0px;
     ScrollView {
         content-y <=> AppState.now-playing-scroll-y;
         VerticalLayout {
             alignment: start;
-            padding-left: 32px;
-            padding-right: 52px;
-            padding-top: 16px;
-            padding-bottom: 32px;
-            spacing: 14px;
-            HorizontalLayout {
-                height: 28px;
-                spacing: 6px;
-                alignment: start;
-                IconButton {
-                    width: 28px; height: 28px;
-                    icon: Icons.caret-left; icon-color: Tokens.accent;
+            Rectangle {
+                height: root.height;
+                background: @linear-gradient(180deg, AppState.now-playing-tint 0%, AppState.now-playing-tint-bottom 100%);
+                TransportButton {
+                    x: 16px; y: 12px; width: 32px; height: 32px;
+                    icon: Icons.caret-left; icon-size: 16px;
                     label: "Retour à la vue précédente";
                     clicked => { AppState.navigate-back(); }
                 }
-                Txt { height: 28px; vertical-alignment: center; text: "À l'écoute"; color: Tokens.text-secondary; }
-            }
-            // Track header.
-            HorizontalLayout {
-                spacing: 28px;
-                height: 220px;
-                Artwork { width: 220px; height: 220px; source: AppState.lcd-artwork; }
-                VerticalLayout {
-                    alignment: center;
+                if AppState.has-previous-track-card: AdjacentTrackCard {
+                    x: root.side-card-x;
+                    y: root.artwork-y + root.artwork-size - self.height;
+                    width: root.side-card-width;
+                    caption: "Morceau précédent";
+                    entry: AppState.previous-track-card;
+                    clicked => { AppState.play-previous-track-card(); }
+                }
+                if AppState.has-next-track-card: AdjacentTrackCard {
+                    x: root.width - root.side-card-x - root.side-card-width;
+                    y: root.artwork-y + root.artwork-size - self.height;
+                    width: root.side-card-width;
+                    caption: "Morceau suivant";
+                    entry: AppState.next-track-card;
+                    clicked => { AppState.next-track(); }
+                }
+                Rectangle {
+                    x: root.artwork-x; y: root.artwork-y;
+                    width: root.artwork-size; height: root.artwork-size;
+                    background: Tokens.surface-field;
+                    drop-shadow-offset-y: 18px;
+                    drop-shadow-blur: 44px;
+                    drop-shadow-color: Tokens.immersive-artwork-shadow;
+                    Image {
+                        width: parent.width; height: parent.height;
+                        source: AppState.now-playing-artwork.width > 0 ? AppState.now-playing-artwork : AppState.lcd-artwork;
+                        image-fit: fill;
+                    }
+                }
+                Txt {
+                    x: root.column-x; y: root.below-artwork-y + 22px; width: root.column-width;
+                    role: TextRole.display; text: AppState.lcd-title; color: Tokens.immersive-text;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    x: root.column-x; y: root.below-artwork-y + 56px; width: root.column-width; height: 22px;
+                    alignment: start;
                     spacing: 6px;
-                    Txt { role: TextRole.label; text: "MORCEAU EN COURS"; color: Tokens.text-secondary; }
-                    Txt { role: TextRole.display; text: AppState.lcd-title; overflow: elide; }
-                    HorizontalLayout {
-                        alignment: start;
-                        height: 28px;
-                        TextLink {
-                            role: TextRole.title-2; available-width: 600px; text: AppState.current-artist;
-                            text-color: Tokens.accent; hover-text-color: Tokens.accent-hover;
-                            clicked => { AppState.open-current-artist(); }
+                    TextLink {
+                        available-width: root.column-width / 2 - 8px; text: AppState.current-artist;
+                        role: TextRole.popover-title;
+                        text-color: Tokens.immersive-text-secondary; hover-text-color: Tokens.immersive-text;
+                        clicked => { AppState.open-current-artist(); }
+                    }
+                    Txt { width: 8px; height: 22px; text: "·"; color: Tokens.immersive-text-tertiary; horizontal-alignment: center; }
+                    TextLink {
+                        available-width: root.column-width / 2 - 8px; text: AppState.current-album;
+                        role: TextRole.popover-title;
+                        text-color: Tokens.immersive-text-secondary; hover-text-color: Tokens.immersive-text;
+                        clicked => { AppState.open-current-album(); }
+                    }
+                }
+                SeekRail { x: root.column-x; y: root.below-artwork-y + 90px; width: root.column-width; }
+                Txt {
+                    x: root.column-x; y: root.below-artwork-y + 110px; width: 44px;
+                    role: TextRole.caption; text: AppState.elapsed-label; color: Tokens.immersive-text-secondary;
+                }
+                Txt {
+                    x: root.column-x + 48px; y: root.below-artwork-y + 110px; width: root.column-width - 96px;
+                    role: TextRole.caption;
+                    text: AppState.current-format + " · " + AppState.current-play-count-label;
+                    color: Tokens.immersive-text-tertiary;
+                    horizontal-alignment: center; overflow: elide;
+                }
+                Txt {
+                    x: root.column-x + root.column-width - 44px; y: root.below-artwork-y + 110px; width: 44px;
+                    role: TextRole.caption; text: AppState.remaining-label; color: Tokens.immersive-text-secondary;
+                    horizontal-alignment: right;
+                }
+                HorizontalLayout {
+                    x: 0px; y: root.below-artwork-y + 136px; width: root.width; height: 60px;
+                    alignment: center;
+                    spacing: 18px;
+                    VerticalLayout {
+                        alignment: center;
+                        TransportButton {
+                            width: 36px; height: 36px;
+                            icon: Icons.shuffle; icon-size: 18px;
+                            icon-color: AppState.is-shuffle-on ? Tokens.accent : Tokens.immersive-text-tertiary;
+                            label: "Aléatoire";
+                            clicked => { AppState.is-shuffle-on = !AppState.is-shuffle-on; }
                         }
                     }
-                    HorizontalLayout {
-                        alignment: start;
-                        height: 20px;
-                        TextLink {
-                            available-width: 600px; text: AppState.current-album;
-                            clicked => { AppState.open-current-album(); }
+                    VerticalLayout {
+                        alignment: center;
+                        TransportButton {
+                            width: 48px; height: 48px;
+                            icon: Icons.skip-back-fill; icon-size: 28px;
+                            label: "Précédent";
+                            clicked => { AppState.previous-track(); }
                         }
                     }
-                    Rectangle { height: 8px; }
-                    HorizontalLayout {
-                        spacing: 10px;
-                        alignment: start;
-                        PillButton {
-                            label: AppState.is-playing ? "Pause" : "Lecture";
-                            icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill; is-primary: true;
-                            clicked => { AppState.toggle-play(); }
-                        }
-                        PillButton { label: "Voir l'album"; icon: Icons.vinyl-record; clicked => { AppState.open-current-album(); } }
+                    TransportButton {
+                        width: 60px; height: 60px;
+                        icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill; icon-size: 40px;
+                        label: AppState.is-playing ? "Pause" : "Lecture";
+                        clicked => { AppState.toggle-play(); }
                     }
-                    Txt { role: TextRole.caption; text: AppState.elapsed-label + " / " + AppState.current-duration; color: Tokens.text-secondary; }
+                    VerticalLayout {
+                        alignment: center;
+                        TransportButton {
+                            width: 48px; height: 48px;
+                            icon: Icons.skip-forward-fill; icon-size: 28px;
+                            label: "Suivant";
+                            clicked => { AppState.next-track(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        TransportButton {
+                            width: 36px; height: 36px;
+                            icon: Icons.repeat; icon-size: 18px;
+                            icon-color: AppState.is-repeat-on ? Tokens.accent : Tokens.immersive-text-tertiary;
+                            label: "Répéter";
+                            clicked => { AppState.is-repeat-on = !AppState.is-repeat-on; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    x: 0px; y: root.height - 30px; width: root.width; height: 20px;
+                    alignment: center;
+                    TextLink {
+                        available-width: root.width - 48px;
+                        role: TextRole.caption;
+                        text: "Fichier, chemin du signal et authenticité ↓";
+                        text-color: Tokens.immersive-text-tertiary; hover-text-color: Tokens.immersive-text;
+                        clicked => { AppState.now-playing-scroll-y = -root.height; }
+                    }
                 }
             }
+            VerticalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            padding-top: 16px;
+            padding-bottom: 32px;
+            spacing: 14px;
             // File information.
             Txt { role: TextRole.title-3; text: "Informations sur le fichier"; height: 32px; vertical-alignment: bottom; }
             SettingsCard {
                 height: info-grid.height + path-row.height + 12px;
-                info-grid := InfoGrid { y: 6px; cells: AppState.track-info-cells; columns: 4; }
+                info-grid := InfoGrid { y: 6px; cells: AppState.track-info-cells; columns: root.is-narrow ? 2 : 4; }
                 path-row := Rectangle {
                     y: info-grid.height + 6px;
                     height: 40px;
@@ -2309,17 +2569,17 @@ export component NowPlaying inherits Rectangle {
             // Signal path.
             Txt { role: TextRole.title-3; text: "Chemin du signal"; height: 40px; vertical-alignment: bottom; }
             SettingsCard {
-                height: 236px;
+                height: root.is-narrow ? 430px : 236px;
                 Badge {
                     x: 14px; y: 14px; label: AppState.badge-label;
                     kind: AppState.is-bit-perfect ? BadgeKind.bit-perfect : AppState.is-shared ? BadgeKind.shared : BadgeKind.unknown;
                 }
-                SignalPath { x: 14px; y: 54px; width: 360px; steps: AppState.path-steps; }
-                Txt { x: 410px; y: 14px; role: TextRole.headline; text: "Vérification"; }
-                Text { x: 410px; y: 40px; width: parent.width - 424px; height: 54px; text: AppState.transmission-text; wrap: word-wrap; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
-                Text { x: 410px; y: 98px; width: parent.width - 424px; height: 54px; text: AppState.integrity-text; wrap: word-wrap; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
-                Txt { x: 410px; y: 158px; width: parent.width - 424px; role: TextRole.caption; text: AppState.underrun-label; color: Tokens.text-secondary; }
-                PillButton { x: 410px; y: 186px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
+                SignalPath { x: 14px; y: 54px; width: min(360px, parent.width - 28px); steps: AppState.path-steps; }
+                Txt { x: root.verification-x; y: root.verification-y + 14px; role: TextRole.headline; text: "Vérification"; }
+                Text { x: root.verification-x; y: root.verification-y + 40px; width: parent.width - root.verification-x - 14px; height: 54px; text: AppState.transmission-text; wrap: word-wrap; color: AppState.transmission-ok ? Tokens.status-ok : Tokens.text-secondary; }
+                Text { x: root.verification-x; y: root.verification-y + 98px; width: parent.width - root.verification-x - 14px; height: 54px; text: AppState.integrity-text; wrap: word-wrap; color: AppState.integrity-ok ? Tokens.status-ok : Tokens.text-secondary; }
+                Txt { x: root.verification-x; y: root.verification-y + 158px; width: parent.width - root.verification-x - 14px; role: TextRole.caption; text: AppState.underrun-label; color: Tokens.text-secondary; }
+                PillButton { x: root.verification-x; y: root.verification-y + 186px; label: "Détails"; icon: Icons.seal-check; clicked => { AppState.is-popover-open = true; } }
             }
             // Authenticity (Nyquist).
             Txt { role: TextRole.title-3; text: "Authenticité"; height: 40px; vertical-alignment: bottom; }
@@ -2351,7 +2611,7 @@ export component NowPlaying inherits Rectangle {
                         Txt { role: TextRole.callout; text: finding.value; color: Tokens.text-secondary; wrap: word-wrap; height: self.preferred-height; overflow: clip; }
                     }
                     Rectangle { height: 1px; background: Tokens.separator; }
-                    InfoGrid { cells: AppState.authenticity-measures; columns: 4; }
+                    InfoGrid { cells: AppState.authenticity-measures; columns: root.is-narrow ? 2 : 4; }
                     Rectangle { height: 1px; background: Tokens.separator; }
                     Txt { role: TextRole.headline; text: "Indices"; }
                     for indicator in AppState.authenticity-indicators: HorizontalLayout {
@@ -2391,6 +2651,7 @@ export component NowPlaying inherits Rectangle {
                 text: "Découvrir Nyquist →";
                 color: Tokens.accent;
                 TouchArea { mouse-cursor: pointer; clicked => { AppState.open-nyquist(); } }
+            }
             }
         }
     }
@@ -2620,6 +2881,63 @@ export component PlaylistView inherits Rectangle {
 }
 
 // A dimmed-window sheet frame shared by the editors.
+// "Les plus écoutés": the ranking, with what it counts and how often each track was played.
+export component TopTracksView inherits Rectangle {
+    property <length> list-width: root.width - 64px;
+    // Row 0 is the header, the next ones the tracks: see `PlaylistView`.
+    ListView {
+        content-y <=> AppState.top-tracks-scroll-y;
+        for item-index in AppState.top-tracks.length + 1: Rectangle {
+            property <int> track-row: item-index - 1;
+            height: item-index == 0 ? 148px : 36px;
+            if item-index == 0: Rectangle {
+                Rectangle {
+                    x: 32px; y: 24px; width: 56px; height: 56px;
+                    border-radius: 8px;
+                    background: Tokens.fill-control;
+                    Icon { width: 26px; height: 26px; source: Icons.ranking; colorize: Tokens.accent; }
+                }
+                Txt { x: 104px; y: 26px; width: root.list-width - 72px; role: TextRole.display; text: "Les plus écoutés"; overflow: elide; }
+                Txt { x: 104px; y: 60px; width: root.list-width - 72px; role: TextRole.callout; text: AppState.top-tracks-meta; color: Tokens.text-secondary; }
+                PillButton {
+                    x: 32px; y: 96px;
+                    is-primary: true;
+                    label: "Lecture";
+                    icon: Icons.play-fill;
+                    clicked => { AppState.play-top-track(0); }
+                }
+                TopTracksPeriodChoice { x: 156px; y: 96px; }
+            }
+            if item-index > 0: TrackRow {
+                x: 32px;
+                width: root.list-width;
+                number: AppState.top-tracks[parent.track-row].number;
+                title: AppState.top-tracks[parent.track-row].title;
+                subtitle: AppState.top-tracks[parent.track-row].subtitle;
+                format-label: AppState.top-tracks[parent.track-row].format-label;
+                duration-label: AppState.top-tracks[parent.track-row].duration-label;
+                is-odd: Math.mod(parent.track-row, 2) == 1;
+                is-current: AppState.top-tracks[parent.track-row].is-current;
+                is-favorite: AppState.top-tracks[parent.track-row].is-favorite;
+                is-selected: AppState.top-tracks[parent.track-row].is-selected;
+                activated => { AppState.play-top-track(parent.track-row); }
+                selected(is-toggle, is-range) => {
+                    AppState.select-track({ source: TrackSource.top-track, album: 0, track: 0, position: parent.track-row }, is-toggle, is-range);
+                }
+                action(kind) => {
+                    AppState.track-action({ source: TrackSource.top-track, album: 0, track: 0, position: parent.track-row }, kind);
+                }
+            }
+        }
+    }
+    if AppState.top-tracks.length == 0: Txt {
+        x: 32px; y: 152px; width: root.list-width;
+        text: AppState.is-top-tracks-recent ? "Aucune écoute sur les 30 derniers jours pour l’instant." : "Écoutez quelques morceaux : ils apparaîtront ici.";
+        color: Tokens.text-secondary;
+        wrap: word-wrap;
+    }
+}
+
 export component Sheet inherits Rectangle {
     in property <string> title;
     border-radius: 12px;
@@ -2900,12 +3218,17 @@ component QueueTrack inherits Rectangle {
     in property <bool> can-remove;
     in property <bool> can-move-earlier;
     in property <bool> can-move-later;
+    // Shows the handle that drags the row to another place of its section.
+    in property <bool> can-drag;
     callback clicked();
     callback remove();
     callback move(bool /* is-earlier */);
+    // The handle moved `offset` from where it was pressed.
+    callback drag-moved(length /* offset */);
+    callback drag-ended();
     height: 48px;
     border-radius: 8px;
-    property <bool> is-hovered: touch.has-hover || remove-button.has-hover || earlier-button.has-hover || later-button.has-hover;
+    property <bool> is-hovered: touch.has-hover || grip.has-hover || remove-button.has-hover || earlier-button.has-hover || later-button.has-hover;
     background: keyboard.has-focus ? Tokens.fill-row-selected : root.is-hovered ? Tokens.fill-row-hover : transparent;
     accessible-role: button;
     accessible-label: root.entry.title;
@@ -2941,13 +3264,31 @@ component QueueTrack inherits Rectangle {
             if !AppState.is-single-click-play { root.clicked(); }
         }
     }
+    grip := TouchArea {
+        x: 0px; width: 20px;
+        enabled: root.can-drag;
+        mouse-cursor: self.pressed ? MouseCursor.grabbing : root.can-drag ? MouseCursor.grab : MouseCursor.default;
+        moved => {
+            if self.pressed { root.drag-moved(self.mouse-y - self.pressed-y); }
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                root.drag-ended();
+            }
+        }
+        if root.can-drag: Icon {
+            x: 3px; y: (parent.height - 14px) / 2; width: 14px; height: 14px;
+            source: Icons.dots-six-vertical;
+            colorize: grip.has-hover || grip.pressed ? Tokens.text-primary : Tokens.text-tertiary;
+        }
+    }
     Rectangle {
-        x: 8px; y: 6px; width: 36px; height: 36px;
+        x: 20px; y: 6px; width: 36px; height: 36px;
         background: Tokens.surface-field;
         Image { width: parent.width; height: parent.height; source: root.entry.artwork; image-fit: cover; }
     }
-    Txt { x: 52px; y: 7px; width: root.width - 52px - 76px; text: root.entry.title; overflow: elide; }
-    Txt { x: 52px; y: 25px; width: root.width - 52px - 76px; role: TextRole.callout; text: root.entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
+    Txt { x: 64px; y: 7px; width: root.width - 64px - 76px; text: root.entry.title; overflow: elide; }
+    Txt { x: 64px; y: 25px; width: root.width - 64px - 76px; role: TextRole.callout; text: root.entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
     Txt {
         x: root.width - 76px; y: 16px; width: 40px; role: TextRole.callout;
         text: root.entry.duration-label; color: Tokens.text-secondary; horizontal-alignment: right;
@@ -3040,6 +3381,53 @@ export component QueuePanel inherits Rectangle {
     border-color: Tokens.separator;
     // The "Historique" section starts folded.
     property <bool> is-history-shown;
+    // Row being dragged by its handle: 0 none, 1 "Ensuite dans la file", 2 "Ensuite depuis".
+    property <int> drag-section;
+    property <int> drag-index;
+    property <QueueRow> drag-entry;
+    property <length> drag-offset;
+    // A row's height and the spacing of its list.
+    property <length> row-step: 50px;
+    property <int> drag-row-count: root.drag-section == 1 ? AppState.queue-up-next.length : AppState.queue-upcoming.length;
+    property <int> drag-target: Math.clamp(root.drag-index + Math.round(root.drag-offset / root.row-step), 0, root.drag-row-count - 1);
+    property <length> drag-list-y: root.drag-section == 1 ? up-next-list.y : upcoming-list.y;
+    property <length> drag-row-y: root.drag-list-y + root.drag-index * root.row-step + root.drag-offset;
+    // Where the dragged row is in the visible part of the list, for scrolling at its edges.
+    property <length> drag-visible-y: root.drag-row-y + list.content-y;
+    property <length> edge-scroll-margin: 40px;
+    property <length> edge-scroll-step: 6px;
+    // The rows were rebuilt (the track changed): the row being dragged is gone.
+    property <int> queue-revision: AppState.queue-revision;
+    changed queue-revision => { root.drag-section = 0; }
+
+    function drag-row(section: int, index: int, entry: QueueRow, offset: length) {
+        root.drag-section = section;
+        root.drag-index = index;
+        root.drag-entry = entry;
+        root.drag-offset = offset;
+    }
+
+    function end-drag() {
+        if root.drag-section != 0 {
+            let section = root.drag-section;
+            let target = root.drag-target;
+            root.drag-section = 0;
+            if target != root.drag-index {
+                AppState.queue-reorder(section == 1, root.drag-index, target);
+            }
+        }
+    }
+
+    Timer {
+        interval: 16ms;
+        running: root.drag-section != 0 && (root.drag-visible-y < root.edge-scroll-margin || root.drag-visible-y > list.height - root.edge-scroll-margin - 48px);
+        triggered => {
+            let step = root.drag-visible-y < root.edge-scroll-margin ? root.edge-scroll-step : -root.edge-scroll-step;
+            let scrolled = Math.clamp(list.content-y + step, min(0px, list.height - list.content-height), 0px);
+            root.drag-offset -= scrolled - list.content-y;
+            list.content-y = scrolled;
+        }
+    }
     TouchArea { }
     Txt { x: 20px; y: 18px; role: TextRole.title-3; text: "À suivre"; }
     SleepTimerButton { x: root.width - 16px - 28px - 6px - self.width; y: 14px; }
@@ -3049,10 +3437,13 @@ export component QueuePanel inherits Rectangle {
         label: "Fermer la file d’attente";
         clicked => { AppState.is-queue-open = false; }
     }
-    Flickable {
+    list := Flickable {
         y: 56px;
         height: root.height - 56px;
         content-height: body.preferred-height;
+        // Otherwise it holds each press back to see if a pan starts, and a handle grabbed and
+        // moved at once never gets it. The wheel and the trackpad still scroll.
+        interactive: false;
         body := VerticalLayout {
             padding-left: 12px;
             padding-right: 12px;
@@ -3108,14 +3499,21 @@ export component QueuePanel inherits Rectangle {
                     clear-touch := TouchArea { mouse-cursor: pointer; clicked => { AppState.queue-clear(); } }
                 }
             }
-            for item[index] in AppState.queue-up-next: QueueTrack {
-                entry: item;
-                can-remove: true;
-                can-move-earlier: index > 0;
-                can-move-later: index < AppState.queue-up-next.length - 1 || AppState.queue-up-next-hidden-count > 0;
-                clicked => { AppState.queue-play-up-next(index); }
-                remove => { AppState.queue-remove(index); }
-                move(is-earlier) => { AppState.queue-move(index, is-earlier); }
+            up-next-list := VerticalLayout {
+                spacing: 2px;
+                for item[index] in AppState.queue-up-next: QueueTrack {
+                    entry: item;
+                    can-remove: true;
+                    can-drag: AppState.queue-up-next.length > 1;
+                    can-move-earlier: index > 0;
+                    can-move-later: index < AppState.queue-up-next.length - 1 || AppState.queue-up-next-hidden-count > 0;
+                    opacity: root.drag-section == 1 && root.drag-index == index ? 0.4 : 1;
+                    clicked => { AppState.queue-play-up-next(index); }
+                    remove => { AppState.queue-remove(index); }
+                    move(is-earlier) => { AppState.queue-move(index, is-earlier); }
+                    drag-moved(offset) => { root.drag-row(1, index, item, offset); }
+                    drag-ended => { root.end-drag(); }
+                }
             }
             if AppState.queue-up-next-hidden-count > 0: Txt {
                 height: 32px;
@@ -3132,9 +3530,16 @@ export component QueuePanel inherits Rectangle {
                 color: Tokens.text-secondary;
                 overflow: elide;
             }
-            for item[index] in AppState.queue-upcoming: QueueTrack {
-                entry: item;
-                clicked => { AppState.queue-play-upcoming(index); }
+            upcoming-list := VerticalLayout {
+                spacing: 2px;
+                for item[index] in AppState.queue-upcoming: QueueTrack {
+                    entry: item;
+                    can-drag: AppState.queue-upcoming.length > 1;
+                    opacity: root.drag-section == 2 && root.drag-index == index ? 0.4 : 1;
+                    clicked => { AppState.queue-play-upcoming(index); }
+                    drag-moved(offset) => { root.drag-row(2, index, item, offset); }
+                    drag-ended => { root.end-drag(); }
+                }
             }
             if AppState.queue-upcoming-hidden-count > 0: Txt {
                 height: 32px;
@@ -3143,6 +3548,30 @@ export component QueuePanel inherits Rectangle {
                 text: "… et " + AppState.queue-upcoming-hidden-count + " autres morceaux";
                 color: Tokens.text-tertiary;
             }
+        }
+        // Where the row will land, and the row itself following the pointer.
+        if root.drag-section != 0: Rectangle {
+            x: 12px;
+            y: root.drag-list-y + (root.drag-target > root.drag-index ? root.drag-target + 1 : root.drag-target) * root.row-step - 2px;
+            width: root.width - 24px;
+            height: 2px;
+            background: Tokens.accent;
+        }
+        if root.drag-section != 0: Rectangle {
+            x: 12px;
+            y: root.drag-row-y;
+            width: root.width - 24px;
+            height: 48px;
+            border-radius: 8px;
+            background: Tokens.surface-field;
+            border-width: 1px;
+            border-color: Tokens.accent;
+            Rectangle {
+                x: 20px; y: 6px; width: 36px; height: 36px;
+                Image { width: parent.width; height: parent.height; source: root.drag-entry.artwork; image-fit: cover; }
+            }
+            Txt { x: 64px; y: 7px; width: parent.width - 76px; text: root.drag-entry.title; overflow: elide; }
+            Txt { x: 64px; y: 25px; width: parent.width - 76px; role: TextRole.callout; text: root.drag-entry.subtitle; color: Tokens.text-secondary; overflow: elide; }
         }
     }
 }
@@ -3349,7 +3778,9 @@ component LibraryTrackLine inherits Rectangle {
     accessible-action-default => { root.activated(); }
     Txt {
         role: root.is-current ? TextRole.body-medium : TextRole.body;
-        x: root.title-x; width: root.title-width; height: root.height; vertical-alignment: center;
+        x: root.is-current ? root.title-x + 26px : root.title-x;
+        width: root.is-current ? root.title-width - 26px : root.title-width;
+        height: root.height; vertical-alignment: center;
         text: root.track.title; overflow: elide;
         color: root.is-current ? Tokens.accent : Tokens.text-primary;
     }
@@ -3360,6 +3791,13 @@ component LibraryTrackLine inherits Rectangle {
         activated => { root.activated(); }
         selected(is-toggle, is-range) => { root.selected(is-toggle, is-range); }
         menu-requested(x, y) => { menu-button.open-at(x - menu-button.x, y - menu-button.y); }
+    }
+    if root.is-current: IconButton {
+        x: root.title-x - 2px; y: 4px; width: 24px; height: 24px;
+        icon: AppState.is-playing ? Icons.pause-fill : Icons.play-fill;
+        icon-size: 14px; icon-color: Tokens.accent;
+        label: AppState.is-playing ? "Pause" : "Lecture";
+        clicked => { AppState.toggle-play(); }
     }
     // Artist and album open their page; the rest of the cell still selects the row.
     artist-link := TextLink {

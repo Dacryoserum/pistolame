@@ -320,6 +320,7 @@ mod tests {
             tap_writer,
             Arc::new(AtomicU64::new(0)),
             Arc::clone(&is_playback_queue_finished),
+            Arc::new(AtomicU64::new(0)),
             Arc::clone(counters),
         );
         TrackFeed {

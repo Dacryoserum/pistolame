@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0
+
+### Features
+- the current-track page is a full player tinted with the color of the cover, in the spirit of Apple's players: large sharp artwork that steps back while paused, title aligned under it, thin rail, bare controls, and the previous and next tracks either side, each clickable; "À suivre" opens beside it, and the file facts, signal path and authenticity sit below
+- seeking while playing is near instant: the stream stays open, with no stop and no device reopen
+- drag and drop in "À suivre": the six-dot handle moves a track within "Ensuite dans la file" or "Ensuite depuis"
+- "Les plus écoutés": an automatic playlist ranking the tracks played most, on by default; Réglages sets its size and period (all time or the last 30 days), which the page can also switch
+- play counts on the current-track page and on album pages
+- a pause button left of the playing track in the track lists
+
+### Fixes
+- Windows shared mode: a stream reopened by a pause, a resume or a seek no longer starts at full level when the volume is lowered
+- "Afficher dans l'Explorateur" opens the right folder when the path holds spaces
+- a file with no recognizable audio content now gets a clear message instead of the decoder's raw error
+
 ## 0.7.0
 
 ### Features

@@ -55,6 +55,7 @@ pub(crate) fn slint_sidebar_section(section: SidebarSection) -> crate::SidebarSe
         SidebarSection::Tracks => crate::SidebarSection::Tracks,
         SidebarSection::Settings => crate::SidebarSection::Settings,
         SidebarSection::Playlist(_) => crate::SidebarSection::Playlist,
+        SidebarSection::TopTracks => crate::SidebarSection::TopTracks,
     }
 }
 
@@ -68,6 +69,7 @@ fn section_from_slint(section: crate::SidebarSection) -> Option<SidebarSection> 
         crate::SidebarSection::Tracks => Some(SidebarSection::Tracks),
         crate::SidebarSection::Settings => Some(SidebarSection::Settings),
         crate::SidebarSection::Playlist => None,
+        crate::SidebarSection::TopTracks => Some(SidebarSection::TopTracks),
     }
 }
 
@@ -81,6 +83,7 @@ fn view_of(page: &Page) -> ViewKind {
         Page::Settings => ViewKind::Settings,
         Page::AlbumDetail { .. } => ViewKind::Detail,
         Page::Playlist { .. } => ViewKind::Playlist,
+        Page::TopTracks => ViewKind::TopTracks,
         Page::NowPlaying => ViewKind::NowPlaying,
     }
 }
@@ -300,11 +303,16 @@ impl UiBridge {
                 if let Some(path) = self.current_path() {
                     self.show_authenticity_for(&path, true);
                 }
+                self.show_large_artwork();
             }
             Page::Playlist { playlist_id } => {
                 Self::clear_grid_filters(state);
                 state.set_selected_playlist(self.playlist_index_of(*playlist_id));
                 self.refresh_playlist_view();
+            }
+            Page::TopTracks => {
+                Self::clear_grid_filters(state);
+                self.show_top_tracks();
             }
             Page::RecentlyAdded | Page::Artists | Page::Tracks | Page::Settings => {
                 Self::clear_grid_filters(state);
@@ -384,6 +392,7 @@ impl UiBridge {
                 .iter()
                 .any(|candidate| candidate.key == *album),
             Page::Playlist { playlist_id } => self.playlist_index_of(*playlist_id) >= 0,
+            Page::TopTracks => !self.settings.borrow().are_top_tracks_off,
             // Bridge state, not the `has-current-track` UI flag, which flickers to false at each
             // TrackLoaded.
             Page::NowPlaying => {
@@ -407,6 +416,7 @@ impl UiBridge {
             Page::Settings => state.get_settings_scroll_y(),
             Page::AlbumDetail { .. } => state.get_detail_scroll_y(),
             Page::Playlist { .. } => state.get_playlist_scroll_y(),
+            Page::TopTracks => state.get_top_tracks_scroll_y(),
             Page::NowPlaying => state.get_now_playing_scroll_y(),
         }
     }
@@ -421,6 +431,7 @@ impl UiBridge {
             Page::Settings => state.set_settings_scroll_y(content_y_logical_pixels),
             Page::AlbumDetail { .. } => state.set_detail_scroll_y(content_y_logical_pixels),
             Page::Playlist { .. } => state.set_playlist_scroll_y(content_y_logical_pixels),
+            Page::TopTracks => state.set_top_tracks_scroll_y(content_y_logical_pixels),
             Page::NowPlaying => state.set_now_playing_scroll_y(content_y_logical_pixels),
         }
     }
@@ -437,6 +448,7 @@ impl UiBridge {
             Page::Albums { query, .. } if !query.is_empty() => "Recherche".to_owned(),
             Page::Albums { .. } => "Albums".to_owned(),
             Page::Tracks => "Morceaux".to_owned(),
+            Page::TopTracks => crate::top_tracks::TOP_TRACKS_TITLE.to_owned(),
             Page::Settings => "Réglages".to_owned(),
             Page::AlbumDetail { album } => self
                 .albums

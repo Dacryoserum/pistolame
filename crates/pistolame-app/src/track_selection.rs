@@ -16,6 +16,8 @@ pub(crate) enum SelectionList {
     SearchResults,
     /// The "Morceaux" table, in its current order.
     LibraryTracks,
+    /// The "Les plus écoutés" ranking.
+    TopTracks,
 }
 
 /// How a click changes the selection.

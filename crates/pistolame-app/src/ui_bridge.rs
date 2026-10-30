@@ -31,6 +31,7 @@ mod queue;
 mod selection;
 mod session_glue;
 mod sleep_timer_glue;
+mod top_tracks_glue;
 mod track_actions;
 mod undo;
 mod updates;
@@ -111,6 +112,10 @@ struct ArtworkSlots {
     playlist_editor: ArtworkSlot,
     artist_page: ArtworkSlot,
     queue_current: ArtworkSlot,
+    /// Which large cover the current-track page is waiting for (see `show_large_artwork`).
+    large_artwork_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    previous_track_card: ArtworkSlot,
+    next_track_card: ArtworkSlot,
 }
 
 /// What a library synchronization covers.
@@ -193,6 +198,8 @@ pub(crate) struct UiBridge {
     pending_playlist_artwork: RefCell<PendingArtwork>,
     /// The tracks found by the current search, in display order.
     search_results: RefCell<Vec<PathBuf>>,
+    /// The "Les plus écoutés" page, rank by rank.
+    top_tracks: RefCell<Vec<PathBuf>>,
     /// Tracks waiting in the "Ajouter à une playlist" sheet.
     pending_playlist_tracks: RefCell<Vec<PathBuf>>,
     /// Self-update: messages from the worker, the update found, and when to check next.
@@ -222,6 +229,8 @@ pub(crate) struct UiBridge {
     announced_next_track: RefCell<Option<PathBuf>>,
     /// Position (seconds) of a restored track not opened yet: Play opens it there.
     resume_position_seconds: Cell<Option<u64>>,
+    /// Where the last seek went, shown until the engine plays from there.
+    pending_seek: Cell<Option<crate::transport::PendingSeek>>,
     /// Files of the "Morceaux" table, in its current order.
     library_tracks: RefCell<Vec<PathBuf>>,
     track_sort: Cell<(crate::track_sort::TrackColumn, bool)>,
@@ -324,6 +333,7 @@ impl UiBridge {
             play_queue: RefCell::new(crate::play_queue::PlayQueue::default()),
             pending_playlist_tracks: RefCell::new(Vec::new()),
             search_results: RefCell::new(Vec::new()),
+            top_tracks: RefCell::new(Vec::new()),
             pending_playlist_artwork: RefCell::new(PendingArtwork::Unchanged),
             state: Cell::new(PlaybackState::Stopped),
             track_id: Cell::new(None),
@@ -343,6 +353,7 @@ impl UiBridge {
                     .map_or(1, |duration| duration.as_nanos() as u64),
             ),
             resume_position_seconds: Cell::new(None),
+            pending_seek: Cell::new(None),
             library_tracks: RefCell::new(Vec::new()),
             track_sort: Cell::new((crate::track_sort::TrackColumn::default(), false)),
             media_controls: RefCell::new(crate::media_controls::SystemMediaControls::new()),
@@ -424,6 +435,7 @@ impl UiBridge {
     /// Shows `artwork` on the LCD (and the cassette).
     fn show_lcd_artwork(&self, artwork: Option<&ArtworkId>) {
         self.show_artwork_in(&self.artwork_slots.lcd, artwork, |state, image| {
+            now_playing::show_page_tint(state, &image);
             state.set_lcd_artwork(image)
         });
     }
@@ -630,6 +642,7 @@ impl UiBridge {
             }
         });
         self.connect_queue(&state);
+        self.connect_top_tracks(&state);
         self.connect_selection(&state);
         self.connect_undo(&state);
         self.connect_artist_editor(&state);
@@ -996,30 +1009,10 @@ impl UiBridge {
             self.advance_after_end();
         }
         self.announce_next_track();
-        let rate = u64::from(self.sample_rate_hz.get().max(1));
-        let frames_in_track = self
-            .resume_position_seconds
-            .get()
-            .map_or(counters.frames_rendered_in_track, |seconds| seconds * rate);
-        // Every setter below invalidates bindings, and Slint rebuilds the window's
-        // accessibility tree after each change: only write values that really changed.
-        let elapsed_label: SharedString = presentation::clock(frames_in_track / rate).into();
-        if state.get_elapsed_label() != elapsed_label {
-            state.set_elapsed_label(elapsed_label);
-        }
-        let remaining_seconds = self.total_frames.get().saturating_sub(frames_in_track) / rate;
-        let remaining_label: SharedString = presentation::remaining_clock(remaining_seconds).into();
-        if state.get_remaining_label() != remaining_label {
-            state.set_remaining_label(remaining_label);
-        }
-        let progress = if self.total_frames.get() == 0 {
-            0.0
-        } else {
-            (frames_in_track as f64 / self.total_frames.get() as f64).clamp(0.0, 1.0) as f32
-        };
-        if should_write_progress(state.get_progress(), progress) {
-            state.set_progress(progress);
-        }
+        self.show_position(
+            &state,
+            self.shown_frames_in_track(counters.frames_rendered_in_track),
+        );
         let underrun_label: SharedString = format!(
             "Coupures : {}",
             counters
@@ -1295,6 +1288,54 @@ fn sort_keys_of(album: &Album) -> crate::album_sort::AlbumSortKeys {
     }
 }
 
+impl UiBridge {
+    /// The position to show: the restored one, a seek the engine has not reached yet, otherwise
+    /// what it plays. A paused seek stays shown: nothing renders until Play.
+    fn shown_frames_in_track(&self, played_frames: u64) -> u64 {
+        let rate = u64::from(self.sample_rate_hz.get().max(1));
+        if let Some(seconds) = self.resume_position_seconds.get() {
+            return seconds * rate;
+        }
+        let Some(seek) = self.pending_seek.get() else {
+            return played_frames;
+        };
+        let is_over = match self.state.get() {
+            PlaybackState::Stopped => true,
+            PlaybackState::Playing => seek.has_landed(played_frames, rate),
+            PlaybackState::Opening | PlaybackState::Paused => false,
+        };
+        if is_over {
+            self.pending_seek.set(None);
+            played_frames
+        } else {
+            seek.target_frame_index
+        }
+    }
+
+    /// Writes the time and the progress bar. Every setter invalidates bindings, and Slint rebuilds
+    /// the window's accessibility tree after each change: only values that really changed.
+    fn show_position(&self, state: &AppState<'_>, frames_in_track: u64) {
+        let rate = u64::from(self.sample_rate_hz.get().max(1));
+        let elapsed_label: SharedString = presentation::clock(frames_in_track / rate).into();
+        if state.get_elapsed_label() != elapsed_label {
+            state.set_elapsed_label(elapsed_label);
+        }
+        let remaining_seconds = self.total_frames.get().saturating_sub(frames_in_track) / rate;
+        let remaining_label: SharedString = presentation::remaining_clock(remaining_seconds).into();
+        if state.get_remaining_label() != remaining_label {
+            state.set_remaining_label(remaining_label);
+        }
+        let progress = if self.total_frames.get() == 0 {
+            0.0
+        } else {
+            (frames_in_track as f64 / self.total_frames.get() as f64).clamp(0.0, 1.0) as f32
+        };
+        if should_write_progress(state.get_progress(), progress) {
+            state.set_progress(progress);
+        }
+    }
+}
+
 /// Whether the progress bar must be updated: a visible change, or reaching either end.
 fn should_write_progress(shown: f32, new: f32) -> bool {
     let is_at_an_end = new == 0.0 || new == 1.0;
@@ -1349,9 +1390,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         command
     } else if cfg!(windows) {
         let mut command = std::process::Command::new("explorer");
-        let mut argument = std::ffi::OsString::from("/select,");
-        argument.push(path);
-        command.arg(argument);
+        crate::process::add_explorer_select_argument(&mut command, path);
         command
     } else {
         let mut command = std::process::Command::new("xdg-open");

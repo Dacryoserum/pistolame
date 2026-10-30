@@ -449,8 +449,9 @@ impl EngineThread {
         self.set_state(PlaybackState::Stopped);
     }
 
-    /// A seek always closes the stream with `Discard` and starts a new generation, so it never
-    /// counts as an underrun. Paused (or still opening), it only changes the generation.
+    /// A seek starts a new generation. Playing, the stream stays open: the feeder drops the old
+    /// blocks and goes on with the first new one, with no device reopen and no prefill to wait
+    /// for. Paused (or still opening), it only changes the generation.
     fn seek_to(&mut self, position_in_track: Duration) {
         let Some(source) = self
             .pipeline
@@ -460,7 +461,14 @@ impl EngineThread {
             return;
         };
         let mut target_frame_index = target_frame_index(position_in_track, &source);
-        if self.state == PlaybackState::Playing {
+        if self.can_seek_in_open_stream() {
+            // Same rule as a close: the next track took over, so it restarts from its beginning.
+            let switches_before = self.followed_switch_count;
+            self.collect_track_chain_changes(SwitchAnnouncement::ToTheUi, false);
+            if self.followed_switch_count != switches_before {
+                target_frame_index = 0;
+            }
+        } else if self.state == PlaybackState::Playing {
             // The track the position was meant for ended during the close and the next one took
             // over: that one restarts from its beginning, whose first frames the close dropped.
             if self.close_with_discard(SwitchAnnouncement::ToTheUi) {
@@ -471,6 +479,19 @@ impl EngineThread {
         if let Some(pipeline) = self.pipeline.as_mut() {
             pipeline.seek(target_frame_index);
         }
+    }
+
+    /// The stream is running its track. Once the feeder has reached the end of the stream or a
+    /// format boundary, the engine is about to act on it: only a reopen can go back from there.
+    fn can_seek_in_open_stream(&self) -> bool {
+        let Some(pipeline) = self.pipeline.as_ref() else {
+            return false;
+        };
+        let snapshot = self.counters.snapshot();
+        self.state == PlaybackState::Playing
+            && self.stream.is_some()
+            && snapshot.stream_ends_reached == pipeline.stream_ends_baseline
+            && snapshot.format_boundaries_reached == pipeline.format_boundaries_baseline
     }
 
     /// Mode or device changed while playing: play out, then reopen with the new choice at the
@@ -520,6 +541,7 @@ impl EngineThread {
             device_id,
             source_format,
             policy: OpenPolicy::for_preference(self.preference),
+            initial_shared_mode_gain: self.shared_mode_volume.linear_gain(),
         };
         let mut stream = match self.output.open_stream(request, render_source) {
             Ok(mut stream) => {

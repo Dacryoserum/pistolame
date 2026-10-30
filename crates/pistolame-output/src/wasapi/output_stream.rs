@@ -47,6 +47,8 @@ pub(crate) fn open_wasapi_stream(
             });
         }
     };
+    // Before the thread starts: it prefills the device buffer while opening.
+    control.set_shared_mode_gain(request.initial_shared_mode_gain);
     let (render_source_sender, render_source_receiver) = bounded(1);
     let (open_result_sender, open_result_receiver) = bounded::<OpenResult>(1);
     let context = RenderThreadContext {

@@ -169,6 +169,8 @@ enum StreamRequest {
 struct FakeState {
     config: FakeOutputConfig,
     shared_mode_volume_calls: Vec<f32>,
+    /// `initial_shared_mode_gain` of every stream opened.
+    initial_shared_mode_gains: Vec<f32>,
     played_bytes: Vec<u8>,
     dropped_bytes: Vec<u8>,
     render_call_count: u64,
@@ -218,6 +220,7 @@ impl FakeOutput {
             state: Mutex::new(FakeState {
                 config,
                 shared_mode_volume_calls: Vec::new(),
+                initial_shared_mode_gains: Vec::new(),
                 played_bytes: Vec::new(),
                 dropped_bytes: Vec::new(),
                 render_call_count: 0,
@@ -333,6 +336,11 @@ impl FakeOutputController {
         self.shared.lock().shared_mode_volume_calls.clone()
     }
 
+    /// The volume each stream was opened with, in order.
+    pub fn initial_shared_mode_gains(&self) -> Vec<f32> {
+        self.shared.lock().initial_shared_mode_gains.clone()
+    }
+
     /// `render` calls so far, prefills included.
     pub fn render_call_count(&self) -> u64 {
         self.shared.lock().render_call_count
@@ -383,6 +391,9 @@ impl AudioOutput for FakeOutput {
         self.shared.update(|state| {
             state.begin_stream_count += 1;
             state.negotiated_streams.push(negotiated.clone());
+            state
+                .initial_shared_mode_gains
+                .push(request.initial_shared_mode_gain);
             state.injected_failure = None;
             state.stream_request = StreamRequest::NotStarted;
             state.is_stream_device_gone = false;

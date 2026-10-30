@@ -70,6 +70,59 @@ impl UiBridge {
             upcoming.len().saturating_sub(MAXIMUM_QUEUE_SECTION_ROWS) as i32,
         );
         state.set_queue_context_name(queue.context_name().into());
+        state.set_queue_revision(state.get_queue_revision().wrapping_add(1));
+        drop(albums);
+        drop(queue);
+        self.show_adjacent_tracks();
+    }
+
+    /// Fills the previous and next cards of the current-track page.
+    pub(super) fn show_adjacent_tracks(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let previous = self.play_queue.borrow().peek_previous().cloned();
+        let next = self.next_track_in_queue();
+        let card = |path: Option<PathBuf>| -> Option<(QueueRow, Option<ArtworkId>)> {
+            let (album, track) = self.track_location(&path?)?;
+            let albums = self.albums.borrow();
+            let album = albums.get(album)?;
+            let track = album.tracks.get(track)?;
+            let row = QueueRow {
+                title: track.title.as_str().into(),
+                subtitle: album.artist.as_str().into(),
+                duration_label: presentation::clock(track.duration_seconds).into(),
+                artwork: slint::Image::default(),
+            };
+            Some((row, album.artwork.clone()))
+        };
+        let previous = card(previous);
+        state.set_has_previous_track_card(previous.is_some());
+        let (previous, previous_artwork) = previous.unwrap_or_default();
+        state.set_previous_track_card(previous);
+        self.show_artwork_in(
+            &self.artwork_slots.previous_track_card,
+            previous_artwork.as_ref(),
+            |state, image| {
+                let mut card = state.get_previous_track_card();
+                card.artwork = image;
+                state.set_previous_track_card(card);
+            },
+        );
+        let next = card(next);
+        state.set_has_next_track_card(next.is_some());
+        let (next, next_artwork) = next.unwrap_or_default();
+        state.set_next_track_card(next);
+        self.show_artwork_in(
+            &self.artwork_slots.next_track_card,
+            next_artwork.as_ref(),
+            |state, image| {
+                let mut card = state.get_next_track_card();
+                card.artwork = image;
+                state.set_next_track_card(card);
+            },
+        );
     }
 
     pub(super) fn connect_queue(self: &Rc<Self>, state: &AppState<'_>) {
@@ -104,6 +157,33 @@ impl UiBridge {
                 // The "Annuler" shown is for an earlier edit, no longer the last one.
                 handle.forget_pending_undo();
                 handle.refresh_queue_view();
+            }
+        });
+        let handle = self.clone();
+        state.on_queue_reorder(move |is_up_next, from, to| {
+            let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+                return;
+            };
+            let has_moved = {
+                let mut queue = handle.play_queue.borrow_mut();
+                if is_up_next {
+                    queue.reorder_up_next(from, to)
+                } else {
+                    queue.reorder_upcoming(from, to)
+                }
+            };
+            if has_moved {
+                // A position drawn before the move no longer names the same track.
+                handle.planned_shuffle_position.set(None);
+                handle.forget_pending_undo();
+                handle.refresh_queue_view();
+            }
+        });
+        let handle = self.clone();
+        state.on_play_previous_track_card(move || {
+            let path = handle.play_queue.borrow_mut().back_to_previous();
+            if let Some(path) = path {
+                handle.start_playback(path);
             }
         });
         let handle = self.clone();

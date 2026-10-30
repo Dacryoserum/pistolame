@@ -112,6 +112,10 @@ pub struct OpenStreamRequest {
     pub source_format: StreamFormat,
     /// Access-mode policy.
     pub policy: OpenPolicy,
+    /// Shared-mode volume (`0.0..=1.0`) the stream starts at. A backend that prefills the device
+    /// buffer while opening needs it here: a later `set_shared_mode_volume` would come after
+    /// those samples, and they would be heard at full level.
+    pub initial_shared_mode_gain: f32,
 }
 
 /// Why a stream runs through the system mixer. Shown in the reason line.

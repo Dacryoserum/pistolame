@@ -2,7 +2,71 @@
 
 use super::*;
 
+/// Edge of the cover on the current-track page, in pixels: 460 points on a 2× screen. The
+/// thumbnails stop at 512 and would look soft at that size.
+const LARGE_ARTWORK_PIXELS: u32 = 920;
+
+/// Colors the current-track page after `image`, the LCD's cover. A track without a cover keeps
+/// the neutral colors the page starts with.
+pub(super) fn show_page_tint(state: &AppState<'_>, image: &slint::Image) {
+    let tint = image
+        .to_rgba8()
+        .and_then(|pixels| crate::artwork_tint::dominant_color(pixels.as_bytes()))
+        .map(crate::artwork_tint::page_tint);
+    if let Some((top, bottom)) = tint {
+        state.set_now_playing_tint(slint::Color::from_rgb_u8(top[0], top[1], top[2]));
+        state.set_now_playing_tint_bottom(slint::Color::from_rgb_u8(
+            bottom[0], bottom[1], bottom[2],
+        ));
+    }
+}
+
 impl UiBridge {
+    /// Loads the current track's cover at the page's size, off the UI thread, only while the
+    /// page is shown. The LCD's thumbnail stands in until it arrives.
+    pub(super) fn show_large_artwork(&self) {
+        use std::sync::atomic::Ordering;
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let state = window.global::<AppState>();
+        let generation = &self.artwork_slots.large_artwork_generation;
+        let wanted_generation = generation.fetch_add(1, Ordering::AcqRel) + 1;
+        state.set_now_playing_artwork(slint::Image::default());
+        let artwork = self.selected_track.get().and_then(|(album, _)| {
+            self.albums
+                .borrow()
+                .get(album)
+                .and_then(|album| album.artwork.clone())
+        });
+        let (Some(artwork), Some(database)) = (artwork, self.library_database.clone()) else {
+            return;
+        };
+        let generation = generation.clone();
+        let window = self.window.clone();
+        std::thread::spawn(move || {
+            let pixels = LibraryStore::open(&database)
+                .ok()
+                .and_then(|store| store.artwork_bytes(&artwork).ok().flatten())
+                .and_then(|bytes| {
+                    crate::artwork_cache::decode_scaled(&bytes, LARGE_ARTWORK_PIXELS)
+                });
+            let Some(pixels) = pixels else {
+                return;
+            };
+            // Fails only once the event loop is gone: nobody is waiting for the cover then.
+            let _ = slint::invoke_from_event_loop(move || {
+                if generation.load(Ordering::Acquire) == wanted_generation
+                    && let Some(window) = window.upgrade()
+                {
+                    window
+                        .global::<AppState>()
+                        .set_now_playing_artwork(slint::Image::from_rgba8(pixels));
+                }
+            });
+        });
+    }
+
     /// Shows track `track_index` of album `album_index` on the LCD and in the details.
     pub(super) fn show_current_track(
         &self,
@@ -23,6 +87,7 @@ impl UiBridge {
         state.set_current_album(album.title.as_str().into());
         state.set_current_format(presentation::codec_and_format(track).into());
         state.set_current_duration(presentation::clock(track.duration_seconds).into());
+        state.set_current_play_count_label(presentation::play_count_label(track.play_count).into());
         state.set_current_filename(
             track
                 .path
@@ -47,6 +112,9 @@ impl UiBridge {
         self.show_track_info(state, cells, None);
         let is_page_shown = state.get_view() == crate::ViewKind::NowPlaying;
         self.show_authenticity_for(&path, is_page_shown);
+        if is_page_shown {
+            self.show_large_artwork();
+        }
         self.publish_media_track();
     }
 

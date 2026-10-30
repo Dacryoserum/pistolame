@@ -1,6 +1,7 @@
 //! System media controls: what is shown and the media keys.
 
 use super::*;
+use crate::transport::PendingSeek;
 
 impl UiBridge {
     /// Shows the selected track in the system media panel.
@@ -27,9 +28,8 @@ impl UiBridge {
             return Duration::from_secs(seconds);
         }
         let rate = u64::from(self.sample_rate_hz.get().max(1));
-        Duration::from_secs_f64(
-            self.engine.counters().frames_rendered_in_track as f64 / rate as f64,
-        )
+        let frames = self.shown_frames_in_track(self.engine.counters().frames_rendered_in_track);
+        Duration::from_secs_f64(frames as f64 / rate as f64)
     }
 
     /// Jumps in the current track (a restored track not opened yet starts there on Play).
@@ -40,6 +40,13 @@ impl UiBridge {
             self.engine.send(EngineCommand::SeekTo {
                 position_in_track: position,
             });
+            let rate = u64::from(self.sample_rate_hz.get().max(1));
+            let target_frame_index = (position.as_secs_f64() * rate as f64) as u64;
+            self.pending_seek
+                .set(Some(PendingSeek::new(target_frame_index)));
+            if let Some(window) = self.window.upgrade() {
+                self.show_position(&window.global::<AppState>(), target_frame_index);
+            }
         }
         self.publish_media_status_at(position);
     }

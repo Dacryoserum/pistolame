@@ -766,6 +766,7 @@ mod windows_tone {
                 device_id: device.id.clone(),
                 source_format,
                 policy: policy(options),
+                initial_shared_mode_gain: 1.0,
             };
             let mut stream = output
                 .open_stream(request, render_source)

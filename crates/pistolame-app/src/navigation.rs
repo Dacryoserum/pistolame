@@ -29,6 +29,8 @@ pub(crate) enum Page {
     AlbumDetail { album: AlbumKey },
     /// One playlist, identified by its database id.
     Playlist { playlist_id: i64 },
+    /// "Les plus écoutés", the automatic ranking.
+    TopTracks,
     /// The page of the track being played.
     NowPlaying,
 }
@@ -42,6 +44,7 @@ pub(crate) enum SidebarSection {
     Tracks,
     Settings,
     Playlist(i64),
+    TopTracks,
 }
 
 /// One history entry: the page, its sidebar section and where it was scrolled when left.
@@ -76,6 +79,7 @@ impl Page {
             SidebarSection::Tracks => Page::Tracks,
             SidebarSection::Settings => Page::Settings,
             SidebarSection::Playlist(playlist_id) => Page::Playlist { playlist_id },
+            SidebarSection::TopTracks => Page::TopTracks,
         }
     }
 
@@ -100,7 +104,9 @@ impl SidebarSection {
             SidebarSection::Artists => Some("artists"),
             SidebarSection::Albums => Some("albums"),
             SidebarSection::Tracks => Some("tracks"),
-            SidebarSection::Settings | SidebarSection::Playlist(_) => None,
+            SidebarSection::Settings | SidebarSection::Playlist(_) | SidebarSection::TopTracks => {
+                None
+            }
         }
     }
 
@@ -145,6 +151,7 @@ fn section_for(page: &Page, origin: &Route) -> SidebarSection {
         Page::Tracks => SidebarSection::Tracks,
         Page::Settings => SidebarSection::Settings,
         Page::Playlist { playlist_id } => SidebarSection::Playlist(*playlist_id),
+        Page::TopTracks => SidebarSection::TopTracks,
         Page::AlbumDetail { .. } | Page::NowPlaying => origin.section,
     }
 }

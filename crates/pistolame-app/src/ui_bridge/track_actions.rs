@@ -161,6 +161,7 @@ impl UiBridge {
     pub(super) fn refresh_favorite_marks(&self) {
         self.show_album(self.detail_album.get());
         self.refresh_playlist_view();
+        self.show_top_tracks();
         self.show_library_tracks();
         if let Some(window) = self.window.upgrade() {
             self.update_grid(window.global::<AppState>().get_query().as_str());
@@ -206,11 +207,11 @@ impl UiBridge {
                     .unwrap_or_default();
                 Some((vec![path], format!("« {title} »")))
             }
-            TrackSource::LibraryTrack | TrackSource::SearchResult => {
-                let list = if target.source == TrackSource::LibraryTrack {
-                    &self.library_tracks
-                } else {
-                    &self.search_results
+            TrackSource::LibraryTrack | TrackSource::SearchResult | TrackSource::TopTrack => {
+                let list = match target.source {
+                    TrackSource::LibraryTrack => &self.library_tracks,
+                    TrackSource::TopTrack => &self.top_tracks,
+                    _ => &self.search_results,
                 };
                 let path = list
                     .borrow()

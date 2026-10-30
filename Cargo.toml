@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Dacryoserum/pistolame"
-version = "0.7.0"
+version = "0.8.0"
 
 [workspace.dependencies]
 pistolame-core    = { path = "crates/pistolame-core" }

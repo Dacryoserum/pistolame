@@ -56,6 +56,8 @@ export enum ViewKind {
     detail,
     now-playing,
     playlist,
+    // "Les plus écoutés".
+    top-tracks,
     recently-added,
     artists,
     tracks,
@@ -70,6 +72,7 @@ export enum SidebarSection {
     tracks,
     settings,
     playlist,
+    top-tracks,
 }
 
 // Where a track action applies: one track of an album, a whole album, one playlist entry or a
@@ -83,6 +86,8 @@ export enum TrackSource {
     search-result,
     // A row of the "Morceaux" table (position = its index there).
     library-track,
+    // A row of "Les plus écoutés" (position = its rank, from 0).
+    top-track,
 }
 
 export struct TrackTarget {
@@ -192,6 +197,19 @@ export global AppState {
     callback dismiss-notice();
 
     in property <bool> has-current-track;
+    // "12 écoutes", small on the current-track page.
+    in property <string> current-play-count-label;
+    // The current-track page: its colors, from the cover, and the cover at full size (empty until
+    // it is loaded: the page then shows `lcd-artwork`).
+    in property <color> now-playing-tint: #2E2E2E;
+    in property <color> now-playing-tint-bottom: #181818;
+    in property <image> now-playing-artwork;
+    // The cards either side of the current-track page.
+    in property <bool> has-previous-track-card;
+    in property <QueueRow> previous-track-card;
+    in property <bool> has-next-track-card;
+    in property <QueueRow> next-track-card;
+    callback play-previous-track-card();
     in property <string> current-artist;
     in property <string> current-album;
     in property <string> current-format;
@@ -272,6 +290,10 @@ export global AppState {
     callback queue-clear();
     // Moves a queued track one place earlier (true) or later.
     callback queue-move(int, bool);
+    // Drag and drop in "Ensuite dans la file" (true) or "Ensuite depuis": (from, to).
+    callback queue-reorder(bool, int, int);
+    // Changes each time the panel's rows are rebuilt: a row being dragged no longer exists.
+    in property <int> queue-revision;
     callback queue-play-played(int);
     // Minuteur de veille: "" when off, else "Fin du morceau" or the time left ("23 min").
     in property <string> sleep-timer-label;
@@ -331,6 +353,17 @@ export global AppState {
     callback cancel-artist-photo-edit();
     callback save-artist-edit();
     callback play-artist(bool);
+    // "Les plus écoutés": the automatic ranking of the tracks played most. Réglages sets whether
+    // it exists, its size (free) and the plays it counts (all time, or the last 30 days).
+    in property <bool> are-top-tracks-on: true;
+    callback set-top-tracks-on(bool);
+    in-out property <string> top-track-count-text;
+    callback set-top-track-count(string);
+    in property <bool> is-top-tracks-recent;
+    callback set-top-tracks-recent(bool);
+    in property <[PlaylistTrackRow]> top-tracks;
+    in property <string> top-tracks-meta;
+    callback play-top-track(int);
     // Artist photos looked up online (Réglages).
     in property <bool> are-artist-photos-on: true;
     callback set-artist-photos(bool);
@@ -430,6 +463,7 @@ export global AppState {
     in-out property <length> tracks-scroll-y;
     in-out property <length> recent-scroll-y;
     in-out property <length> playlist-scroll-y;
+    in-out property <length> top-tracks-scroll-y;
     in-out property <length> now-playing-scroll-y;
     in-out property <length> settings-scroll-y;
     in-out property <string> query;

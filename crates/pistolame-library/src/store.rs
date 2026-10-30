@@ -18,7 +18,7 @@ const TRACKS_PER_TRANSACTION: usize = 256;
 
 /// Schema version stored in `PRAGMA user_version`; bump it with a migration when the schema
 /// changes.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS roots (
@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS tracks (
     play_count INTEGER NOT NULL DEFAULT 0,
     last_played_seconds INTEGER
 );
+CREATE TABLE IF NOT EXISTS play_events (
+    path TEXT NOT NULL,
+    played_seconds INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS play_events_by_time ON play_events(played_seconds);
 CREATE TABLE IF NOT EXISTS artist_images (
     artist TEXT PRIMARY KEY NOT NULL,
     artwork_hash TEXT REFERENCES artworks(hash),
@@ -625,12 +630,38 @@ impl LibraryStore {
     /// # Errors
     /// Fails when the database cannot be written.
     pub fn record_play(&mut self, path: &Path) -> Result<(), LibraryError> {
-        self.connection.execute(
+        let path = path_text(path);
+        let played_seconds = now_seconds();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "UPDATE tracks SET play_count = play_count + 1, last_played_seconds = ?2
              WHERE path = ?1",
-            params![path_text(path), now_seconds()],
+            params![path, played_seconds],
         )?;
+        transaction.execute(
+            "INSERT INTO play_events (path, played_seconds) VALUES (?1, ?2)",
+            params![path, played_seconds],
+        )?;
+        transaction.commit()?;
         Ok(())
+    }
+
+    /// How many times each track was played at or after `since_seconds` (Unix time). Only
+    /// plays recorded since schema 10 are known.
+    ///
+    /// # Errors
+    /// Fails when the database cannot be read.
+    pub fn play_counts_since(
+        &self,
+        since_seconds: i64,
+    ) -> Result<HashMap<PathBuf, u32>, LibraryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT path, COUNT(*) FROM play_events WHERE played_seconds >= ?1 GROUP BY path",
+        )?;
+        let rows = statement.query_map(params![since_seconds], |row| {
+            Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Shows `text` instead of the tags for `album`. An override with neither field set removes

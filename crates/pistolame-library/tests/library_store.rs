@@ -610,3 +610,16 @@ fn artist_photos_are_kept_and_lookups_are_not_repeated() {
         Some(vec![1, 2, 3])
     );
 }
+
+#[test]
+fn plays_are_counted_by_period() {
+    let library = TestLibrary::new("plays-by-period", 2);
+    let mut store = library.open();
+    store.record_play(&library.track(1)).unwrap();
+    store.record_play(&library.track(1)).unwrap();
+    store.record_play(&library.track(2)).unwrap();
+    let counts = store.play_counts_since(0).unwrap();
+    assert_eq!(counts.get(&library.track(1)), Some(&2));
+    assert_eq!(counts.get(&library.track(2)), Some(&1));
+    assert!(store.play_counts_since(i64::MAX).unwrap().is_empty());
+}
