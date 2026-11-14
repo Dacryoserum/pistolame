@@ -30,6 +30,7 @@ mod transport;
 mod ui_bridge;
 #[cfg(test)]
 mod ui_preview;
+mod ui_refresh;
 mod updater;
 mod window_chrome;
 mod window_events;
@@ -98,14 +99,13 @@ fn main() -> anyhow::Result<()> {
                 .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(section));
         }
     }
-    let timer = slint::Timer::default();
     let ticking_bridge = bridge.clone();
     let closing_bridge = bridge.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        pistolame_core::timing::UI_REFRESH_INTERVAL,
-        move || ticking_bridge.tick(),
-    );
+    // Kept alive until the event loop ends: dropping it stops the refresh.
+    let _refresh_pace = ui_refresh::RefreshPace::start(move || {
+        ticking_bridge.tick();
+        ticking_bridge.is_playing_visibly()
+    });
     // The geometry is read while the window still exists: `run` returns once it is hidden.
     let closing_window = window.as_weak();
     window.window().on_close_requested(move || {

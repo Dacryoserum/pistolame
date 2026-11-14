@@ -2,8 +2,8 @@
 //!
 //! Slint keeps only ONE `on_winit_window_event` filter per window (a second call replaces the
 //! first, `i-slint-backend-winit` 1.18.1 `window_event_filter.set`), so every feature that needs
-//! raw winit events is dispatched from here: file drop (`file_drop`) and the mouse Back / Forward
-//! buttons (navigation history).
+//! raw winit events is dispatched from here: file drop (`file_drop`), the mouse Back / Forward
+//! buttons (navigation history) and the pace of the UI refresh (`ui_refresh`).
 //!
 //! The hook runs on the UI thread, outside any bridge borrow, so invoking the Slint navigation
 //! callbacks from it is as safe as a click handler.
@@ -29,9 +29,22 @@ pub(crate) fn install(window: &AppWindow, dropped: DroppedPaths) {
             let state = window.global::<AppState>();
             file_drop::handle_window_event(&state, event, &dropped);
             handle_mouse_navigation_buttons(&state, event);
+            pace_refresh(event);
             // Slint must still see every event (resize, redraw, input).
             EventResult::Propagate
         });
+}
+
+/// Input speeds the UI refresh up, so what the engine answers shows at once; a window fully
+/// covered by others slows it down (`ui_refresh`). Hovering alone needs no refresh.
+fn pace_refresh(event: &WindowEvent) {
+    match event {
+        WindowEvent::MouseInput { .. }
+        | WindowEvent::KeyboardInput { .. }
+        | WindowEvent::DroppedFile(_) => crate::ui_refresh::note_activity(),
+        WindowEvent::Occluded(is_occluded) => crate::ui_refresh::set_occluded(*is_occluded),
+        _ => {}
+    }
 }
 
 /// Mouse button 4 (Back) and 5 (Forward), on press, navigate through the history.

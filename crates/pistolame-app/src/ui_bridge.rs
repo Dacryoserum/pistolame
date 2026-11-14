@@ -1029,6 +1029,20 @@ impl UiBridge {
         }
     }
 
+    /// Whether a track plays (or opens) in a window that is not minimized: the position then
+    /// moves on screen and the refresh keeps its full rate (`ui_refresh`).
+    pub(crate) fn is_playing_visibly(&self) -> bool {
+        let is_playing = matches!(
+            self.state.get(),
+            PlaybackState::Playing | PlaybackState::Opening
+        );
+        is_playing
+            && self
+                .window
+                .upgrade()
+                .is_some_and(|window| !window.window().is_minimized())
+    }
+
     fn handle_event(&self, event: EngineEvent) {
         let Some(window) = self.window.upgrade() else {
             return;
