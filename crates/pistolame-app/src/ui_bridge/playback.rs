@@ -174,12 +174,14 @@ impl UiBridge {
     }
 
     /// Counts a play in the library and in memory ("Écoutés récemment"). A failed write only
-    /// loses the statistic, so it stays silent.
+    /// loses the statistic: the user is not interrupted, the log keeps the cause.
     pub(super) fn record_play(&self, path: &std::path::Path, (album, track): (usize, usize)) {
-        if let Some(database) = &self.library_database
-            && let Ok(mut store) = LibraryStore::open(database)
-        {
-            let _ = store.record_play(path);
+        if let Some(database) = &self.library_database {
+            let recorded =
+                LibraryStore::open(database).and_then(|mut store| store.record_play(path));
+            if let Err(error) = recorded {
+                log::warn!("play of {} not counted: {error}", path.display());
+            }
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -548,8 +548,7 @@ impl UiBridge {
         let handle = self.clone();
         state.on_set_artist_photos(move |is_on| {
             handle.settings.borrow_mut().are_artist_photos_off = !is_on;
-            // A failed save only loses the choice at the next launch.
-            let _ = handle.settings.borrow().save();
+            handle.save_settings();
             if let Some(window) = handle.window.upgrade() {
                 window.global::<AppState>().set_are_artist_photos_on(is_on);
             }
@@ -1387,7 +1386,7 @@ fn reveal_label() -> &'static str {
 }
 
 /// Opens the system file manager with `path` selected (its folder on Linux, where file managers
-/// have no common "select" option). Best effort: nothing to report if it cannot start.
+/// have no common "select" option). Best effort: a failure to start is only logged.
 fn reveal_in_file_manager(path: &std::path::Path) {
     let mut command = if cfg!(target_os = "macos") {
         let mut command = std::process::Command::new("open");
@@ -1402,7 +1401,9 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         command.arg(path.parent().unwrap_or(path));
         command
     };
-    let _ = command.spawn();
+    if let Err(error) = command.spawn() {
+        log::warn!("cannot reveal {}: {error}", path.display());
+    }
 }
 
 /// Opens `url` in the default browser. Best effort, like revealing a file.
@@ -1416,7 +1417,9 @@ fn open_in_browser(url: &str) {
     } else {
         std::process::Command::new("xdg-open")
     };
-    let _ = command.arg(url).spawn();
+    if let Err(error) = command.arg(url).spawn() {
+        log::warn!("cannot open {url} in the browser: {error}");
+    }
 }
 
 /// Artist cards from the albums: one per album artist (as displayed), natural order, with their

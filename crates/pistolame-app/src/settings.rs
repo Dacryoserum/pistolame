@@ -448,7 +448,13 @@ pub(crate) fn migrate_legacy_app_data() {
         return;
     };
     let legacy_directory = home.join(HOME_CONFIG_FOLDER_NAME).join(LEGACY_FOLDER_NAME);
-    let _ = move_directory_once(&legacy_directory, &new_directory);
+    // The log is not open yet (its folder is inside the one being moved): stderr only.
+    if let Err(error) = move_directory_once(&legacy_directory, &new_directory) {
+        eprintln!(
+            "Pistolame: app folder not moved from {}: {error}",
+            legacy_directory.display()
+        );
+    }
 }
 
 /// Moves `from` to `to` when `from` exists and `to` does not. Same-volume rename first, then
