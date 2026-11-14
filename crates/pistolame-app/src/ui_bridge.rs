@@ -218,6 +218,8 @@ pub(crate) struct UiBridge {
     sample_rate_hz: Cell<u32>,
     total_frames: Cell<u64>,
     underrun_baseline: Cell<u64>,
+    /// The underrun count the label shows; `None` until the first tick writes it.
+    shown_underrun_count: Cell<Option<u64>>,
     selected_track: Cell<Option<(usize, usize)>>,
     detail_album: Cell<usize>,
     stream_end_baseline: Cell<u64>,
@@ -342,6 +344,7 @@ impl UiBridge {
             sample_rate_hz: Cell::new(0),
             total_frames: Cell::new(0),
             underrun_baseline: Cell::new(0),
+            shown_underrun_count: Cell::new(None),
             selected_track: Cell::new(None),
             detail_album: Cell::new(0),
             stream_end_baseline: Cell::new(0),
@@ -1017,15 +1020,14 @@ impl UiBridge {
             &state,
             self.shown_frames_in_track(counters.frames_rendered_in_track),
         );
-        let underrun_label: SharedString = format!(
-            "Coupures : {}",
-            counters
-                .underrun_events
-                .saturating_sub(self.underrun_baseline.get())
-        )
-        .into();
-        if state.get_underrun_label() != underrun_label {
-            state.set_underrun_label(underrun_label);
+        // Compared as a number: formatting the label 30 times a second would allocate for a
+        // value that almost never changes.
+        let underrun_count = counters
+            .underrun_events
+            .saturating_sub(self.underrun_baseline.get());
+        if self.shown_underrun_count.get() != Some(underrun_count) {
+            self.shown_underrun_count.set(Some(underrun_count));
+            state.set_underrun_label(format!("Coupures : {underrun_count}").into());
         }
     }
 
