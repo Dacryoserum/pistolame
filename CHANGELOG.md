@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.1
+
+### Features
+- a log file (two rotating files of 2 MiB) and a crash report written by a panic hook, in the app folder
+- Réglages › À propos: "Copier le diagnostic" puts the version, the latest crash report and the end of the log on the clipboard; the start after a crash says so once
+
+### Performance
+- the UI refresh runs at 30 Hz only while a track plays in a window that is not minimized or covered, and at 4 Hz otherwise; input and media keys bring it back at once. Idle CPU drops by more than half (macOS, 0.47 % → 0.2 %)
+- the underrun label is formatted only when the count changes
+
+### Fixes
+- errors that were silently dropped are now logged: uncounted plays, failed reveal or browser launch, update rollback and cleanup
+
 ## 0.8.0
 
 ### Features
