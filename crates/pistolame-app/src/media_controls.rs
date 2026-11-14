@@ -89,6 +89,8 @@ impl SystemMediaControls {
             if let Some(command) = command_for(event) {
                 // The receiver lives as long as the app; a send can only fail at exit.
                 let _ = sender.send(command);
+                // The UI tick drains the channel; when idle it may be a quarter second away.
+                crate::ui_refresh::note_activity_from_any_thread();
             }
         });
         if attached.is_err() {

@@ -335,10 +335,18 @@ pub(crate) fn clean_up_previous_copy() {
         executable
     };
     let previous = previous_copy_path(&current);
-    if previous.is_dir() {
-        let _ = std::fs::remove_dir_all(&previous);
+    let removed = if previous.is_dir() {
+        std::fs::remove_dir_all(&previous)
     } else if previous.exists() {
-        let _ = std::fs::remove_file(&previous);
+        std::fs::remove_file(&previous)
+    } else {
+        Ok(())
+    };
+    if let Err(error) = removed {
+        log::warn!(
+            "update: previous copy {} not deleted: {error}",
+            previous.display()
+        );
     }
 }
 
@@ -360,7 +368,13 @@ fn swap(current: &Path, staged: &Path) -> anyhow::Result<()> {
     }
     std::fs::rename(current, &previous).context("impossible de remplacer l’application")?;
     if let Err(error) = std::fs::rename(staged, current) {
-        let _ = std::fs::rename(&previous, current);
+        // The worst case of an update: the app is no longer where the user launches it.
+        if let Err(restore_error) = std::fs::rename(&previous, current) {
+            log::error!(
+                "update: previous copy not restored to {}: {restore_error}",
+                current.display()
+            );
+        }
         return Err(error).context("impossible d’installer la nouvelle version");
     }
     Ok(())

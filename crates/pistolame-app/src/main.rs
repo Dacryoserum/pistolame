@@ -11,6 +11,7 @@ mod artist_photos;
 mod artwork_cache;
 mod artwork_tint;
 mod authenticity;
+mod diagnostics;
 mod file_drop;
 mod m3u;
 mod media_controls;
@@ -29,6 +30,7 @@ mod transport;
 mod ui_bridge;
 #[cfg(test)]
 mod ui_preview;
+mod ui_refresh;
 mod updater;
 mod window_chrome;
 mod window_events;
@@ -48,6 +50,7 @@ use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
     settings::migrate_legacy_app_data();
+    diagnostics::install();
     // The copy an update replaced is deleted once this new copy runs.
     updater::clean_up_previous_copy();
     window_chrome::select_backend()?;
@@ -66,6 +69,7 @@ fn main() -> anyhow::Result<()> {
     // Shows the stored library, then rescans it; paths given on the command line are added.
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
+    bridge.report_previous_crash();
     // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…, -1 = the
     // current track, -2 = the first album's editor, -3 = "Les plus écoutés") to check a
     // screen without clicking through the app.
@@ -95,14 +99,13 @@ fn main() -> anyhow::Result<()> {
                 .invoke_navigate_to_section(ui_bridge::slint_sidebar_section(section));
         }
     }
-    let timer = slint::Timer::default();
     let ticking_bridge = bridge.clone();
     let closing_bridge = bridge.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        pistolame_core::timing::UI_REFRESH_INTERVAL,
-        move || ticking_bridge.tick(),
-    );
+    // Kept alive until the event loop ends: dropping it stops the refresh.
+    let _refresh_pace = ui_refresh::RefreshPace::start(move || {
+        ticking_bridge.tick();
+        ticking_bridge.is_playing_visibly()
+    });
     // The geometry is read while the window still exists: `run` returns once it is hidden.
     let closing_window = window.as_weak();
     window.window().on_close_requested(move || {
@@ -113,8 +116,12 @@ fn main() -> anyhow::Result<()> {
         }
         slint::CloseRequestResponse::HideWindow
     });
-    window.run()?;
+    if let Err(error) = window.run() {
+        log::error!("event loop stopped: {error}");
+        return Err(error.into());
+    }
     bridge.save_session();
+    log::info!("Pistolame closed");
     Ok(())
 }
 

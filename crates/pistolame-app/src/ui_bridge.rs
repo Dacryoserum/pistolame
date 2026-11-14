@@ -21,6 +21,7 @@ mod album_editor;
 mod artist_editor;
 mod artist_photo_picker;
 mod browsing;
+mod diagnostics_glue;
 mod library_sync;
 mod media_session;
 mod navigation_glue;
@@ -217,6 +218,8 @@ pub(crate) struct UiBridge {
     sample_rate_hz: Cell<u32>,
     total_frames: Cell<u64>,
     underrun_baseline: Cell<u64>,
+    /// The underrun count the label shows; `None` until the first tick writes it.
+    shown_underrun_count: Cell<Option<u64>>,
     selected_track: Cell<Option<(usize, usize)>>,
     detail_album: Cell<usize>,
     stream_end_baseline: Cell<u64>,
@@ -341,6 +344,7 @@ impl UiBridge {
             sample_rate_hz: Cell::new(0),
             total_frames: Cell::new(0),
             underrun_baseline: Cell::new(0),
+            shown_underrun_count: Cell::new(None),
             selected_track: Cell::new(None),
             detail_album: Cell::new(0),
             stream_end_baseline: Cell::new(0),
@@ -547,8 +551,7 @@ impl UiBridge {
         let handle = self.clone();
         state.on_set_artist_photos(move |is_on| {
             handle.settings.borrow_mut().are_artist_photos_off = !is_on;
-            // A failed save only loses the choice at the next launch.
-            let _ = handle.settings.borrow().save();
+            handle.save_settings();
             if let Some(window) = handle.window.upgrade() {
                 window.global::<AppState>().set_are_artist_photos_on(is_on);
             }
@@ -648,6 +651,7 @@ impl UiBridge {
         self.connect_artist_editor(&state);
         self.connect_artist_photo_picker(&state);
         self.connect_sleep_timer(&state);
+        self.connect_diagnostics(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {
@@ -876,6 +880,9 @@ impl UiBridge {
     /// Shows an error; it stays until the user closes it or a new track starts. An empty text
     /// hides the message.
     fn message(&self, text: String) {
+        if !text.is_empty() {
+            log::warn!("error shown: {text}");
+        }
         self.forget_pending_undo();
         // An error stays: no earlier notice timer may hide it.
         self.notice_generation
@@ -1013,16 +1020,29 @@ impl UiBridge {
             &state,
             self.shown_frames_in_track(counters.frames_rendered_in_track),
         );
-        let underrun_label: SharedString = format!(
-            "Coupures : {}",
-            counters
-                .underrun_events
-                .saturating_sub(self.underrun_baseline.get())
-        )
-        .into();
-        if state.get_underrun_label() != underrun_label {
-            state.set_underrun_label(underrun_label);
+        // Compared as a number: formatting the label 30 times a second would allocate for a
+        // value that almost never changes.
+        let underrun_count = counters
+            .underrun_events
+            .saturating_sub(self.underrun_baseline.get());
+        if self.shown_underrun_count.get() != Some(underrun_count) {
+            self.shown_underrun_count.set(Some(underrun_count));
+            state.set_underrun_label(format!("Coupures : {underrun_count}").into());
         }
+    }
+
+    /// Whether a track plays (or opens) in a window that is not minimized: the position then
+    /// moves on screen and the refresh keeps its full rate (`ui_refresh`).
+    pub(crate) fn is_playing_visibly(&self) -> bool {
+        let is_playing = matches!(
+            self.state.get(),
+            PlaybackState::Playing | PlaybackState::Opening
+        );
+        is_playing
+            && self
+                .window
+                .upgrade()
+                .is_some_and(|window| !window.window().is_minimized())
     }
 
     fn handle_event(&self, event: EngineEvent) {
@@ -1382,7 +1402,7 @@ fn reveal_label() -> &'static str {
 }
 
 /// Opens the system file manager with `path` selected (its folder on Linux, where file managers
-/// have no common "select" option). Best effort: nothing to report if it cannot start.
+/// have no common "select" option). Best effort: a failure to start is only logged.
 fn reveal_in_file_manager(path: &std::path::Path) {
     let mut command = if cfg!(target_os = "macos") {
         let mut command = std::process::Command::new("open");
@@ -1397,7 +1417,9 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         command.arg(path.parent().unwrap_or(path));
         command
     };
-    let _ = command.spawn();
+    if let Err(error) = command.spawn() {
+        log::warn!("cannot reveal {}: {error}", path.display());
+    }
 }
 
 /// Opens `url` in the default browser. Best effort, like revealing a file.
@@ -1411,7 +1433,9 @@ fn open_in_browser(url: &str) {
     } else {
         std::process::Command::new("xdg-open")
     };
-    let _ = command.arg(url).spawn();
+    if let Err(error) = command.arg(url).spawn() {
+        log::warn!("cannot open {url} in the browser: {error}");
+    }
 }
 
 /// Artist cards from the albums: one per album artist (as displayed), natural order, with their

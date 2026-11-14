@@ -2233,11 +2233,21 @@ export component OutputSettings inherits Rectangle {
                             height: self.preferred-height;
                         }
                     }
-                    PillButton {
-                        width: 236px;
-                        label: "Rechercher des mises à jour";
-                        icon: Icons.arrows-clockwise;
-                        clicked => { AppState.check-for-updates(); }
+                    VerticalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        PillButton {
+                            width: 236px;
+                            label: "Rechercher des mises à jour";
+                            icon: Icons.arrows-clockwise;
+                            clicked => { AppState.check-for-updates(); }
+                        }
+                        PillButton {
+                            width: 236px;
+                            label: "Copier le diagnostic";
+                            accessible-description: "Copie la version, le dernier rapport d’incident et la fin du journal, pour signaler un problème";
+                            clicked => { AppState.copy-diagnostic(); }
+                        }
                     }
                 }
             }
