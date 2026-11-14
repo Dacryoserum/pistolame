@@ -11,6 +11,7 @@ mod artist_photos;
 mod artwork_cache;
 mod artwork_tint;
 mod authenticity;
+mod diagnostics;
 mod file_drop;
 mod m3u;
 mod media_controls;
@@ -48,6 +49,7 @@ use generated_ui::*;
 
 fn main() -> anyhow::Result<()> {
     settings::migrate_legacy_app_data();
+    diagnostics::install();
     // The copy an update replaced is deleted once this new copy runs.
     updater::clean_up_previous_copy();
     window_chrome::select_backend()?;
@@ -113,8 +115,12 @@ fn main() -> anyhow::Result<()> {
         }
         slint::CloseRequestResponse::HideWindow
     });
-    window.run()?;
+    if let Err(error) = window.run() {
+        log::error!("event loop stopped: {error}");
+        return Err(error.into());
+    }
     bridge.save_session();
+    log::info!("Pistolame closed");
     Ok(())
 }
 

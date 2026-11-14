@@ -22,6 +22,9 @@ md-5              = "0.11.0"
 crossbeam-channel = "0.5.17"
 thiserror         = "2.0.21"
 anyhow            = "1.0.104"
+# Logging facade (MIT OR Apache-2.0), already in the lock file through Slint and winit. The app
+# writes its own log file (crates/pistolame-app/src/diagnostics.rs), so no logger crate is needed.
+log               = "0.4.34"
 # `raw-window-handle-06`: the native window handle, which Windows media controls need.
 # `unstable-winit-030`: winit's file-drop events (Slint has no drop API of its own). Pinned
 # with `=` above, so this unstable API cannot change under us.

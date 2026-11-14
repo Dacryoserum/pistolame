@@ -58,6 +58,8 @@ const SETTINGS_FILE_NAME: &str = "settings.txt";
 const TEMPORARY_FILE_NAME: &str = "settings.txt.tmp";
 /// SQLite file of the persistent library (docs/plans/persistent-library.md).
 const LIBRARY_FILE_NAME: &str = "library.sqlite3";
+/// Folder of the log file and the crash reports, inside the app's folder.
+const LOG_FOLDER_NAME: &str = "logs";
 /// The app's folder inside the system configuration folder: capitalized product name on Windows
 /// and macOS, lowercase on Linux (each platform's convention).
 const APP_FOLDER_NAME: &str = if cfg!(target_os = "linux") {
@@ -423,6 +425,11 @@ fn settings_file_path() -> Option<PathBuf> {
 /// The library database, beside the settings file.
 pub(crate) fn library_database_path() -> Option<PathBuf> {
     Some(app_data_directory()?.join(LIBRARY_FILE_NAME))
+}
+
+/// The log file and the crash reports, beside the settings file.
+pub(crate) fn log_directory() -> Option<PathBuf> {
+    Some(app_data_directory()?.join(LOG_FOLDER_NAME))
 }
 
 /// The folder holding everything the app stores, in each system's own convention:

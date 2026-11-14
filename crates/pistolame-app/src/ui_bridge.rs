@@ -876,6 +876,9 @@ impl UiBridge {
     /// Shows an error; it stays until the user closes it or a new track starts. An empty text
     /// hides the message.
     fn message(&self, text: String) {
+        if !text.is_empty() {
+            log::warn!("error shown: {text}");
+        }
         self.forget_pending_undo();
         // An error stays: no earlier notice timer may hide it.
         self.notice_generation

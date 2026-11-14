@@ -4126,6 +4126,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "image",
+ "log",
  "pistolame-analysis",
  "pistolame-core",
  "pistolame-library",
