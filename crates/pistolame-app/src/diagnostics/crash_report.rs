@@ -11,6 +11,8 @@ const CRASH_REPORT_EXTENSION: &str = ".txt";
 /// Reports kept in the folder; older ones are deleted at startup. Enough to see whether a crash
 /// repeats, without letting a crash loop fill the disk.
 pub(crate) const KEPT_CRASH_REPORTS: usize = 20;
+/// Holds the name of the latest report the user was told about.
+const SEEN_MARKER_FILE_NAME: &str = "last-seen-crash.txt";
 
 /// What the panic hook knows about a panic, as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,11 +92,43 @@ pub(crate) fn write_report(directory: &Path, details: &CrashDetails) -> std::io:
     Ok(path)
 }
 
-/// Deletes all but the `kept_reports` most recent reports. Names hold the time, so name order is
-/// time order. Best effort: a report that cannot be deleted stays.
+/// Deletes all but the `kept_reports` most recent reports. Best effort: a report that cannot be
+/// deleted stays.
 pub(crate) fn delete_old_reports(directory: &Path, kept_reports: usize) {
+    let report_paths = sorted_report_paths(directory);
+    let deleted_count = report_paths.len().saturating_sub(kept_reports);
+    for path in &report_paths[..deleted_count] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// The most recent report, if any.
+pub(crate) fn latest_report(directory: &Path) -> Option<PathBuf> {
+    sorted_report_paths(directory).pop()
+}
+
+/// The most recent report when the user has not been told about it yet, and marks it as told:
+/// each crash is announced once, at the next start. The mark is the report's name in a file
+/// beside the reports, so it needs nothing from the settings.
+pub(crate) fn take_unseen_report(directory: &Path) -> Option<PathBuf> {
+    let latest = latest_report(directory)?;
+    let latest_name = latest.file_name()?.to_str()?.to_owned();
+    let marker_path = directory.join(SEEN_MARKER_FILE_NAME);
+    let seen_name = fs::read_to_string(&marker_path).unwrap_or_default();
+    // Names hold the time: a name that does not sort after the seen one is not newer.
+    if latest_name.as_str() <= seen_name.trim() {
+        return None;
+    }
+    if let Err(error) = fs::write(&marker_path, &latest_name) {
+        log::warn!("crash report {latest_name} cannot be marked as seen: {error}");
+    }
+    Some(latest)
+}
+
+/// Reports in `directory`, oldest first: names hold the time, so name order is time order.
+fn sorted_report_paths(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
-        return;
+        return Vec::new();
     };
     let mut report_paths: Vec<PathBuf> = entries
         .filter_map(Result::ok)
@@ -102,10 +136,7 @@ pub(crate) fn delete_old_reports(directory: &Path, kept_reports: usize) {
         .filter(|path| is_crash_report(path))
         .collect();
     report_paths.sort();
-    let deleted_count = report_paths.len().saturating_sub(kept_reports);
-    for path in &report_paths[..deleted_count] {
-        let _ = fs::remove_file(path);
-    }
+    report_paths
 }
 
 fn is_crash_report(path: &Path) -> bool {
@@ -200,6 +231,21 @@ mod tests {
                 "crash-2026-11-14-140000.txt",
                 "pistolame.log"
             ]
+        );
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_new_report_is_announced_once() {
+        let directory = fresh_test_directory("unseen");
+        assert_eq!(take_unseen_report(&directory), None);
+        fs::write(directory.join("crash-2026-11-14-100000.txt"), "").unwrap();
+        assert!(take_unseen_report(&directory).is_some());
+        assert_eq!(take_unseen_report(&directory), None);
+        fs::write(directory.join("crash-2026-11-14-110000.txt"), "").unwrap();
+        assert_eq!(
+            take_unseen_report(&directory),
+            Some(directory.join("crash-2026-11-14-110000.txt"))
         );
         fs::remove_dir_all(&directory).unwrap();
     }

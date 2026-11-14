@@ -4121,6 +4121,7 @@ name = "pistolame-app"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "base64 0.23.1",
  "crossbeam-channel",
  "dirs",

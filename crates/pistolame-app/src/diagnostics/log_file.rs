@@ -98,6 +98,15 @@ impl RotatingLogFile {
     }
 }
 
+/// The previous file followed by the current one, so the end of the text spans a rotation. Bytes
+/// that are not UTF-8 (a file damaged by a crash mid-write) are shown as replacement characters.
+pub(crate) fn read_both_files(directory: &Path, file_name: &str) -> String {
+    let read = |name: &str| fs::read(directory.join(name)).unwrap_or_default();
+    let mut bytes = read(&format!("{file_name}{PREVIOUS_FILE_SUFFIX}"));
+    bytes.extend(read(file_name));
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn open_for_append(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
@@ -169,6 +178,19 @@ mod tests {
         assert_eq!(
             fs::read_to_string(directory.join("test.log")).unwrap(),
             "from the panic hook\n"
+        );
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn both_files_are_read_oldest_first() {
+        let directory = fresh_test_directory("read-both");
+        let log = RotatingLogFile::open(&directory, "test.log", 10).unwrap();
+        log.append_line("aaaaaaaa");
+        log.append_line("bbbbbbbb");
+        assert_eq!(
+            read_both_files(&directory, "test.log"),
+            "aaaaaaaa\nbbbbbbbb\n"
         );
         fs::remove_dir_all(&directory).unwrap();
     }

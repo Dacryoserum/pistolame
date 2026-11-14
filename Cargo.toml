@@ -31,6 +31,9 @@ log               = "0.4.34"
 slint             = { version = "=1.18.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
 slint-build       = "=1.18.1"
 rfd               = "0.17.2"
+# Clipboard for "Copier le diagnostic" (MIT OR Apache-2.0). Already in the lock file through
+# Slint's winit backend; no image support needed.
+arboard           = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 # Media keys and the system "Now Playing" (SMTC, MPNowPlayingInfoCenter, MPRIS). MIT. `use_zbus`
 # talks to D-Bus in pure Rust, so Linux needs no libdbus at build time.
 souvlaki          = { version = "0.8.3", default-features = false, features = ["use_zbus"] }

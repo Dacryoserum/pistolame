@@ -68,6 +68,7 @@ fn main() -> anyhow::Result<()> {
     // Shows the stored library, then rescans it; paths given on the command line are added.
     let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     bridge.synchronize_library(paths);
+    bridge.report_previous_crash();
     // Development builds only: open on a sidebar item (1 = Artistes, 3 = Morceaux…, -1 = the
     // current track, -2 = the first album's editor, -3 = "Les plus écoutés") to check a
     // screen without clicking through the app.

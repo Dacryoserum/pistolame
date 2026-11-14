@@ -19,6 +19,7 @@ image.workspace = true
 pistolame-output.workspace = true
 slint.workspace = true
 rfd.workspace = true
+arboard.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

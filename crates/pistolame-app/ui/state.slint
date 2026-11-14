@@ -318,6 +318,8 @@ export global AppState {
     callback remove-library-folder(int);
     callback rescan-library();
     callback check-for-updates();
+    // Puts the version, the latest crash report and the end of the log on the clipboard.
+    callback copy-diagnostic();
     in property <string> update-check-status;
     // Album grid order.
     in property <[string]> album-sort-labels;

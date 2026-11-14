@@ -21,6 +21,7 @@ mod album_editor;
 mod artist_editor;
 mod artist_photo_picker;
 mod browsing;
+mod diagnostics_glue;
 mod library_sync;
 mod media_session;
 mod navigation_glue;
@@ -648,6 +649,7 @@ impl UiBridge {
         self.connect_artist_editor(&state);
         self.connect_artist_photo_picker(&state);
         self.connect_sleep_timer(&state);
+        self.connect_diagnostics(&state);
         let handle = self.clone();
         state.on_begin_album_edit(move |index| {
             if let Ok(index) = usize::try_from(index) {

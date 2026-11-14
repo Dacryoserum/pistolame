@@ -5,9 +5,11 @@
 //! real-time audio thread: a log line takes a lock and writes to disk (AGENTS.md).
 
 mod crash_report;
+mod diagnostic_text;
 mod log_file;
 mod timestamp;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -30,6 +32,12 @@ const OTHER_CRATES_LEVEL: Level = Level::Warn;
 
 static LOGGER: OnceLock<FileLogger> = OnceLock::new();
 
+thread_local! {
+    /// Kept for the whole session: on Linux the copied text is served by the app that copied it,
+    /// and disappears when its clipboard handle is dropped (arboard's documentation).
+    static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+}
+
 /// Starts the log file and the panic hook. Call it once, first thing in `main`, after the app
 /// folder has been moved from its legacy place (creating `logs` earlier would stop that move).
 /// Never fails: without a log folder the app runs as before, without a log.
@@ -46,6 +54,46 @@ pub(crate) fn install() {
         std::env::consts::OS,
         std::env::consts::ARCH
     );
+}
+
+/// The text for "Copier le diagnostic": version, latest crash report, end of the log, with the
+/// home folder hidden (see `diagnostic_text::compose`).
+pub(crate) fn diagnostic_text() -> String {
+    let directory = crate::settings::log_directory();
+    let log_text = directory
+        .as_deref()
+        .map(|directory| log_file::read_both_files(directory, LOG_FILE_NAME))
+        .unwrap_or_default();
+    let latest_report = directory
+        .as_deref()
+        .and_then(crash_report::latest_report)
+        .and_then(|path| std::fs::read(path).ok())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    diagnostic_text::compose(
+        &log_text,
+        latest_report.as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+/// Puts [`diagnostic_text`] on the system clipboard. Called from the UI thread only.
+pub(crate) fn copy_diagnostic_to_clipboard() -> Result<(), arboard::Error> {
+    let text = diagnostic_text();
+    CLIPBOARD.with(|cell| {
+        let mut clipboard = cell.borrow_mut();
+        let clipboard = match clipboard.as_mut() {
+            Some(clipboard) => clipboard,
+            None => clipboard.insert(arboard::Clipboard::new()?),
+        };
+        clipboard.set_text(text)
+    })
+}
+
+/// Whether a crash report appeared since the user was last told about one. True once per report.
+pub(crate) fn take_unseen_crash_report() -> bool {
+    crate::settings::log_directory()
+        .and_then(|directory| crash_report::take_unseen_report(&directory))
+        .is_some()
 }
 
 fn install_logger(directory: &Path) {
